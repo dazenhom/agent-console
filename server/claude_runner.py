@@ -363,6 +363,12 @@ class ClaudeRunner:
                         await cb(request_id, tool_name, tool_input)
                     except Exception:
                         pass
+                elif request_id:
+                    # 权限弹窗已禁用或回调未注册，自动拒绝避免 CLI 卡死等授权
+                    try:
+                        await self.respond_permission(session_id, request_id, "deny")
+                    except Exception:
+                        pass
                 continue
             cb = sess.get("on_event")
             if cb:
