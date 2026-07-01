@@ -40,6 +40,10 @@ export CLAUDE_TURN_TIMEOUT="${CLAUDE_TURN_TIMEOUT:-1800}"
 # 看门狗：空闲多久判卡死、回合绝对安全上限（常驻模式 send_turn 用）
 export CLAUDE_IDLE_TIMEOUT="${CLAUDE_IDLE_TIMEOUT:-600}"
 export CLAUDE_TURN_MAX="${CLAUDE_TURN_MAX:-7200}"
+# 循环检测：重复操作阈值、连续报错阈值、看门狗轮询间隔
+export CLAUDE_LOOP_REPEAT="${CLAUDE_LOOP_REPEAT:-8}"
+export CLAUDE_LOOP_ERRORS="${CLAUDE_LOOP_ERRORS:-10}"
+export CLAUDE_WATCHDOG_INTERVAL="${CLAUDE_WATCHDOG_INTERVAL:-15}"
 
 # ====== Knot 配置（保留：knot_runner.py 仍可作为备份后端切换） ======
 export KNOT_TOKEN="${KNOT_TOKEN:-}"
