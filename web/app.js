@@ -1732,13 +1732,19 @@
   // 从 assistant 气泡末尾提取 quick-reply 选项。
   // 情况1：末尾列表项均短（≤50字、≤8项），提取为选项。
   // 从 assistant 气泡末尾提取 quick-reply 选项。
-  // 情况1：末尾列表项（含长描述时截取标题部分）→ 提取为选项。
+  // 只在消息带有明确提问意图时触发（含问号，或前文含"请选择/以下方式/如何处理"等引导语）。
+  // 情况1：带提问意图 + 末尾列表 → 列表项截标题作为选项。
   // 情况2：末尾是决策型问句 → 补充"是的""不用了"。
   function extractQuickReplies(bubble) {
     const fullText = bubble.textContent.trim();
     if (!fullText) return [];
 
-    // 情况1：末尾短列表（或可截取标题的长列表）
+    // 全文是否含提问意图：有问号，或有"请选择/怎么/如何/哪种/以下.*方式/你希望"等引导
+    const hasQuestion = /[？?]/.test(fullText);
+    const hasGuide = /请选择|你想|您想|如何处理|怎么处理|哪种|哪个|以下.*方式|你希望|您希望|该如何|想怎|要怎/.test(fullText);
+    if (!hasQuestion && !hasGuide) return [];
+
+    // 情况1：末尾列表 + 提问意图
     const lists = bubble.querySelectorAll("ul, ol");
     if (lists.length) {
       const last = lists[lists.length - 1];
@@ -1753,17 +1759,13 @@
       if (trailingOk) {
         const items = Array.from(last.querySelectorAll(":scope > li"));
         if (items.length && items.length <= 8) {
-          // 每项提取标题：遇到 " — "/"："/". "/"- " 等截断，只取前段
           const texts = items.map(li => {
             const raw = li.textContent.trim();
-            // 去掉开头的数字序号 "1. " / "1) "
             const noNum = raw.replace(/^\d+[.)]\s*/, "");
-            // 按常见分隔符截取标题
             const title = noNum.split(/\s[—–\-]\s|：|:\s|\.\s/).at(0).trim();
             return title.length <= 30 ? title : title.slice(0, 30) + "…";
           });
           if (!texts.some(t => !t)) {
-            // 必须有前文（不是纯列表消息）
             const bubbleText = bubble.textContent.replace(last.textContent, "").trim();
             if (bubbleText) return texts;
           }
@@ -1773,8 +1775,7 @@
 
     // 情况2：末尾决策型问句 → yes/no 快捷回复
     const lastSentence = fullText.split(/[。\n]/).map(s => s.trim()).filter(Boolean).at(-1) || "";
-    const isQuestion = /[？?]$/.test(lastSentence);
-    if (!isQuestion) return [];
+    if (!/[？?]$/.test(lastSentence)) return [];
     const decisionRe = /需要|要不要|是否|帮(你|我)|想要|继续|配置|开始|确认|可以吗|好吗|行吗|对吗|试试|使用|运行|执行|要我|要帮/;
     if (!decisionRe.test(lastSentence)) return [];
     if (fullText.length < 20) return [];
