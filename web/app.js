@@ -203,6 +203,21 @@
       hub.style.removeProperty("--hub-left-w");
       localStorage.removeItem(HUB_W_KEY);
     });
+
+    window.addEventListener("resize", () => {
+      if (!isDesktop()) return;
+      const left = hub.querySelector(".hub-left");
+      if (!left) return;
+      const current = left.offsetWidth;
+      const min = 260, max = hub.clientWidth - 320 - 6;
+      if (max > min) {
+        const clamped = Math.max(min, Math.min(current, max));
+        if (clamped !== current) {
+          hub.style.setProperty("--hub-left-w", clamped + "px");
+          localStorage.setItem(HUB_W_KEY, String(clamped));
+        }
+      }
+    });
   }
 
   // 会话搜索：按标题实时过滤 Sessions Tab 列表
