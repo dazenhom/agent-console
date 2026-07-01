@@ -342,6 +342,14 @@ def list_todos(status: str | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def list_todos_by_session(session_id: str) -> list[dict]:
+    rows = _query(
+        "SELECT id FROM todos WHERE session_id=? AND status='in_progress'",
+        (session_id,)
+    )
+    return [dict(r) for r in rows]
+
+
 def create_todo(title: str, description: str = "", priority: int = 0, session_id: str | None = None, status: str = "pending") -> dict:
     tid = new_id()
     now = _now()

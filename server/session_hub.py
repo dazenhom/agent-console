@@ -180,6 +180,28 @@ class SessionHub:
         """该会话是否有「处于前台」的订阅者。无 → 回合结束发企业微信。"""
         return any(not s.hidden for s in self._subs.get(sid, ()))
 
+    async def _emit_todo_progress(self, tid: str, progress: str, progress_at: float) -> None:
+        await self.broadcast_monitor({
+            "type": "todo_progress_update",
+            "todo_id": tid,
+            "progress": progress,
+            "progress_at": progress_at,
+        })
+
+    async def _auto_progress_by_ai(self, sid: str) -> None:
+        """回合结束后自动刷该会话关联的 in_progress 看板进展，并推 monitor。"""
+        try:
+            from . import kanban
+            todos = db.list_todos_by_session(sid)
+            for t in todos:
+                res = await kanban.refresh_todo_progress(t["id"])
+                if res.get("ok") and not res.get("cached") and res.get("progress"):
+                    await self._emit_todo_progress(
+                        t["id"], res["progress"], res.get("progress_at") or 0
+                    )
+        except Exception:
+            pass
+
     # ---------- 回合执行 ----------
     async def start_turn(self, sid: str, user_text: str, model: str | None = None) -> bool:
         """发起一个回合。已在跑则拒绝（同会话内串行）。返回是否成功发起。"""
@@ -327,6 +349,7 @@ class SessionHub:
                 or (n_user - config.TITLE_EARLY_TURNS) % config.TITLE_EVERY_N == 0
             ):
                 asyncio.ensure_future(self._auto_title_by_ai(sid))
+            asyncio.ensure_future(self._auto_progress_by_ai(sid))
             await self._emit_session_update(sid)
 
             # 企业微信：该会话没有任何前台订阅者就发（含 0 订阅者）。
@@ -365,7 +388,7 @@ class SessionHub:
             if first_text.strip():
                 parts.append("用户：" + first_text)
         recent = [m for m in msgs if m["role"] in ("user", "assistant")][-6:]
-        seen = set()
+        seen = {str((users[0].get("content") or {}).get("text", ""))[:120]} if users else set()
         for m in recent:
             who = "用户" if m["role"] == "user" else "助手"
             txt = str((m.get("content") or {}).get("text", ""))[:120 if who == "用户" else 200]
