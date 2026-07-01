@@ -331,8 +331,16 @@
         <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
       </div>`;
 
-    // 点击行主体跳转关联会话
-    row.querySelector(".kanban-row-main").onclick = () => {
+    // 点击进展摘要：展开/收起
+    const progressEl = row.querySelector(".kanban-row-progress");
+    if (progressEl) progressEl.onclick = (e) => {
+      e.stopPropagation();
+      progressEl.classList.toggle("collapsed");
+    };
+
+    // 点击标题：跳转关联会话
+    const titleEl = row.querySelector(".kanban-row-title");
+    if (titleEl) titleEl.onclick = () => {
       if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
       const sess = (state.sessions || []).find((s) => s.id === t.session_id);
       if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
