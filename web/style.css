@@ -301,6 +301,16 @@ body.hub-resizing {
 }
 .ask-opt:hover { background: var(--accent); color: #fff; }
 
+/* Quick-reply 按钮条（assistant 消息末尾短列表自动提取） */
+.qr-bar { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; padding: 0 2px; }
+.qr-btn {
+  padding: 5px 13px; font-size: 13px; border-radius: 18px;
+  border: 1.5px solid var(--accent); background: var(--bg-2); color: var(--accent);
+  font-weight: 500; transition: background var(--ease), color var(--ease), transform .12s;
+  white-space: nowrap;
+}
+.qr-btn:hover { background: var(--accent); color: #fff; }
+
 .result-line { text-align: center; color: var(--muted); font-size: 12px; margin: 6px 0 14px; }
 /* 历史窗口「加载更早」按钮 */
 .load-earlier { display: block; margin: 4px auto 14px; padding: 7px 16px; border-radius: 16px; border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); font-size: 13px; box-shadow: var(--shadow); }

@@ -1729,6 +1729,58 @@
 
   // 构建一条消息的 DOM 节点（不挂载）。返回 node 或 null（system/未知类型跳过）。
   // 拆出来是为了让「加载更早」能批量 build 后一次性插入。
+  // 从 assistant 气泡末尾提取 quick-reply 选项。
+  // 情况1：末尾列表项均短（≤50字、≤8项），提取为选项。
+  // 从 assistant 气泡末尾提取 quick-reply 选项。
+  // 情况1：末尾列表项（含长描述时截取标题部分）→ 提取为选项。
+  // 情况2：末尾是决策型问句 → 补充"是的""不用了"。
+  function extractQuickReplies(bubble) {
+    const fullText = bubble.textContent.trim();
+    if (!fullText) return [];
+
+    // 情况1：末尾短列表（或可截取标题的长列表）
+    const lists = bubble.querySelectorAll("ul, ol");
+    if (lists.length) {
+      const last = lists[lists.length - 1];
+      // 列表必须在 bubble 末尾（后面没有实质内容）
+      let next = last.nextSibling;
+      let trailingOk = true;
+      while (next) {
+        if (next.nodeType === 1) { trailingOk = false; break; }
+        if (next.nodeType === 3 && next.textContent.trim()) { trailingOk = false; break; }
+        next = next.nextSibling;
+      }
+      if (trailingOk) {
+        const items = Array.from(last.querySelectorAll(":scope > li"));
+        if (items.length && items.length <= 8) {
+          // 每项提取标题：遇到 " — "/"："/". "/"- " 等截断，只取前段
+          const texts = items.map(li => {
+            const raw = li.textContent.trim();
+            // 去掉开头的数字序号 "1. " / "1) "
+            const noNum = raw.replace(/^\d+[.)]\s*/, "");
+            // 按常见分隔符截取标题
+            const title = noNum.split(/\s[—–\-]\s|：|:\s|\.\s/).at(0).trim();
+            return title.length <= 30 ? title : title.slice(0, 30) + "…";
+          });
+          if (!texts.some(t => !t)) {
+            // 必须有前文（不是纯列表消息）
+            const bubbleText = bubble.textContent.replace(last.textContent, "").trim();
+            if (bubbleText) return texts;
+          }
+        }
+      }
+    }
+
+    // 情况2：末尾决策型问句 → yes/no 快捷回复
+    const lastSentence = fullText.split(/[。\n]/).map(s => s.trim()).filter(Boolean).at(-1) || "";
+    const isQuestion = /[？?]$/.test(lastSentence);
+    if (!isQuestion) return [];
+    const decisionRe = /需要|要不要|是否|帮(你|我)|想要|继续|配置|开始|确认|可以吗|好吗|行吗|对吗|试试|使用|运行|执行|要我|要帮/;
+    if (!decisionRe.test(lastSentence)) return [];
+    if (fullText.length < 20) return [];
+    return ["是的，请继续", "不用了，谢谢"];
+  }
+
   function buildMessageNode(role, content, ts = null) {
     let node;
     if (role === "user" || role === "assistant") {
@@ -1742,6 +1794,18 @@
         copy.type = "button";
         copy.onclick = () => { copyText(content.text || "").then((ok) => { flashCopied(copy, ok); if (ok) toast("已复制到剪贴板", "success", 1500); }); };
         node.appendChild(copy);
+        // Quick-reply：检测 bubble 末尾的短列表项，提取为可点击选项按钮
+        const qr = extractQuickReplies(bubble);
+        if (qr.length) {
+          const bar = el("div", "qr-bar");
+          qr.forEach(text => {
+            const btn = el("button", "qr-btn", text);
+            btn.type = "button";
+            btn.onclick = () => { input.value = text; input.dispatchEvent(new Event("input")); input.focus(); };
+            bar.appendChild(btn);
+          });
+          node.appendChild(bar);
+        }
       } else {
         bubble.textContent = content.text || "";
         // user 消息重发按钮：点击把内容填回输入框
@@ -2107,6 +2171,18 @@
       const finalText = fullText || state.streamText || "";
       copy.onclick = () => { copyText(finalText).then((ok) => { flashCopied(copy, ok); if (ok) toast("已复制到剪贴板", "success", 1500); }); };
       node.insertBefore(copy, bubble);
+      // Quick-reply：提取末尾短列表为选项按钮
+      const qr = extractQuickReplies(bubble);
+      if (qr.length && !node.querySelector(".qr-bar")) {
+        const bar = el("div", "qr-bar");
+        qr.forEach(text => {
+          const btn = el("button", "qr-btn", text);
+          btn.type = "button";
+          btn.onclick = () => { input.value = text; input.dispatchEvent(new Event("input")); input.focus(); };
+          bar.appendChild(btn);
+        });
+        node.appendChild(bar);
+      }
       node.appendChild(el("div", "msg-time", escapeHtml(fmtClock(nowTs()))));
     }
     state.streamEl = null;
