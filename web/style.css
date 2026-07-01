@@ -925,7 +925,7 @@ body.hub-resizing {
   border-left-width: 4px;
   border-radius: 10px;
   padding: 12px 12px 10px 12px;
-  cursor: default;
+  cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,0.12);
   transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease-spring);
 }
@@ -998,7 +998,8 @@ body.hub-resizing {
   background: var(--bg-2, #fff);
   min-height: 44px;
   transition: background 0.1s;
-  cursor: default;
+  cursor: pointer;
+  user-select: none;
 }
 .kanban-row:hover {
   background: var(--bg-3, #f3f4f6);

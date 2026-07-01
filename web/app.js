@@ -401,9 +401,8 @@
       progressEl.classList.toggle("collapsed");
     };
 
-    // 点击标题：跳转关联会话
-    const titleEl = row.querySelector(".kanban-row-title");
-    if (titleEl) titleEl.onclick = () => {
+    // 点击整行：跳转关联会话（进展 toggle 与操作按钮已各自 stopPropagation）
+    row.onclick = () => {
       if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
       const sess = (state.sessions || []).find((s) => s.id === t.session_id);
       if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
@@ -519,9 +518,8 @@
     });
     card.addEventListener("dragend", () => card.classList.remove("kanban-card-dragging"));
 
-    // ---- 点击卡片主体：跳转关联会话并高亮 ----
-    const mainEl = card.querySelector(".kanban-card-main");
-    mainEl.onclick = () => {
+    // ---- 点击卡片：跳转关联会话并高亮 ----
+    card.onclick = () => {
       if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
       if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
       else toast("会话不存在", "info", 1500);
