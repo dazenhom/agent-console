@@ -49,6 +49,13 @@ CLAUDE_SESSION_IDLE_SEC = int(os.environ.get("CLAUDE_SESSION_IDLE_SEC", "3600"))
 SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "true").lower() == "true"
 SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "60"))
 
+# ---- 会话标题异步刷新 ----
+# 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
+# 之后每 TITLE_EVERY_N 回合刷一次；用户手动改名（title_auto=0）后不再自动覆盖。
+TITLE_REFRESH_ENABLED = os.environ.get("TITLE_REFRESH_ENABLED", "true").lower() == "true"
+TITLE_EARLY_TURNS = int(os.environ.get("TITLE_EARLY_TURNS", "3"))
+TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "5"))
+
 # ---- 图片上传（手机拍照/截图发给 Agent）----
 # 存到会话 workdir 下的子目录，tclaude 用 Read 工具读图。
 UPLOAD_DIR_NAME = os.environ.get("UPLOAD_DIR_NAME", ".console_uploads")

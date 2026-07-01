@@ -42,6 +42,7 @@ def init_db() -> None:
                 status TEXT DEFAULT 'idle',
                 mode TEXT DEFAULT 'fast',     -- fast / strong
                 summary TEXT DEFAULT '',      -- 行摘要：列表里"刚做了什么"一句话
+                title_auto INTEGER DEFAULT 1, -- 标题是否由 AI 自动维护（用户手动改名后置 0）
                 created_at REAL,
                 updated_at REAL
             );
@@ -129,6 +130,8 @@ def init_db() -> None:
             _add_col("sessions", "summary TEXT DEFAULT ''")
         if "is_secretary" not in cols:
             _add_col("sessions", "is_secretary INTEGER DEFAULT 0")
+        if "title_auto" not in cols:
+            _add_col("sessions", "title_auto INTEGER DEFAULT 1")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")
@@ -210,6 +213,11 @@ def add_message(session_id: str, role: str, content: dict) -> dict:
 
 def count_messages(session_id: str) -> int:
     rows = _query("SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,))
+    return rows[0][0] if rows else 0
+
+
+def count_user_messages(session_id: str) -> int:
+    rows = _query("SELECT COUNT(*) FROM messages WHERE session_id=? AND role='user'", (session_id,))
     return rows[0][0] if rows else 0
 
 

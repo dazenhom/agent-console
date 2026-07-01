@@ -78,7 +78,7 @@ async def set_session_title(sid: str, payload: dict):
         raise HTTPException(status_code=400, detail="title 不能为空")
     if not db.get_session(sid):
         raise HTTPException(status_code=404, detail="会话不存在")
-    db.update_session(sid, title=title)
+    db.update_session(sid, title=title, title_auto=0)
     return {"ok": True, "title": title}
 
 

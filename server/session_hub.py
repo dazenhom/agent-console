@@ -118,7 +118,6 @@ class SessionHub:
         self._monitor: set[Subscriber] = set()           # 全局监控订阅者
         self._turns: dict[str, asyncio.Task] = {}        # session_id -> 当前回合 task
         self._activity: dict[str, str] = {}              # session_id -> 当前活动一行
-        self._pending_auto_title: dict[str, str] = {}    # session_id -> 待 AI 覆盖的截取标题
 
     # ---------- 订阅管理 ----------
     def subscribe(self, sid: str, sub: Subscriber) -> None:
@@ -194,9 +193,7 @@ class SessionHub:
                 clean = re.sub(r"\s+", " ", user_text).strip()
                 new_title = clean[:24] + ("…" if len(clean) > 24 else "")
                 if new_title:
-                    db.update_session(sid, title=new_title)
-                    self._pending_auto_title[sid] = new_title
-                    asyncio.ensure_future(self._auto_title_by_ai(sid, user_text))
+                    db.update_session(sid, title=new_title, title_auto=1)
         db.add_message(sid, "user", {"text": user_text})
         db.update_session(sid, status="running")
         task_id = db.start_task(sid, user_text[:80])
@@ -323,6 +320,13 @@ class SessionHub:
             # 行摘要（Haiku + 兜底）：后台跑，不阻塞。写 sessions.summary 后再推一次监控。
             reply_text = "\n".join(reply_parts)
             asyncio.ensure_future(self._summarize_and_emit(sid, user_text, reply_text))
+            # 标题异步刷新：前 TITLE_EARLY_TURNS 回合每回合刷，之后每 TITLE_EVERY_N 回合刷一次。
+            n_user = db.count_user_messages(sid)
+            if config.TITLE_REFRESH_ENABLED and (
+                n_user <= config.TITLE_EARLY_TURNS
+                or (n_user - config.TITLE_EARLY_TURNS) % config.TITLE_EVERY_N == 0
+            ):
+                asyncio.ensure_future(self._auto_title_by_ai(sid))
             await self._emit_session_update(sid)
 
             # 企业微信：该会话没有任何前台订阅者就发（含 0 订阅者）。
@@ -351,26 +355,47 @@ class SessionHub:
         except Exception:
             pass
 
-    async def _auto_title_by_ai(self, sid: str, user_text: str) -> None:
-        """异步 AI 语义标题：先用截取标题即时显示，AI 完成后覆盖并推监控。失败静默保留截取标题。"""
+    def _build_title_convo(self, sid: str) -> str:
+        """拼一段用于起标题的对话摘录：首条用户消息 + 最近若干轮，去重限长。"""
+        msgs = db.list_messages(sid)
+        users = [m for m in msgs if m["role"] == "user"]
+        parts = []
+        if users:
+            first_text = str((users[0].get("content") or {}).get("text", ""))[:120]
+            if first_text.strip():
+                parts.append("用户：" + first_text)
+        recent = [m for m in msgs if m["role"] in ("user", "assistant")][-6:]
+        seen = set()
+        for m in recent:
+            who = "用户" if m["role"] == "user" else "助手"
+            txt = str((m.get("content") or {}).get("text", ""))[:120 if who == "用户" else 200]
+            if txt.strip() and txt not in seen:
+                seen.add(txt)
+                parts.append(f"{who}：{txt}")
+        return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+    async def _auto_title_by_ai(self, sid: str) -> None:
+        """异步 AI 语义标题：用整段对话摘录重起标题并推监控。用户手动改名或失败则静默保留原标题。"""
         try:
             from . import summarizer
-            title = await summarizer.gen_title(user_text)
+            sess = db.get_session(sid)
+            if not sess or sess.get("title_auto", 1) == 0:
+                return
+            convo = self._build_title_convo(sid)
+            if not convo:
+                return
+            title = await summarizer.gen_title(convo)
             if not title:
                 return
             sess = db.get_session(sid)
-            if not sess:
+            if not sess or sess.get("title_auto", 1) == 0:
                 return
-            cur = sess.get("title", "") or ""
-            # 仅当标题仍是「新会话」或我们刚写的截取标题时才覆盖，避免踩用户手动改名
-            if cur and not cur.startswith("新会话") and cur != self._pending_auto_title.get(sid):
+            if title == (sess.get("title") or ""):
                 return
-            db.update_session(sid, title=title)
+            db.update_session(sid, title=title, title_auto=1)
             await self._emit_session_update(sid)
         except Exception:
             pass
-        finally:
-            self._pending_auto_title.pop(sid, None)
 
     async def cancel(self, sid: str) -> None:
         await runner.cancel(sid)

@@ -82,13 +82,13 @@ async def summarize(user_text: str, reply_text: str) -> str:
     return _heuristic(user_text, reply_text)
 
 
-async def _gen_title_haiku(user_text: str) -> str:
-    """一次性 Haiku 起标题：给用户消息取一个不超过 10 字的中文标题。任何异常/超时抛出由上层兜底。"""
-    clean = re.sub(r"\s+", " ", user_text).strip()[:300]
+async def _gen_title_haiku(convo: str) -> str:
+    """一次性 Haiku 起标题：给一段对话内容取一个不超过 10 字的中文标题。任何异常/超时抛出由上层兜底。"""
+    clean = re.sub(r"\s+", " ", convo).strip()[:800]
     prompt = (
-        "给下面这条用户消息起一个不超过 10 个字的简洁中文标题，"
+        "给下面这段对话内容起一个不超过 10 个字的简洁中文标题，概括对话主题，"
         "只输出标题本身，不要引号、标点或任何前后缀。"
-        f"消息：『{clean}』"
+        f"对话：『{clean}』"
     )
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
@@ -126,11 +126,11 @@ async def _gen_title_haiku(user_text: str) -> str:
     return result
 
 
-async def gen_title(user_text: str) -> str:
-    """给一条用户消息生成语义标题。关闭/失败返回空串（上层保留截取标题）。永不抛异常。"""
+async def gen_title(convo: str) -> str:
+    """给一段对话内容生成语义标题。关闭/失败返回空串（上层保留截取标题）。永不抛异常。"""
     if not config.SUMMARY_ENABLED:
         return ""
     try:
-        return await _gen_title_haiku(user_text) or ""
+        return await _gen_title_haiku(convo) or ""
     except Exception:
         return ""
