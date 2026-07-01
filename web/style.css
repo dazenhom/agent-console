@@ -878,3 +878,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   outline: 2px dashed var(--accent); outline-offset: -4px;
   border-radius: 10px;
 }
+
+/* ---------- 紧凑统计摘要行 ---------- */
+.mini-stats { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.mini-stat { display: flex; align-items: baseline; gap: 4px; }
+.mini-stat-label { font-size: 11px; color: var(--muted-2); }
+.mini-stat-val { font-size: 14px; font-weight: 600; color: var(--text); }
+.mini-stat-val--active { color: var(--accent); }
+.mini-stat-val--failed { color: #ff4d4f; }

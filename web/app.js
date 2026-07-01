@@ -266,14 +266,14 @@
       else if (k === "failed") failed++;
     }
     const cards = [
-      { cls: "", ico: "⚲", num: 0, label: "Input" },
-      { cls: "active", ico: "◷", num: active, label: "Active" },
-      { cls: "review", ico: "☑", num: review, label: "Review" },
-      { cls: "failed", ico: "⊗", num: failed, label: "Failed" },
+      { valCls: "", num: 0, label: "Input" },
+      { valCls: active > 0 ? " mini-stat-val--active" : "", num: active, label: "Active" },
+      { valCls: "", num: review, label: "Review" },
+      { valCls: failed > 0 ? " mini-stat-val--failed" : "", num: failed, label: "Failed" },
     ];
     box.innerHTML = cards.map((c) =>
-      `<div class="stat-card ${c.cls}"><div class="stat-ico">${c.ico}</div>` +
-      `<div class="stat-num">${c.num}</div><div class="stat-label">${c.label}</div></div>`
+      `<span class="mini-stat"><span class="mini-stat-label">${c.label}</span> ` +
+      `<span class="mini-stat-val${c.valCls}">${c.num}</span></span>`
     ).join("");
     const title = $("dash-title");
     if (title) title.textContent = review || failed ? `${review + failed} 项待处理` : "暂无待办";
