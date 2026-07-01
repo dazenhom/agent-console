@@ -447,7 +447,7 @@
       refreshBtn.disabled = true;
       try {
         const res = await api(`/api/todos/${t.id}/refresh_progress?force=true`, { method: "POST", retry: true });
-        if (res.ok && res.progress) {
+        if (res && res.progress) {
           bodyEl.textContent = res.progress;
           bodyEl.classList.remove("no-progress");
           if (res.progress_at) {
