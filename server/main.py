@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, W
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler, skill_store
+from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler
 from .claude_runner import runner
 from .session_hub import hub, Subscriber
 
@@ -104,6 +104,36 @@ async def get_messages(sid: str):
     if not db.get_session(sid):
         raise HTTPException(status_code=404, detail="会话不存在")
     return db.list_messages(sid)
+
+
+@app.get("/api/sessions/{sid}/queue", dependencies=[Depends(require_auth)])
+async def queue_list(sid: str):
+    if not db.get_session(sid):
+        raise HTTPException(404, "会话不存在")
+    return db.list_queue(sid)
+
+
+@app.patch("/api/sessions/{sid}/queue/{item_id}", dependencies=[Depends(require_auth)])
+async def queue_edit(sid: str, item_id: str, payload: dict):
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text 不能为空")
+    item = db.get_queue_item(item_id)
+    if not item or item["session_id"] != sid:
+        raise HTTPException(404, "队列项不存在")
+    db.update_queue_item(item_id, text)
+    await hub.emit_queue_update(sid)
+    return {"ok": True}
+
+
+@app.delete("/api/sessions/{sid}/queue/{item_id}", dependencies=[Depends(require_auth)])
+async def queue_delete(sid: str, item_id: str):
+    item = db.get_queue_item(item_id)
+    if not item or item["session_id"] != sid:
+        raise HTTPException(404, "队列项不存在")
+    db.delete_queue_item(item_id)
+    await hub.emit_queue_update(sid)
+    return {"ok": True}
 
 
 @app.get("/api/tasks", dependencies=[Depends(require_auth)])
@@ -599,6 +629,8 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default=""), sess
         "status": "running" if hub.is_running(session_id) else "idle",
         "sync": True,
     })
+    # 连上时把当前队列同步给前端，驱动队列托盘。
+    await send({"type": "queue_update", "queue": db.list_queue(session_id)})
 
     async def _handle_message(raw: str):
         try:
@@ -629,23 +661,9 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default=""), sess
         if not user_text:
             return
 
-        # 网页里输入 /<skill名> [附加内容] → 展开成 SKILL.md 正文（headless 不认原生斜杠命令）。
-        # 未知 skill 给友好提示并拦截，不再把裸 /xxx 传给 tclaude 报 "Unknown command"。
-        if user_text.startswith("/"):
-            expanded, err = skill_store.expand(user_text)
-            if err:
-                await send({"type": "error", "message": err})
-                return
-            user_text = expanded
-
-        # 可选：本条消息附带的档位切换，持久化到会话
-        mode_hint = data.get("mode")
-        if mode_hint in ("fast", "strong", "super"):
-            db.update_session(session_id, mode=mode_hint)
-
-        ok = await hub.start_turn(session_id, user_text)
-        if not ok:
-            await send({"type": "error", "message": "上一个任务还在执行中。"})
+        # 在跑则入队、空闲则直接开跑；skill 展开与档位持久化都下沉到 hub。
+        mode_hint = data.get("mode") if data.get("mode") in ("fast", "strong", "super") else None
+        await hub.submit_user_message(session_id, user_text, mode_hint)
 
     try:
         while True:

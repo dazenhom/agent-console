@@ -105,6 +105,13 @@ def init_db() -> None:
                 UNIQUE(report_date, report_type)
             );
             CREATE INDEX IF NOT EXISTS idx_reports_date ON reports(report_date DESC);
+            CREATE TABLE IF NOT EXISTS queue_items (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                text TEXT,
+                created_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_queue_session ON queue_items(session_id);
             """
         )
         # 兼容老库：缺列就补。双进程（80/8800）可能同时启动产生竞态——
@@ -177,6 +184,7 @@ def list_sessions() -> list[dict]:
 def delete_session(sid: str) -> None:
     _exec("DELETE FROM messages WHERE session_id=?", (sid,))
     _exec("DELETE FROM tasks WHERE session_id=?", (sid,))
+    _exec("DELETE FROM queue_items WHERE session_id=?", (sid,))
     _exec("DELETE FROM sessions WHERE id=?", (sid,))
 
 
@@ -399,4 +407,54 @@ def ensure_secretary_session(workdir: str) -> dict:
         _conn.commit()
         row = _conn.execute("SELECT * FROM sessions WHERE is_secretary=1 LIMIT 1").fetchone()
         return dict(row)
+
+
+# ---------- queue_items（会话内待执行的排队指令）----------
+def enqueue_item(session_id: str, text: str) -> dict:
+    qid = new_id()
+    now = _now()
+    _exec(
+        "INSERT INTO queue_items(id,session_id,text,created_at) VALUES(?,?,?,?)",
+        (qid, session_id, text, now),
+    )
+    return {"id": qid, "session_id": session_id, "text": text, "created_at": now}
+
+
+def list_queue(session_id: str) -> list:
+    rows = _query(
+        "SELECT * FROM queue_items WHERE session_id=? ORDER BY created_at ASC, id ASC",
+        (session_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+def get_queue_item(item_id: str):
+    rows = _query("SELECT * FROM queue_items WHERE id=?", (item_id,))
+    return dict(rows[0]) if rows else None
+
+
+def update_queue_item(item_id: str, text: str) -> bool:
+    if not get_queue_item(item_id):
+        return False
+    _exec("UPDATE queue_items SET text=? WHERE id=?", (text, item_id))
+    return True
+
+
+def delete_queue_item(item_id: str) -> bool:
+    if not get_queue_item(item_id):
+        return False
+    _exec("DELETE FROM queue_items WHERE id=?", (item_id,))
+    return True
+
+
+def pop_next_queue_item(session_id: str):
+    rows = _query(
+        "SELECT * FROM queue_items WHERE session_id=? ORDER BY created_at ASC, id ASC LIMIT 1",
+        (session_id,),
+    )
+    if not rows:
+        return None
+    item = dict(rows[0])
+    _exec("DELETE FROM queue_items WHERE id=?", (item["id"],))
+    return item
 

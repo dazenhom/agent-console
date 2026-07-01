@@ -27,6 +27,7 @@
     histMsgs: [],        // 当前会话全量历史消息（窗口渲染用）
     histShown: 0,        // 已渲染的末尾消息条数
     heartbeatTimer: null, // WS 应用层心跳定时器
+    queue: [],           // 当前会话排队待执行的指令
   };
 
   // ---------------- API ----------------
@@ -572,6 +573,8 @@
   async function switchSession(id) {
     state.sessionId = id;
     state.toolIdMap = {};  // 清空工具 id 映射，避免跨会话串号
+    state.queue = [];      // 清空上个会话的队列，等新会话 queue_update 广播刷新
+    renderQueue();
     localStorage.setItem("ac_session", id);
     const cur = state.sessions.find((s) => s.id === id);
     if (cur) {
@@ -1356,6 +1359,59 @@
     if (doScroll) scrollBottom();
   }
 
+  // 队列托盘：渲染排队待执行的指令，支持编辑/删除。
+  function renderQueue() {
+    const tray = $("queue-tray");
+    if (!tray) return;
+    tray.innerHTML = "";
+    if (!state.queue.length) {
+      tray.classList.add("hidden");
+      return;
+    }
+    tray.classList.remove("hidden");
+    for (const q of state.queue) {
+      const chip = document.createElement("div");
+      chip.className = "queue-chip";
+
+      const span = document.createElement("span");
+      span.className = "q-text";
+      span.textContent = q.text.slice(0, 60) + (q.text.length > 60 ? "…" : "");
+      chip.appendChild(span);
+
+      const edit = document.createElement("button");
+      edit.className = "q-edit";
+      edit.textContent = "✎";
+      edit.title = "编辑";
+      edit.onclick = async () => {
+        const nt = prompt("编辑排队指令：", q.text);
+        if (nt == null || !nt.trim()) return;
+        try {
+          await api(`/api/sessions/${state.sessionId}/queue/${q.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ text: nt.trim() }),
+          });
+        } catch (e) {
+          toast("编辑失败：" + e.message, "error");
+        }
+      };
+
+      const del = document.createElement("button");
+      del.className = "q-del";
+      del.textContent = "×";
+      del.title = "删除";
+      del.onclick = async () => {
+        try {
+          await api(`/api/sessions/${state.sessionId}/queue/${q.id}`, { method: "DELETE" });
+        } catch (e) {
+          toast("删除失败：" + e.message, "error");
+        }
+      };
+
+      chip.append(edit, del);
+      tray.appendChild(chip);
+    }
+  }
+
   function flashCopied(btn, ok) {
     const old = btn.textContent;
     btn.textContent = ok ? "已复制 ✓" : "复制失败";
@@ -1541,6 +1597,10 @@
       clearStream();
       renderMessage("error", { message: data.message });
       setRunning(false);
+    } else if (data.type === "queue_update") {
+      state.queue = data.queue || [];
+      renderQueue();
+      return;
     }
   }
 
@@ -1596,11 +1656,13 @@
   }
 
   function setRunning(running) {
-    $("send-btn").disabled = running;
+    state.running = running;
     $("cancel-btn").classList.toggle("hidden", !running);
     const inp = $("input");
-    inp.disabled = running;
-    inp.placeholder = running ? "Agent 运行中…（可点停止中断）" : "给 Agent 下达指令…";
+    // 运行中不再锁输入：继续输入会排队执行。
+    inp.disabled = false;
+    $("send-btn").disabled = false;
+    inp.placeholder = running ? "运行中…继续输入将排队执行" : "给 Agent 下达指令…";
   }
 
   // ---------------- 发送 ----------------
@@ -1656,12 +1718,18 @@
       const lines = imgs.map((p) => `图片：${p}`).join("\n");
       text = text ? `${lines}\n${text}` : `${lines}\n请查看上面的图片。`;
     }
-    renderMessage("user", { text });
+    // 运行中发送 → 服务端入队，不本地渲染气泡也不切运行态；靠 queue_update 广播刷新托盘。
+    const queued = state.running;
+    if (!queued) {
+      renderMessage("user", { text });
+    }
     state.ws.send(JSON.stringify({ type: "user_message", content: text }));
     input.value = ""; input.style.height = "auto";
     $("char-count").classList.add("hidden");
     clearPendingImages();
-    setRunning(true); showTyping();
+    if (!queued) {
+      setRunning(true); showTyping();
+    }
   }
 
   $("send-btn").onclick = send;

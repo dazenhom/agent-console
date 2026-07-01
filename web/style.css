@@ -696,3 +696,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   transition: border-color var(--ease), box-shadow var(--ease);
 }
 .form-input:focus, .form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+/* 队列托盘 */
+.queue-tray { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 8px 16px;
+  background: var(--bg-2); border-top: 1px solid var(--line-soft); }
+.queue-chip { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 10px;
+  background: var(--bg-3); border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.queue-chip .q-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-chip .q-edit, .queue-chip .q-del { background: none; border: none; color: var(--muted-2);
+  font-size: 15px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.queue-chip .q-edit:hover { color: var(--accent); background: var(--bg-2); }
+.queue-chip .q-del:hover { color: var(--red, #e74c3c); background: var(--bg-2); }

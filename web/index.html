@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=13" />
+  <link rel="stylesheet" href="style.css?v=14" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -166,6 +166,9 @@
         <!-- 待发送图片预览条 -->
         <div id="img-tray" class="img-tray hidden"></div>
 
+        <!-- 排队待执行的指令 -->
+        <div id="queue-tray" class="queue-tray hidden"></div>
+
         <!-- Reply 输入区 -->
         <footer class="composer">
           <button id="cancel-btn" class="cancel-btn hidden">停止</button>
@@ -218,7 +221,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=14"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

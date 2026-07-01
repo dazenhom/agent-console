@@ -118,6 +118,7 @@ class SessionHub:
         self._monitor: set[Subscriber] = set()           # 全局监控订阅者
         self._turns: dict[str, asyncio.Task] = {}        # session_id -> 当前回合 task
         self._activity: dict[str, str] = {}              # session_id -> 当前活动一行
+        self._pending_auto_title: dict[str, str] = {}    # session_id -> 待 AI 覆盖的截取标题
 
     # ---------- 订阅管理 ----------
     def subscribe(self, sid: str, sub: Subscriber) -> None:
@@ -158,6 +159,9 @@ class SessionHub:
             except Exception:
                 pass
 
+    async def emit_queue_update(self, sid: str) -> None:
+        await self.broadcast(sid, {"type": "queue_update", "queue": db.list_queue(sid)})
+
     async def _emit_session_update(self, sid: str, **extra) -> None:
         """给监控订阅者推一条会话状态变化，驱动前端列表实时刷新。"""
         sess = db.get_session(sid)
@@ -191,6 +195,8 @@ class SessionHub:
                 new_title = clean[:24] + ("…" if len(clean) > 24 else "")
                 if new_title:
                     db.update_session(sid, title=new_title)
+                    self._pending_auto_title[sid] = new_title
+                    asyncio.ensure_future(self._auto_title_by_ai(sid, user_text))
         db.add_message(sid, "user", {"text": user_text})
         db.update_session(sid, status="running")
         task_id = db.start_task(sid, user_text[:80])
@@ -199,6 +205,46 @@ class SessionHub:
         await self._emit_session_update(sid)
         self._turns[sid] = asyncio.ensure_future(self._run_turn(sid, user_text, task_id, model))
         return True
+
+    async def _start_expanded(self, sid: str, user_text: str, mode=None) -> str:
+        """展开 skill 后开始回合。返回 'started' 或 'error:...'"""
+        from . import skill_store
+        if user_text.startswith("/"):
+            expanded, err = skill_store.expand(user_text)
+            if err:
+                await self.broadcast(sid, {"type": "error", "message": err})
+                return f"error:{err}"
+            user_text = expanded
+        if mode in ("fast", "strong", "super"):
+            db.update_session(sid, mode=mode)
+        await self.start_turn(sid, user_text)
+        return "started"
+
+    async def submit_user_message(self, sid: str, user_text: str, mode=None) -> str:
+        """在跑则入队，空闲则直接开跑。返回 'queued'/'started'/'error:...'"""
+        if self.is_running(sid):
+            db.enqueue_item(sid, user_text)
+            await self.emit_queue_update(sid)
+            return "queued"
+        return await self._start_expanded(sid, user_text, mode)
+
+    async def _drain_queue(self, sid: str) -> None:
+        """出队并自动开始下一条（循环处理 skill 报错跳过）"""
+        while True:
+            item = db.pop_next_queue_item(sid)
+            if not item:
+                return
+            await self.emit_queue_update(sid)  # 先广播移除
+            # 广播用户气泡（出队项需让所有端看到）
+            await self.broadcast(sid, {
+                "type": "message",
+                "role": "user",
+                "content": {"text": item["text"]},
+            })
+            res = await self._start_expanded(sid, item["text"], None)
+            if not res.startswith("error"):
+                return  # 成功开跑，退出循环
+            # skill 报错则跳过该项，继续循环取下一条
 
     async def _run_turn(self, sid: str, user_text: str, task_id: str, model: str | None) -> None:
         final_result: dict = {"status": "success"}
@@ -291,6 +337,9 @@ class SessionHub:
                     num_turns=final_result.get("num_turns"),
                 ))
 
+            # 本回合结束后自动出队执行下一条（_turns.pop 已在上方执行，is_running 为假）
+            asyncio.ensure_future(self._drain_queue(sid))
+
     async def _summarize_and_emit(self, sid: str, user_text: str, reply_text: str) -> None:
         """生成行摘要写库 + 推监控。失败静默（summarizer 自带兜底）。"""
         try:
@@ -301,6 +350,27 @@ class SessionHub:
                 await self._emit_session_update(sid)
         except Exception:
             pass
+
+    async def _auto_title_by_ai(self, sid: str, user_text: str) -> None:
+        """异步 AI 语义标题：先用截取标题即时显示，AI 完成后覆盖并推监控。失败静默保留截取标题。"""
+        try:
+            from . import summarizer
+            title = await summarizer.gen_title(user_text)
+            if not title:
+                return
+            sess = db.get_session(sid)
+            if not sess:
+                return
+            cur = sess.get("title", "") or ""
+            # 仅当标题仍是「新会话」或我们刚写的截取标题时才覆盖，避免踩用户手动改名
+            if cur and not cur.startswith("新会话") and cur != self._pending_auto_title.get(sid):
+                return
+            db.update_session(sid, title=title)
+            await self._emit_session_update(sid)
+        except Exception:
+            pass
+        finally:
+            self._pending_auto_title.pop(sid, None)
 
     async def cancel(self, sid: str) -> None:
         await runner.cancel(sid)

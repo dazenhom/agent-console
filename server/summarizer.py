@@ -80,3 +80,57 @@ async def summarize(user_text: str, reply_text: str) -> str:
         except Exception:
             pass
     return _heuristic(user_text, reply_text)
+
+
+async def _gen_title_haiku(user_text: str) -> str:
+    """一次性 Haiku 起标题：给用户消息取一个不超过 10 字的中文标题。任何异常/超时抛出由上层兜底。"""
+    clean = re.sub(r"\s+", " ", user_text).strip()[:300]
+    prompt = (
+        "给下面这条用户消息起一个不超过 10 个字的简洁中文标题，"
+        "只输出标题本身，不要引号、标点或任何前后缀。"
+        f"消息：『{clean}』"
+    )
+    cmd = [
+        config.CLAUDE_BIN, "--", "-p", prompt,
+        "--model", config.CLAUDE_MODEL_FAST, "--output-format", "json",
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, env=_child_env(),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=config.SUMMARY_TIMEOUT)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise
+    # 输出里可能混有 "Update available..." 之类噪音行，挑出 JSON 那行解析
+    text = out.decode("utf-8", errors="replace")
+    result = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if data.get("type") == "result" and not data.get("is_error"):
+            result = (data.get("result") or "").strip()
+            break
+    # 清掉可能的引号/换行，限长
+    result = re.sub(r"\s+", " ", result).strip().strip('"“”')[:12]
+    return result
+
+
+async def gen_title(user_text: str) -> str:
+    """给一条用户消息生成语义标题。关闭/失败返回空串（上层保留截取标题）。永不抛异常。"""
+    if not config.SUMMARY_ENABLED:
+        return ""
+    try:
+        return await _gen_title_haiku(user_text) or ""
+    except Exception:
+        return ""
