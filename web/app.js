@@ -374,6 +374,8 @@
     let actionBtns = "";
     if (t.session_id) actionBtns += `<button class="kanban-btn btn-refresh" data-act="refresh" title="刷新进展">↻</button>`;
     actionBtns += `<button class="kanban-btn btn-detail" data-act="detail" title="查看详情">→</button>`;
+    actionBtns += `<button class="kanban-btn btn-edit" data-act="edit" title="编辑">✎</button>`;
+    actionBtns += `<button class="kanban-btn btn-del" data-act="delete" title="删除">🗑</button>`;
 
     const card = el("div", "kanban-card kanban-card-v2");
     card.dataset.id = t.id;
@@ -442,6 +444,29 @@
         }
       };
     }
+
+    // ---- 编辑：打开编辑弹窗 ----
+    const editBtn = card.querySelector('[data-act="edit"]');
+    if (editBtn) editBtn.onclick = (e) => { e.stopPropagation(); showEditTodoModal(t); };
+
+    // ---- 删除：二次确认后就地移除并更新列计数 ----
+    const delBtn = card.querySelector('[data-act="delete"]');
+    if (delBtn) delBtn.onclick = async (e) => {
+      e.stopPropagation();
+      const yes = await confirmDialog(`确定删除任务「${t.title}」？`, { okText: "删除", danger: true });
+      if (!yes) return;
+      try {
+        await api(`/api/todos/${t.id}`, { method: "DELETE" });
+        const col = card.closest(".kanban-col");
+        card.remove();
+        // 更新列头计数
+        if (col) {
+          const cntEl = col.querySelector(".col-count");
+          if (cntEl) cntEl.textContent = Math.max(0, parseInt(cntEl.textContent || "0") - 1);
+        }
+        toast("已删除", "success", 1500);
+      } catch (err) { toast("删除失败：" + err.message, "error"); }
+    };
     return card;
   }
 
@@ -504,6 +529,64 @@
         await renderKanban();
         toast("任务已创建", "success");
       } catch (e) { toast("创建失败：" + e.message, "error"); }
+    };
+  }
+
+  // 编辑任务弹窗：标题 + 描述 + 优先级 + 状态，保存后 PUT 并重渲染看板
+  function showEditTodoModal(t) {
+    const root = $("modal-root");
+    root.innerHTML = "";
+    const card = el("div", "modal-card");
+    card.innerHTML = `
+      <div class="modal-title">编辑任务</div>
+      <div class="entity-form" style="gap:12px">
+        <label>任务标题
+          <input id="et-title" class="form-input" placeholder="输入任务名称…" value="${escapeAttr(t.title)}" />
+        </label>
+        <label>任务描述
+          <textarea id="et-desc" class="form-input" rows="3" placeholder="补充说明…">${escapeHtml(t.description || "")}</textarea>
+        </label>
+        <label>优先级
+          <select id="et-priority" class="form-select">
+            <option value="0"${t.priority == 1 ? "" : " selected"}>普通</option>
+            <option value="1"${t.priority == 1 ? " selected" : ""}>⚡高优</option>
+          </select>
+        </label>
+        <label>状态
+          <select id="et-status" class="form-select">
+            <option value="pending"${t.status === "pending" ? " selected" : ""}>待开始</option>
+            <option value="in_progress"${t.status === "in_progress" ? " selected" : ""}>进行中</option>
+            <option value="done"${t.status === "done" ? " selected" : ""}>已完成</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-cancel" type="button">取消</button>
+        <button class="modal-ok" type="button">保存</button>
+      </div>`;
+    root.appendChild(card);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => root.classList.add("show"));
+    const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
+    card.querySelector(".modal-cancel").onclick = close;
+    root.onclick = (e) => { if (e.target === root) close(); };
+    setTimeout(() => { const el0 = $("et-title"); if (el0) el0.focus(); }, 50);
+    card.querySelector(".modal-ok").onclick = async () => {
+      const title = ($("et-title").value || "").trim();
+      if (!title) { toast("请输入任务标题", "info"); return; }
+      const description = $("et-desc").value || "";
+      const priority = $("et-priority").value;
+      const status = $("et-status").value;
+      try {
+        const res = await api(`/api/todos/${t.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, description, priority: parseInt(priority), status })
+        });
+        close();
+        await renderKanban();
+        toast("已保存", "success", 1500);
+      } catch (e) { toast("保存失败：" + e.message, "error"); }
     };
   }
 

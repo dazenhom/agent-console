@@ -866,6 +866,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* 详情按钮 */
 .kanban-btn.btn-detail { color: var(--accent); }
 .kanban-btn.btn-refresh.loading { opacity: .6; pointer-events: none; }
+.kanban-btn.btn-edit { color: var(--muted); }
+.kanban-btn.btn-del { color: #ff4d4f; }
+.kanban-btn.btn-del:hover { color: #ff7875; background: rgba(255,77,79,0.1); }
 
 /* 拖拽中的卡片 */
 .kanban-card-dragging {
