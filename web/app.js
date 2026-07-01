@@ -2132,6 +2132,9 @@
       state.queue = data.queue || [];
       renderQueue();
       return;
+    } else if (data.type === "permission_request") {
+      showPermissionDialog(data);
+      return;
     }
   }
 
@@ -2730,6 +2733,57 @@
       card.querySelector(".modal-ok").onclick = () => close(true);
       root.onclick = (e) => { if (e.target === root) close(false); };
     });
+  }
+
+  // ---------------- 权限请求弹窗 ----------------
+  // Claude Code 遇到未放行的工具（Bash/Write/Edit 等）会发 control_request 等授权，
+  // 后端经 WS 推 permission_request，这里弹窗让用户点允许/拒绝，回传 permission_response。
+  // 用独立浮层（不占 modal-root，避免与 confirm/编辑弹窗互相顶掉），z-index 高于一切。
+  function showPermissionDialog(req) {
+    const tool = req.tool_name || "未知工具";
+    const inp = req.input || {};
+    // 关键入参：命令类显命令，文件类显路径，其余 JSON 截断
+    let detail = inp.command || inp.file_path || inp.path;
+    if (!detail) {
+      try { detail = JSON.stringify(inp); } catch (e) { detail = String(inp); }
+    }
+    detail = String(detail || "");
+    if (detail.length > 600) detail = detail.slice(0, 600) + "…";
+
+    // 同一 request_id 已有弹窗（如断线重发）就不重复弹
+    if (document.querySelector(`.perm-overlay[data-req="${cssEscape(req.request_id)}"]`)) return;
+
+    const overlay = el("div", "perm-overlay");
+    overlay.dataset.req = req.request_id;
+    overlay.style.cssText = "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;" +
+      "background:rgba(0,0,0,0.45);padding:16px";
+    const card = el("div", "modal-card");
+    card.innerHTML = `
+      <div class="modal-title">权限请求</div>
+      <div class="modal-msg" style="text-align:left">
+        Agent 想执行工具 <strong>${escapeHtml(tool)}</strong>：
+        <pre style="white-space:pre-wrap;word-break:break-all;max-height:40vh;overflow-y:auto;margin-top:8px;font-size:0.85rem">${escapeHtml(detail)}</pre>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-cancel" type="button">拒绝</button>
+        <button class="modal-ok" type="button">允许</button>
+      </div>`;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    const respond = (behavior) => {
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        try { state.ws.send(JSON.stringify({ type: "permission_response", request_id: req.request_id, behavior })); } catch (e) {}
+      }
+      overlay.remove();
+    };
+    card.querySelector(".modal-ok").onclick = () => respond("allow");
+    card.querySelector(".modal-cancel").onclick = () => respond("deny");
+  }
+
+  // CSS 选择器里的 request_id 转义（id 含特殊字符时避免选择器报错）
+  function cssEscape(s) {
+    return String(s).replace(/["\\\]]/g, "\\$&");
   }
 
   // ---------------- 骨架屏 ----------------
