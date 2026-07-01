@@ -174,6 +174,7 @@
     if (!state.sessions.find((s) => s.id === state.sessionId)) state.sessionId = state.sessions[0].id;
     renderSessionLists();
     renderDashboard();
+    renderKanban();
     const cur = state.sessions.find((s) => s.id === state.sessionId);
     $("session-title").textContent = cur ? cur.title : "会话";
     if (cur) markSeen(cur.id, cur.updated_at);  // 当前会话标记已读
@@ -278,6 +279,176 @@
     if (title) title.textContent = review || failed ? `${review + failed} 项待处理` : "暂无待办";
   }
 
+  // ---------------- 智能任务看板 ----------------
+  // 三列（待开始/进行中/已完成）按 todo.status 分桶，卡片带 AI 进展摘要，可就地切状态/刷新进展。
+  async function renderKanban() {
+    const board = $("kanban-board");
+    if (!board) return;
+    let todos;
+    try { todos = await api("/api/todos"); }
+    catch (e) { return; }
+
+    const buckets = { pending: [], in_progress: [], done: [] };
+    for (const t of todos) {
+      if (t.status === "done" || t.status === "cancelled") buckets.done.push(t);
+      else if (t.status === "in_progress") buckets.in_progress.push(t);
+      else buckets.pending.push(t);
+    }
+    const colMap = { pending: "cards-pending", in_progress: "cards-inprogress", done: "cards-done" };
+    const cntMap = { pending: "cnt-pending", in_progress: "cnt-inprogress", done: "cnt-done" };
+
+    for (const [status, tlist] of Object.entries(buckets)) {
+      const container = $(colMap[status]);
+      const countEl = $(cntMap[status]);
+      if (!container) continue;
+      if (countEl) countEl.textContent = tlist.length;
+      container.innerHTML = "";
+      if (!tlist.length) {
+        container.innerHTML = '<div class="kanban-empty">暂无任务</div>';
+        continue;
+      }
+      for (const t of tlist) container.appendChild(renderKanbanCard(t, status));
+    }
+  }
+
+  // 单张看板卡：标题 + 进展摘要 + 关联会话/时间 + 操作按钮
+  function renderKanbanCard(t, status) {
+    const sess = t.session_id ? state.sessions.find((s) => s.id === t.session_id) : null;
+    const sessName = sess ? sess.title : "";
+    const hasProgress = t.progress && t.progress.trim();
+    const progressText = hasProgress ? t.progress : "暂无进展，点击刷新";
+    const timeText = t.progress_at ? fmtTime(t.progress_at) : "";
+
+    let actionBtns = "";
+    if (t.session_id) actionBtns += `<button class="kanban-btn btn-refresh" data-act="refresh">↻进展</button>`;
+    if (status === "pending") actionBtns += `<button class="kanban-btn btn-start" data-act="start">▶开始</button>`;
+    else if (status === "in_progress") actionBtns += `<button class="kanban-btn btn-done" data-act="done">✓完成</button>`;
+
+    const card = el("div", "kanban-card");
+    card.dataset.id = t.id;
+    card.innerHTML = `
+      <div class="kanban-card-title">${escapeHtml(t.title)}</div>
+      <div class="kanban-card-progress${hasProgress ? "" : " no-progress"}">${escapeHtml(progressText)}</div>
+      <div class="kanban-card-footer">
+        ${sessName ? `<span class="kanban-card-session">${escapeHtml(sessName)}</span>` : "<span></span>"}
+        ${timeText ? `<span class="kanban-card-time">${escapeHtml(timeText)}</span>` : ""}
+      </div>
+      ${actionBtns ? `<div class="kanban-card-actions">${actionBtns}</div>` : ""}`;
+
+    // 点卡片主体跳转关联会话
+    card.onclick = (e) => {
+      if (e.target.closest(".kanban-btn")) return;
+      if (sess) { switchSession(sess.id); openDetail(); }
+    };
+
+    // 刷新进展
+    const refreshBtn = card.querySelector('[data-act="refresh"]');
+    if (refreshBtn) {
+      refreshBtn.onclick = async (e) => {
+        e.stopPropagation();
+        refreshBtn.classList.add("loading");
+        refreshBtn.textContent = "…";
+        try {
+          const res = await api(`/api/todos/${t.id}/refresh_progress`, { method: "POST", retry: true });
+          if (res.ok && res.progress) {
+            const pEl = card.querySelector(".kanban-card-progress");
+            pEl.textContent = res.progress;
+            pEl.classList.remove("no-progress");
+            if (res.progress_at) {
+              let tEl = card.querySelector(".kanban-card-time");
+              if (!tEl) { tEl = el("span", "kanban-card-time"); card.querySelector(".kanban-card-footer").appendChild(tEl); }
+              tEl.textContent = fmtTime(res.progress_at);
+            }
+            toast(res.cached ? "进展无变化" : "进展已更新", "success", 1600);
+          } else {
+            toast(res.reason || "无法获取进展", "info", 2200);
+          }
+        } catch (err) {
+          toast("刷新失败：" + err.message, "error");
+        } finally {
+          refreshBtn.classList.remove("loading");
+          refreshBtn.textContent = "↻进展";
+        }
+      };
+    }
+
+    // 状态切换（开始 / 完成）
+    const actBtn = card.querySelector('[data-act="start"], [data-act="done"]');
+    if (actBtn) {
+      actBtn.onclick = async (e) => {
+        e.stopPropagation();
+        const newStatus = actBtn.dataset.act === "start" ? "in_progress" : "done";
+        try {
+          await api(`/api/todos/${t.id}`, { method: "PUT", body: JSON.stringify({ status: newStatus }) });
+          renderKanban();
+        } catch (err) { toast("状态更新失败：" + err.message, "error"); }
+      };
+    }
+    return card;
+  }
+
+  // 顶部「刷新进展」：批量刷新进行中的任务，完成后重渲染看板
+  async function refreshKanbanAll() {
+    const btn = $("kanban-refresh-btn");
+    if (btn) { btn.textContent = "刷新中…"; btn.disabled = true; }
+    try {
+      const res = await api("/api/kanban/refresh", { method: "POST", retry: true, timeoutMs: 120000 });
+      await renderKanban();
+      toast(`进展已刷新（${res.updated || 0}/${res.total || 0}）`, "success", 2000);
+    } catch (e) {
+      toast("刷新失败：" + e.message, "error");
+    } finally {
+      if (btn) { btn.textContent = "↻ 刷新进展"; btn.disabled = false; }
+    }
+  }
+
+  // 新建任务弹窗：标题 + 关联会话 + 初始状态
+  function showAddTodoModal() {
+    const opts = state.sessions.map((s) => `<option value="${escapeAttr(s.id)}">${escapeHtml(s.title)}</option>`).join("");
+    const root = $("modal-root");
+    root.innerHTML = "";
+    const card = el("div", "modal-card");
+    card.innerHTML = `
+      <div class="modal-title">新建任务</div>
+      <div class="entity-form" style="gap:12px">
+        <label>任务标题
+          <input id="nt-title" class="form-input" placeholder="输入任务名称…" />
+        </label>
+        <label>关联 Agent 会话
+          <select id="nt-session" class="form-select"><option value="">不关联</option>${opts}</select>
+        </label>
+        <label>初始状态
+          <select id="nt-status" class="form-select">
+            <option value="pending">待开始</option>
+            <option value="in_progress">进行中</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-cancel" type="button">取消</button>
+        <button class="modal-ok" type="button">创建</button>
+      </div>`;
+    root.appendChild(card);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => root.classList.add("show"));
+    const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
+    card.querySelector(".modal-cancel").onclick = close;
+    root.onclick = (e) => { if (e.target === root) close(); };
+    setTimeout(() => { const t = $("nt-title"); if (t) t.focus(); }, 50);
+    card.querySelector(".modal-ok").onclick = async () => {
+      const title = ($("nt-title").value || "").trim();
+      if (!title) { toast("请输入任务标题", "info"); return; }
+      const session_id = $("nt-session").value || null;
+      const status = $("nt-status").value || "pending";
+      try {
+        await api("/api/todos", { method: "POST", body: JSON.stringify({ title, session_id, status }) });
+        close();
+        await renderKanban();
+        toast("任务已创建", "success");
+      } catch (e) { toast("创建失败：" + e.message, "error"); }
+    };
+  }
+
   // 已读时间记录（localStorage）：用于未读标记
   function loadSeenMap() {
     try { return JSON.parse(localStorage.getItem("ac_seen") || "{}"); } catch (e) { return {}; }
@@ -344,6 +515,7 @@
       if (data.title) s.title = data.title;
       s.updated_at = data.updated_at || s.updated_at;
       patchSessionRow(s);
+      renderKanban();  // 看板卡片的关联会话名/状态可能随之变化
       // 当前会话同步页头标题
       if (data.session_id === state.sessionId) {
         const titleEl = $('session-title');
@@ -511,6 +683,10 @@
 
   // Overview「高级新建」入口：切到 New 面板做自定义配置（New Tab 本身已改为一键新建）
   $("new-advanced-btn").onclick = () => switchTab("new");
+
+  // 看板顶部按钮：批量刷新进展 / 新建任务
+  $("kanban-refresh-btn").onclick = refreshKanbanAll;
+  $("kanban-add-btn").onclick = showAddTodoModal;
 
   // 接续电脑/终端聊过的会话：列出 → 单击某个即接续并切过去（带完整上下文）
   $("resume-pc-btn").onclick = async () => {
@@ -754,8 +930,7 @@
     $("manage-view").classList.add("hidden");
     $("app-view").classList.remove("hidden");
   }
-  $("open-memory-btn").onclick = () => openManage("memory");
-  $("open-agents-btn").onclick = () => openManage("agent");
+  $("open-memory-btn").onclick = () => openManage("memory");  $("open-agents-btn").onclick = () => openManage("agent");
   $("open-snippets-btn").onclick = () => openManage("snippets");
   $("open-schedules-btn").onclick = () => openManage("schedule");
   $("open-todos-btn").onclick = () => openManage("todos");
