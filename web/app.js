@@ -360,22 +360,20 @@
     cancelled: { text: "已取消", cls: "cancelled" },
   };
 
-  // 单张看板卡（v2）：优先级色条 + 标题 + 可展开摘要 + 进度条 + 时间/徽章 + 操作，支持拖拽换列
+  // 单张看板卡（v2）：优先级色条 + 标题 + 可展开摘要 + 底部时间/徽章/图标操作，支持拖拽换列
   function renderKanbanCard(t, status) {
     const sess = t.session_id ? state.sessions.find((s) => s.id === t.session_id) : null;
     const hasProgress = t.progress && t.progress.trim();
     const progressText = hasProgress ? t.progress : "暂无进展，点击「刷新」获取";
     const timeText = t.progress_at ? fmtRelTime(t.progress_at) : "";
-    // 摘要里若带百分比（如「已完成 80%」）则渲染进度条
-    const pctMatch = hasProgress ? t.progress.match(/(\d{1,3})\s*%/) : null;
-    const pct = pctMatch ? Math.min(100, parseInt(pctMatch[1], 10)) : null;
     // 徽章按 todo 的真实 status（done 桶里可能混入 cancelled）
     const badge = KANBAN_BADGE[t.status] || KANBAN_BADGE[status] || KANBAN_BADGE.pending;
     const level = kanbanPriorityLevel(t.priority);
 
+    // 操作按钮改为纯图标（title 提示文案），减少空间占用
     let actionBtns = "";
-    if (t.session_id) actionBtns += `<button class="kanban-btn btn-refresh" data-act="refresh">↻ 刷新</button>`;
-    actionBtns += `<button class="kanban-btn btn-detail" data-act="detail">详情 →</button>`;
+    if (t.session_id) actionBtns += `<button class="kanban-btn btn-refresh" data-act="refresh" title="刷新进展">↻</button>`;
+    actionBtns += `<button class="kanban-btn btn-detail" data-act="detail" title="查看详情">→</button>`;
 
     const card = el("div", "kanban-card kanban-card-v2");
     card.dataset.id = t.id;
@@ -384,14 +382,11 @@
     card.innerHTML = `
       <div class="kanban-card-title">${escapeHtml(t.title)}</div>
       <div class="kanban-card-body kanban-card-body-collapsed">${escapeHtml(progressText)}</div>
-      ${pct != null ? `
-      <div class="kanban-card-progress-bar"><div class="kanban-card-progress-fill" style="width:${pct}%"></div></div>
-      <div class="kanban-card-pct">${pct}%</div>` : ""}
       <div class="kanban-card-footer">
         <span class="kanban-card-time">${timeText ? "🕐 " + escapeHtml(timeText) : ""}</span>
         <span class="kanban-badge kanban-badge--${badge.cls}">${badge.text}</span>
-      </div>
-      <div class="kanban-card-actions">${actionBtns}</div>`;
+        <span class="kanban-card-actions">${actionBtns}</span>
+      </div>`;
 
     const bodyEl = card.querySelector(".kanban-card-body");
     if (!hasProgress) bodyEl.classList.add("no-progress");
@@ -427,25 +422,11 @@
       refreshBtn.onclick = async (e) => {
         e.stopPropagation();
         refreshBtn.classList.add("loading");
-        refreshBtn.textContent = "刷新中…";
         try {
           const res = await api(`/api/todos/${t.id}/refresh_progress`, { method: "POST", retry: true });
           if (res.ok && res.progress) {
             bodyEl.textContent = res.progress;
             bodyEl.classList.remove("no-progress");
-            // 从新摘要文本里提取百分比，同步更新进度条
-            const newPct = res.progress.match(/(\d{1,3})\s*%/);
-            const pctVal = newPct ? Math.min(100, parseInt(newPct[1], 10)) : null;
-            const barEl = card.querySelector(".kanban-card-progress-bar");
-            const fillEl = card.querySelector(".kanban-card-progress-fill");
-            const pctEl = card.querySelector(".kanban-card-pct");
-            if (pctVal != null) {
-              if (fillEl) fillEl.style.width = pctVal + "%";
-              if (pctEl) pctEl.textContent = pctVal + "%";
-              if (barEl) barEl.style.display = "";
-            } else {
-              if (barEl) barEl.style.display = "none";
-            }
             if (res.progress_at) {
               const tEl = card.querySelector(".kanban-card-time");
               if (tEl) tEl.textContent = "🕐 " + fmtRelTime(res.progress_at);
@@ -458,7 +439,6 @@
           toast("刷新失败：" + err.message, "error");
         } finally {
           refreshBtn.classList.remove("loading");
-          refreshBtn.textContent = "↻ 刷新";
         }
       };
     }

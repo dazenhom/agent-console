@@ -776,6 +776,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   overflow: hidden; text-overflow: ellipsis; max-width: 90px;
 }
 .kanban-card-time { font-size: 11px; color: var(--muted-2); white-space: nowrap; }
+/* v2 footer 里时间撑开占位，把徽章和图标按钮推到右侧成组 */
+.kanban-card-v2 .kanban-card-time { flex: 1; }
 .kanban-card-actions { display: flex; gap: 5px; margin-top: 7px; }
 .kanban-btn {
   font-size: 11px; padding: 3px 7px; border-radius: 7px; border: 1px solid var(--line);
@@ -804,12 +806,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .kanban-col-refresh:hover { color: var(--accent); background: var(--accent-soft); }
 .kanban-col-refresh:active { transform: rotate(90deg); }
 
-/* 卡片本体：更大圆角、更柔阴影、更明显的 hover 抬升；左侧 4px 竖色条走内联 border-left-color */
+/* 卡片本体：更大圆角、更轻阴影、更明显的 hover 抬升；左侧 4px 竖色条走内联 border-left-color */
 .kanban-card-v2 {
   border-left-width: 4px;
-  border-radius: 14px;
+  border-radius: 10px;
   padding: 11px 12px;
-  box-shadow: var(--shadow);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
   transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease-spring);
 }
 .kanban-card-v2:hover {
@@ -818,36 +820,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 /* v2 用内联 border-left-color 表达优先级，覆盖旧列级着色规则 */
 .kanban-col .kanban-card-v2 { border-left-color: inherit; }
+/* 卡片之间留更大间距，减少拥挤感 */
+.kanban-cards { gap: 12px; }
 
-/* 可展开的进展摘要 */
+/* 可展开的进展摘要：默认最多 3 行省略，点击展开全文 */
 .kanban-card-body {
   font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 7px;
   white-space: pre-wrap; word-break: break-word; cursor: pointer;
 }
 .kanban-card-body.no-progress { color: var(--muted-2); font-style: italic; }
 .kanban-card-body-collapsed {
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .kanban-card-body-expanded { overflow: visible; }
 
-/* 进度条 */
-.kanban-card-progress-bar {
-  height: 6px; border-radius: 6px; background: var(--bg-4);
-  overflow: hidden; margin: 2px 0 3px;
-}
-.kanban-card-progress-fill {
-  height: 100%; border-radius: 6px; background: var(--grad-accent);
-  transition: width 0.5s cubic-bezier(.4,0,.2,1);
-}
-.kanban-card-pct {
-  font-size: 10.5px; font-weight: 600; color: var(--accent);
-  text-align: right; margin-bottom: 5px;
-}
-
-/* 状态徽章 */
+/* 状态徽章：更小字号、更紧凑 padding */
 .kanban-badge {
-  font-size: 10.5px; font-weight: 600; line-height: 1;
-  padding: 3px 8px; border-radius: 20px; white-space: nowrap;
+  font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 2px 7px; border-radius: 20px; white-space: nowrap;
 }
 .kanban-badge--pending { background: var(--gray-soft); color: var(--muted); }
 .kanban-badge--done { background: var(--green-soft); color: var(--green); }
@@ -867,6 +857,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   50% { opacity: .55; box-shadow: 0 0 0 5px transparent; }
 }
 
+/* 底部操作区：图标按钮内联在 footer 右侧，不再占整行 */
+.kanban-card-v2 .kanban-card-actions { display: flex; gap: 4px; margin-top: 0; }
+.kanban-card-v2 .kanban-btn {
+  flex: none; width: 24px; height: 24px; padding: 0; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
 /* 详情按钮 */
 .kanban-btn.btn-detail { color: var(--accent); }
 .kanban-btn.btn-refresh.loading { opacity: .6; pointer-events: none; }
