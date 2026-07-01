@@ -469,9 +469,10 @@ class ClaudeRunner:
         sess["cancelled"] = False
         sess["turn_active"] = True
         sess["last_active"] = time.monotonic()
-        # 每回合开始清掉上一回合的循环命中标记（检测器内部计数也随之作为新回合基线）
+        # 每回合开始清掉上一回合的循环命中标记，并重建检测器让内部计数从新回合基线开始
         sess["loop_detected"] = False
         sess["loop_reason"] = ""
+        sess["loop_detector"] = LoopDetector(config.CLAUDE_LOOP_REPEAT, config.CLAUDE_LOOP_ERRORS)
         result_evt = asyncio.Event()
         sess["result_evt"] = result_evt
 
