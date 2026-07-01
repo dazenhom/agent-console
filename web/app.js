@@ -2783,7 +2783,7 @@
 
   // CSS 选择器里的 request_id 转义（id 含特殊字符时避免选择器报错）
   function cssEscape(s) {
-    return String(s).replace(/["\\\]]/g, "\\$&");
+    return CSS.escape(String(s));
   }
 
   // ---------------- 骨架屏 ----------------
