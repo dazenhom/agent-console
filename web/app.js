@@ -281,19 +281,9 @@
 
   // ---------------- 智能任务看板 ----------------
   // 三列（待开始/进行中/已完成）按 todo.status 分桶，卡片带 AI 进展摘要，可就地切状态/刷新进展。
-  // 收起所有卡片的操作下拉菜单
-  function closeAllKanbanMenus() {
-    document.querySelectorAll(".kanban-menu").forEach((m) => m.classList.add("hidden"));
-  }
-
   async function renderKanban() {
     const board = $("kanban-board");
     if (!board) return;
-    // 点击页面任意处收起卡片菜单（只绑一次）
-    if (!renderKanban._menuListenerWired) {
-      renderKanban._menuListenerWired = true;
-      document.addEventListener("click", () => closeAllKanbanMenus());
-    }
     let todos;
     try { todos = await api("/api/todos"); }
     catch (e) { return; }
@@ -370,7 +360,7 @@
     cancelled: { text: "已取消", cls: "cancelled" },
   };
 
-  // 单张看板卡（v3）：右上角单一菜单按钮 + 可点击主体（跳转会话）+ 底部时间/徽章，支持拖拽换列
+  // 单张看板卡（v3）：右上角操作按钮组（编辑/刷新/删除）+ 可点击主体（跳转会话）+ 底部时间/徽章，支持拖拽换列
   function renderKanbanCard(t, status) {
     const sess = t.session_id ? state.sessions.find((s) => s.id === t.session_id) : null;
     const hasProgress = t.progress && t.progress.trim();
@@ -385,11 +375,10 @@
     card.draggable = true;
     card.style.borderLeftColor = KANBAN_PRIORITY_COLORS[level];
     card.innerHTML = `
-      <button class="kanban-menu-btn" data-act="menu" title="操作">⋯</button>
-      <div class="kanban-menu hidden">
-        <button data-act="edit">✎ 编辑</button>
-        ${t.session_id ? `<button data-act="refresh">↻ 刷新进展</button>` : ""}
-        <button data-act="delete" class="danger">🗑 删除</button>
+      <div class="kanban-actions">
+        <button class="kanban-act-btn btn-edit" title="编辑" data-act="edit">✎</button>
+        ${t.session_id ? `<button class="kanban-act-btn btn-refresh" title="刷新进展" data-act="refresh">↻</button>` : ""}
+        <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
       </div>
       <div class="kanban-card-main">
         <div class="kanban-card-title">${escapeHtml(t.title)}</div>
@@ -414,37 +403,24 @@
     // ---- 点击卡片主体：跳转关联会话并高亮 ----
     const mainEl = card.querySelector(".kanban-card-main");
     mainEl.onclick = () => {
-      closeAllKanbanMenus();
       if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
       if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
       else toast("会话不存在", "info", 1500);
     };
 
-    // ---- ⋯ 菜单开关 ----
-    const menuBtn = card.querySelector('[data-act="menu"]');
-    const menuEl = card.querySelector(".kanban-menu");
-    menuBtn.onclick = (e) => {
-      e.stopPropagation();
-      const wasHidden = menuEl.classList.contains("hidden");
-      closeAllKanbanMenus();
-      if (wasHidden) menuEl.classList.remove("hidden");
-    };
-
-    // ---- 菜单项：编辑 ----
-    const editBtn = menuEl.querySelector('[data-act="edit"]');
+    // ---- 操作按钮：编辑 ----
+    const editBtn = card.querySelector('[data-act="edit"]');
     if (editBtn) editBtn.onclick = (e) => {
       e.stopPropagation();
-      closeAllKanbanMenus();
       showEditTodoModal(t);
     };
 
-    // ---- 菜单项：刷新进展 ----
-    const refreshBtn = menuEl.querySelector('[data-act="refresh"]');
+    // ---- 操作按钮：刷新进展 ----
+    const refreshBtn = card.querySelector('[data-act="refresh"]');
     if (refreshBtn) refreshBtn.onclick = async (e) => {
       e.stopPropagation();
-      closeAllKanbanMenus();
-      refreshBtn.textContent = "↻ 刷新中…";
       refreshBtn.disabled = true;
+      refreshBtn.classList.add("is-loading");
       try {
         const res = await api(`/api/todos/${t.id}/refresh_progress?force=true`, { method: "POST", retry: true });
         if (res && res.progress) {
@@ -461,16 +437,15 @@
       } catch (err) {
         toast("刷新失败：" + err.message, "error");
       } finally {
-        refreshBtn.textContent = "↻ 刷新进展";
         refreshBtn.disabled = false;
+        refreshBtn.classList.remove("is-loading");
       }
     };
 
-    // ---- 菜单项：删除（二次确认后就地移除并更新列计数）----
-    const delBtn = menuEl.querySelector('[data-act="delete"]');
+    // ---- 操作按钮：删除（二次确认后就地移除并更新列计数）----
+    const delBtn = card.querySelector('[data-act="delete"]');
     if (delBtn) delBtn.onclick = async (e) => {
       e.stopPropagation();
-      closeAllKanbanMenus();
       const yes = await confirmDialog(`确定删除任务「${t.title}」？`, { okText: "删除", danger: true });
       if (!yes) return;
       try {
