@@ -28,6 +28,7 @@
     histShown: 0,        // 已渲染的末尾消息条数
     heartbeatTimer: null, // WS 应用层心跳定时器
     queue: [],           // 当前会话排队待执行的指令
+    drafts: {},          // sessionId -> { text: string, images: [{path, dataUrl}] }（草稿按会话隔离）
   };
 
   // ---------------- API ----------------
@@ -1007,13 +1008,33 @@
     try {
       await api("/api/sessions/" + id, { method: "DELETE" });
       toast("会话已删除", "success");
+      delete state.drafts[id];
       if (id === state.sessionId) state.sessionId = "";
       await loadSessions();
       if (state.sessionId) await switchSession(state.sessionId);
     } catch (e) { toast("删除失败：" + e.message, "error"); }
   }
 
+  // 草稿按会话隔离：切走时存当前输入框内容和待发图片，切回时恢复。
+  function saveDraft(id) {
+    if (!id) return;
+    const text = input.value;
+    const images = state.pendingImages.slice();
+    if (text.trim() || images.length) state.drafts[id] = { text, images };
+    else delete state.drafts[id];
+  }
+  function restoreDraft(id) {
+    const d = state.drafts[id] || { text: "", images: [] };
+    input.value = d.text || "";
+    input.style.height = "auto";
+    input.dispatchEvent(new Event("input"));
+    state.pendingImages = (d.images || []).slice();
+    renderImageTray();
+  }
+
   async function switchSession(id) {
+    const prevId = state.sessionId;
+    if (prevId && prevId !== id) saveDraft(prevId);   // 存旧会话草稿
     state.sessionId = id;
     state.toolIdMap = {};  // 清空工具 id 映射，避免跨会话串号
     state.queue = [];      // 清空上个会话的队列，等新会话 queue_update 广播刷新
@@ -1030,6 +1051,7 @@
     document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
     syncModeSelect();
     await loadHistory();
+    restoreDraft(id);      // 恢复新会话草稿
     connectWs();
   }
 
@@ -2157,7 +2179,7 @@
     }
     // 有待发图片：把路径拼进消息（tclaude 用 Read 读这些图）
     if (imgs.length) {
-      const lines = imgs.map((p) => `图片：${p}`).join("\n");
+      const lines = imgs.map((im) => `图片：${im.path}`).join("\n");
       text = text ? `${lines}\n${text}` : `${lines}\n请查看上面的图片。`;
     }
     // 运行中发送 → 服务端入队，不本地渲染气泡也不切运行态；靠 queue_update 广播刷新托盘。
@@ -2264,26 +2286,29 @@
         method: "POST",
         body: JSON.stringify({ session_id: state.sessionId, image: dataUrl, mime: file.type, name: file.name }),
       });
-      state.pendingImages.push(r.abs || r.path);
-      renderImageTray(dataUrl);
+      state.pendingImages.push({ path: r.abs || r.path, dataUrl });
+      renderImageTray();
       toast("图片已就绪，可加文字一起发送", "success", 1800);
     } catch (e) {
       toast("上传失败：" + (e.message || e), "error", 3000);
     }
   }
 
-  // 待发图片预览条：缩略图 + 删除
-  function renderImageTray(lastDataUrl) {
+  // 待发图片预览条：缩略图 + 删除（全量重建，保证与 state.pendingImages 一致）
+  function renderImageTray() {
     const tray = $("img-tray");
     if (!tray) return;
-    const idx = state.pendingImages.length - 1;
-    const chip = el("div", "img-chip");
-    const im = document.createElement("img");
-    im.src = lastDataUrl;
-    const x = el("button", "img-chip-del", "×");
-    x.onclick = () => { state.pendingImages.splice(idx, 1); chip.remove(); if (!state.pendingImages.length) tray.classList.add("hidden"); };
-    chip.append(im, x);
-    tray.appendChild(chip);
+    tray.innerHTML = "";
+    if (!state.pendingImages.length) { tray.classList.add("hidden"); return; }
+    state.pendingImages.forEach((im, idx) => {
+      const chip = el("div", "img-chip");
+      const image = document.createElement("img");
+      image.src = im.dataUrl;
+      const x = el("button", "img-chip-del", "×");
+      x.onclick = () => { state.pendingImages.splice(idx, 1); renderImageTray(); };
+      chip.append(image, x);
+      tray.appendChild(chip);
+    });
     tray.classList.remove("hidden");
   }
 
