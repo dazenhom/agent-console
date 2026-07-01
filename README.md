@@ -130,3 +130,4 @@ Claude 返回的 `session_id` 被记录在会话上，下一回合用 `--resume`
 - 文件 / 产物预览、loss 曲线图
 - 语音输入（浏览器语音转文字）
 - 危险操作二次确认（权限网关）
+# agent-console
