@@ -62,13 +62,16 @@ def _extract_recent_text(jsonl_path: Path, max_chars: int = 3000) -> str:
 async def summarize_progress(context_text: str) -> str:
     """用一次性子进程概括进展。返回干净摘要；任何异常兜底成友好提示。"""
     prompt = (
-        "以下是一个 AI 任务会话的最新对话片段。"
-        "请用不超过 40 字的中文总结：当前任务完成到哪一步了，正在做什么，有无问题。"
-        "只输出总结本身，不要引号或任何前后缀。\n\n" + context_text
+        "以下是一个 AI 开发任务会话的最新对话片段。"
+        "请用 80-120 字的中文，给出一段结构化的进展摘要，依次覆盖以下要点："
+        "① 当前进展阶段（如「正在实现前端组件」）；② 已经完成了什么；"
+        "③ 下一步计划做什么；④ 是否有阻塞或问题（没有则说明进展顺利）。"
+        "语言要具体、贴合上下文，不要空泛套话。"
+        "只输出摘要正文本身，不要引号、标题或任何前后缀。\n\n" + context_text
     )
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
-        "--model", config.CLAUDE_MODEL_FAST, "--output-format", "json",
+        "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -101,7 +104,7 @@ async def summarize_progress(context_text: str) -> str:
             result = (data.get("result") or "").strip()
             break
     result = re.sub(r"\s+", " ", result).strip().strip('"“”')
-    return result[:60] if result else "暂无进展信息"
+    return result[:160] if result else "暂无进展信息"
 
 
 async def refresh_todo_progress(tid: str, force: bool = False) -> dict:
