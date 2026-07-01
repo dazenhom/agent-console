@@ -433,6 +433,19 @@
           if (res.ok && res.progress) {
             bodyEl.textContent = res.progress;
             bodyEl.classList.remove("no-progress");
+            // 从新摘要文本里提取百分比，同步更新进度条
+            const newPct = res.progress.match(/(\d{1,3})\s*%/);
+            const pctVal = newPct ? Math.min(100, parseInt(newPct[1], 10)) : null;
+            const barEl = card.querySelector(".kanban-card-progress-bar");
+            const fillEl = card.querySelector(".kanban-card-progress-fill");
+            const pctEl = card.querySelector(".kanban-card-pct");
+            if (pctVal != null) {
+              if (fillEl) fillEl.style.width = pctVal + "%";
+              if (pctEl) pctEl.textContent = pctVal + "%";
+              if (barEl) barEl.style.display = "";
+            } else {
+              if (barEl) barEl.style.display = "none";
+            }
             if (res.progress_at) {
               const tEl = card.querySelector(".kanban-card-time");
               if (tEl) tEl.textContent = "🕐 " + fmtRelTime(res.progress_at);
