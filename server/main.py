@@ -567,12 +567,10 @@ async def upload_image(payload: dict):
     if not ext:
         ext = ".png"
 
-    base = _P(sess.get("workdir") or config.DEFAULT_WORKDIR)
-    rel_dir = config.UPLOAD_DIR_NAME
+    base = config.UPLOAD_DIR
     fname = f"{int(_t.time())}_{db.new_id()}{ext}"
-    rel_path = f"{rel_dir}/{fname}"
     try:
-        target = safe_path_under(base, rel_path)
+        target = safe_path_under(base, fname)
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -580,8 +578,7 @@ async def upload_image(payload: dict):
         target.write_bytes(raw)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败：{e}")
-    # 返回相对路径（注入消息用 ./xxx 形式，tclaude 在 workdir 里能直接 Read）
-    return {"path": f"./{rel_path}", "abs": str(target), "bytes": len(raw)}
+    return {"path": str(target), "abs": str(target), "bytes": len(raw)}
 
 
 # ---------------- 语音识别 ----------------

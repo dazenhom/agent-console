@@ -61,6 +61,7 @@ TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "5"))
 # ---- 图片上传（手机拍照/截图发给 Agent）----
 # 存到会话 workdir 下的子目录，tclaude 用 Read 工具读图。
 UPLOAD_DIR_NAME = os.environ.get("UPLOAD_DIR_NAME", ".console_uploads")
+UPLOAD_DIR = BASE_DIR / UPLOAD_DIR_NAME
 UPLOAD_MAX_BYTES = int(os.environ.get("UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
 
 # ---- Knot HTTPS API ----
