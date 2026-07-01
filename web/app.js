@@ -20,7 +20,7 @@
     wasDisconnected: false,
     monitorWs: null,     // 监控通道 WS（会话列表实时状态）
     monitorTimer: null,
-    pendingImages: [],   // 待发送的图片绝对路径（已上传到项目 .console_uploads 目录）
+    pendingImages: [],   // 待发送的图片，每项为 { path: 绝对路径, dataUrl: base64预览 }
     tab: "overview",     // 当前激活的顶部 Tab
     taskBySession: {},   // session_id -> 最近一条 task（用于派生状态徽章/看板计数）
     toolIdMap: {},       // tool_use_id -> tool_name（用于 tool_result 反查工具名）
@@ -1035,6 +1035,8 @@
   async function switchSession(id) {
     const prevId = state.sessionId;
     if (prevId && prevId !== id) saveDraft(prevId);   // 存旧会话草稿
+    hideTyping();
+    clearStream();
     state.sessionId = id;
     state.toolIdMap = {};  // 清空工具 id 映射，避免跨会话串号
     state.queue = [];      // 清空上个会话的队列，等新会话 queue_update 广播刷新
@@ -1051,7 +1053,7 @@
     document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
     syncModeSelect();
     await loadHistory();
-    restoreDraft(id);      // 恢复新会话草稿
+    if (prevId !== id) restoreDraft(id);      // 恢复新会话草稿（同会话不覆盖当前输入）
     connectWs();
   }
 
