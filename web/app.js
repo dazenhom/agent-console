@@ -20,7 +20,7 @@
     wasDisconnected: false,
     monitorWs: null,     // 监控通道 WS（会话列表实时状态）
     monitorTimer: null,
-    pendingImages: [],   // 待发送的图片相对路径（已上传到会话 workdir）
+    pendingImages: [],   // 待发送的图片绝对路径（已上传到项目 .console_uploads 目录）
     tab: "overview",     // 当前激活的顶部 Tab
     taskBySession: {},   // session_id -> 最近一条 task（用于派生状态徽章/看板计数）
     toolIdMap: {},       // tool_use_id -> tool_name（用于 tool_result 反查工具名）

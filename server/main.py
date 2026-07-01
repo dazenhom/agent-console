@@ -524,7 +524,7 @@ _IMG_MIME_TO_EXT = {
 
 @app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload_image(payload: dict):
-    """收 base64 图片存到会话 workdir 下的上传目录，返回相对路径供注入消息。
+    """收 base64 图片存到项目固定目录 UPLOAD_DIR 下，返回绝对路径供注入消息。
 
     body: {"session_id": "...", "image": "<dataURL或纯base64>", "mime": "image/jpeg", "name": "可选原名"}
     用 JSON+base64 而非 multipart，与 /api/asr 一致，绕过反向代理的 body 限制。
