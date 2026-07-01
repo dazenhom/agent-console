@@ -125,7 +125,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* ---------- 双栏 hub ---------- */
 .hub {
   flex: 1 1 auto; min-height: 0; display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px;
+  grid-template-columns: var(--hub-left-w, minmax(0, 1fr)) 6px minmax(0, 1fr); gap: 12px;
 }
 .hub-left, .hub-right {
   min-height: 0; display: flex; flex-direction: column;
@@ -133,6 +133,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   box-shadow: var(--shadow); overflow: hidden;
 }
 .hub-left { padding: 0; }
+
+/* PC 端左右栏拖拽分隔条 */
+.hub-resizer {
+  align-self: stretch;
+  width: 6px;
+  cursor: col-resize;
+  border-radius: 6px;
+  background: transparent;
+  transition: background var(--ease);
+}
+.hub-resizer:hover, .hub-resizer.dragging {
+  background: var(--accent-glow);
+}
+body.hub-resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 /* Tab 页面容器：默认隐藏，激活显示 */
 .tab-pane { display: none; min-height: 0; flex: 1 1 auto; flex-direction: column; }
@@ -611,6 +629,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
   /* 左栏内容：收紧内边距 */
   .hub { grid-template-columns: 1fr; gap: 0; }
+  .hub-resizer { display: none; }
   .hub-left { border-radius: 14px; }
   .hub-left-scroll, .list-pane-inner, .new-pane-inner, .exp-inner { padding: 14px; }
 

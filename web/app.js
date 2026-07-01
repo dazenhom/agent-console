@@ -158,6 +158,53 @@
   }
   $("detail-close-btn").onclick = () => { $("detail-panel").classList.remove("show"); };
 
+  // ---------------- PC 端左右栏拖拽调宽 ----------------
+  const HUB_W_KEY = "ac_hub_left_w";
+  const isDesktop = () => window.matchMedia("(min-width: 901px)").matches;
+
+  function initHubResizer() {
+    const hub = document.querySelector(".hub");
+    const resizer = $("hub-resizer");
+    if (!hub || !resizer) return;
+
+    const saved = parseInt(localStorage.getItem(HUB_W_KEY) || "", 10);
+    if (saved > 0) hub.style.setProperty("--hub-left-w", saved + "px");
+
+    let startX = 0, startW = 0;
+
+    const onMove = (e) => {
+      const dx = e.clientX - startX;
+      const min = 260, max = hub.clientWidth - 320 - 6;
+      const w = Math.max(min, Math.min(startW + dx, max));
+      hub.style.setProperty("--hub-left-w", w + "px");
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("hub-resizing");
+      resizer.classList.remove("dragging");
+      const left = hub.querySelector(".hub-left");
+      if (left) localStorage.setItem(HUB_W_KEY, String(left.offsetWidth));
+    };
+
+    resizer.addEventListener("mousedown", (e) => {
+      if (!isDesktop()) return;
+      e.preventDefault();
+      const left = hub.querySelector(".hub-left");
+      startX = e.clientX;
+      startW = left ? left.offsetWidth : hub.clientWidth / 2;
+      document.body.classList.add("hub-resizing");
+      resizer.classList.add("dragging");
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+
+    resizer.addEventListener("dblclick", () => {
+      hub.style.removeProperty("--hub-left-w");
+      localStorage.removeItem(HUB_W_KEY);
+    });
+  }
+
   // 会话搜索：按标题实时过滤 Sessions Tab 列表
   $("session-search").addEventListener("input", (e) => {
     const q = e.target.value.trim().toLowerCase();
@@ -2638,6 +2685,7 @@
     initMic();
     initImage();
     switchTab("overview", true);  // 只切 UI，数据由下面串行加载，不重复请求
+    initHubResizer();
     await loadTasks();      // 先建 taskBySession 映射，再 loadSessions 才能算对徽章/看板
     await loadSessions();
     if (state.sessionId) await switchSession(state.sessionId);  // 含 loadHistory + 第一条 WS
