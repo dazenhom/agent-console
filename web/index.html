@@ -66,20 +66,7 @@
                 <button id="kanban-add-btn" class="btn-ghost btn-sm">＋ 新任务</button>
               </div>
             </div>
-            <div class="kanban" id="kanban-board">
-              <div class="kanban-col" id="kanban-col-pending">
-                <div class="kanban-col-header"><span class="col-icon">○</span><span class="col-title">待开始</span><span class="col-count" id="cnt-pending">0</span></div>
-                <div class="kanban-cards" id="cards-pending"></div>
-              </div>
-              <div class="kanban-col" id="kanban-col-inprogress">
-                <div class="kanban-col-header"><span class="col-icon">◉</span><span class="col-title">进行中</span><span class="col-count" id="cnt-inprogress">0</span><button id="kanban-col-refresh" class="kanban-col-refresh" title="刷新进行中任务的进展">↻</button></div>
-                <div class="kanban-cards" id="cards-inprogress"></div>
-              </div>
-              <div class="kanban-col" id="kanban-col-done">
-                <div class="kanban-col-header"><span class="col-icon">✓</span><span class="col-title">已完成</span><span class="col-count" id="cnt-done">0</span></div>
-                <div class="kanban-cards" id="cards-done"></div>
-              </div>
-            </div>
+            <div id="kanban-list" class="kanban-list"></div>
 
             <div class="agents-head">
               <div>

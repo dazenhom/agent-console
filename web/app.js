@@ -280,36 +280,84 @@
   }
 
   // ---------------- 智能任务看板 ----------------
-  // 三列（待开始/进行中/已完成）按 todo.status 分桶，卡片带 AI 进展摘要，可就地切状态/刷新进展。
+  // 单列紧凑列表：按 status 排序（进行中 → 待开始 → 已完成/已取消），每行左侧色点区分状态，
+  // hover 显示编辑/删除操作，点击行主体跳转关联会话。
   async function renderKanban() {
-    const board = $("kanban-board");
-    if (!board) return;
+    const list = $("kanban-list");
+    if (!list) return;
     let todos;
     try { todos = await api("/api/todos"); }
     catch (e) { return; }
 
-    const buckets = { pending: [], in_progress: [], done: [] };
-    for (const t of todos) {
-      if (t.status === "done" || t.status === "cancelled") buckets.done.push(t);
-      else if (t.status === "in_progress") buckets.in_progress.push(t);
-      else buckets.pending.push(t);
-    }
-    const colMap = { pending: "cards-pending", in_progress: "cards-inprogress", done: "cards-done" };
-    const cntMap = { pending: "cnt-pending", in_progress: "cnt-inprogress", done: "cnt-done" };
+    // 排序权重：in_progress 在前，pending 其次，done/cancelled 最后
+    const order = { in_progress: 0, pending: 1, done: 2, cancelled: 3 };
+    const sorted = todos.slice().sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1));
 
-    for (const [status, tlist] of Object.entries(buckets)) {
-      const container = $(colMap[status]);
-      const countEl = $(cntMap[status]);
-      if (!container) continue;
-      if (countEl) countEl.textContent = tlist.length;
-      container.innerHTML = "";
-      if (!tlist.length) {
-        container.innerHTML = '<div class="kanban-empty">暂无任务</div>';
-      } else {
-        for (const t of tlist) container.appendChild(renderKanbanCard(t, status));
-      }
-      wireDropzone(container, status);
+    list.innerHTML = "";
+    if (!sorted.length) {
+      list.innerHTML = '<div class="kanban-empty">暂无任务</div>';
+      return;
     }
+    for (const t of sorted) list.appendChild(renderKanbanRow(t));
+  }
+
+  // 单行看板（列表模式）：左侧状态色点 + 标题 + 单行截断的进展摘要 + hover 操作按钮
+  function renderKanbanRow(t) {
+    const row = document.createElement("div");
+    row.className = "kanban-row";
+    row.dataset.id = t.id;
+    row.draggable = false; // 列表模式不需要拖拽
+
+    // 状态点
+    const dotMap = {
+      pending:     { cls: "dot-pending",    html: "" },
+      in_progress: { cls: "dot-inprogress", html: "" },
+      done:        { cls: "dot-done",       html: "✓" },
+      cancelled:   { cls: "dot-cancelled",  html: "✕" },
+    };
+    const dot = dotMap[t.status] || dotMap.pending;
+
+    const hasProgress = t.progress && t.progress.trim() && t.progress !== "暂无进展信息";
+    const progress = hasProgress ? t.progress : "";
+
+    row.innerHTML = `
+      <span class="kanban-dot ${dot.cls}">${dot.html}</span>
+      <div class="kanban-row-main">
+        <span class="kanban-row-title">${escapeHtml(t.title)}</span>
+        ${progress ? `<span class="kanban-row-progress">${escapeHtml(progress)}</span>` : ""}
+      </div>
+      <div class="kanban-row-actions">
+        <button class="kanban-act-btn btn-edit" title="编辑" data-act="edit">✎</button>
+        <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
+      </div>`;
+
+    // 点击行主体跳转关联会话
+    row.querySelector(".kanban-row-main").onclick = () => {
+      if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
+      const sess = (state.sessions || []).find((s) => s.id === t.session_id);
+      if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
+      else toast("会话不存在", "info", 1500);
+    };
+
+    // 编辑
+    row.querySelector("[data-act='edit']").onclick = (e) => {
+      e.stopPropagation();
+      showEditTodoModal(t);
+    };
+
+    // 删除（二次确认后就地移除）
+    row.querySelector("[data-act='delete']").onclick = async (e) => {
+      e.stopPropagation();
+      const yes = await confirmDialog(`确定删除「${t.title}」？`, { okText: "删除", danger: true });
+      if (!yes) return;
+      try {
+        await api(`/api/todos/${t.id}`, { method: "DELETE" });
+        row.remove();
+        toast("已删除", "success", 1500);
+      } catch (err) { toast("删除失败：" + err.message, "error"); }
+    };
+
+    return row;
   }
 
   // 给每个看板列绑定拖拽落点：拖入高亮、松手时若列变了就 PUT 更新状态
@@ -635,17 +683,16 @@
   function handleMonitorMessage(data) {
     // 看板进展异步更新：回合结束后 AI 刷新 in_progress 卡片进展，就地 patch 卡片
     if (data.type === "todo_progress_update") {
-      const card = document.querySelector(`.kanban-card[data-id="${data.todo_id}"]`);
-      if (card) {
-        const bodyEl = card.querySelector(".kanban-card-body");
-        if (bodyEl && data.progress) {
-          bodyEl.textContent = data.progress;
-          bodyEl.classList.remove("no-progress");
+      // 兼容新列表行和旧卡片（data-id 相同）
+      const el = document.querySelector(`[data-id="${data.todo_id}"]`);
+      if (el) {
+        const progressEl = el.querySelector(".kanban-row-progress, .kanban-card-body");
+        if (progressEl && data.progress) {
+          progressEl.textContent = data.progress;
+          progressEl.classList.remove("no-progress");
         }
-        if (data.progress_at) {
-          const tEl = card.querySelector(".kanban-card-time");
-          if (tEl) tEl.textContent = "🕐 " + fmtRelTime(data.progress_at);
-        }
+        const tEl = el.querySelector(".kanban-card-time");
+        if (tEl && data.progress_at) tEl.textContent = "🕐 " + fmtRelTime(data.progress_at);
       }
       return;
     }
