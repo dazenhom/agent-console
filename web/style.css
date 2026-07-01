@@ -889,3 +889,57 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .mini-stat-val { font-size: 14px; font-weight: 600; color: var(--text); }
 .mini-stat-val--active { color: var(--accent); }
 .mini-stat-val--failed { color: #ff4d4f; }
+
+/* ===== 看板卡片 v3：右上角单菜单 + 可点击主体，收敛按钮、提升空间利用 ===== */
+.kanban-card-v3 {
+  position: relative;
+  border-left-width: 4px;
+  border-radius: 10px;
+  padding: 12px 12px 10px 12px;
+  cursor: default;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease-spring);
+}
+.kanban-card-v3:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+/* v3 用内联 border-left-color 表达优先级，覆盖旧列级着色规则 */
+.kanban-col .kanban-card-v3 { border-left-color: inherit; }
+
+/* 卡片主体：点击跳转会话，右侧给 ⋯ 按钮留空间 */
+.kanban-card-v3 .kanban-card-main { cursor: pointer; padding-right: 20px; }
+.kanban-card-v3 .kanban-card-title {
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+  margin-bottom: 5px; line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kanban-card-v3 .kanban-card-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+}
+
+/* ⋯ 菜单按钮：绝对定位在右上角 */
+.kanban-menu-btn {
+  position: absolute; top: 8px; right: 8px;
+  width: 22px; height: 22px; padding: 0;
+  border: none; background: transparent; color: var(--muted-2);
+  font-size: 16px; line-height: 1; cursor: pointer; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background var(--ease), color var(--ease);
+}
+.kanban-menu-btn:hover { background: var(--bg-3, var(--accent-soft)); color: var(--text); }
+
+/* 操作下拉菜单 */
+.kanban-menu {
+  position: absolute; top: 30px; right: 6px; z-index: 100;
+  min-width: 110px; padding: 4px 0;
+  background: var(--bg-1, var(--bg-2)); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: var(--shadow-lg); overflow: hidden;
+}
+.kanban-menu.hidden { display: none; }
+.kanban-menu button {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 14px; font-size: 13px;
+  border: none; background: transparent; color: var(--text);
+  cursor: pointer; transition: background var(--ease);
+}
+.kanban-menu button:hover { background: var(--bg-3, var(--accent-soft)); }
+.kanban-menu button.danger { color: #ff4d4f; }
+.kanban-menu button.danger:hover { background: rgba(255,77,79,0.08); }

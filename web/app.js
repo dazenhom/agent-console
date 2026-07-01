@@ -281,9 +281,19 @@
 
   // ---------------- 智能任务看板 ----------------
   // 三列（待开始/进行中/已完成）按 todo.status 分桶，卡片带 AI 进展摘要，可就地切状态/刷新进展。
+  // 收起所有卡片的操作下拉菜单
+  function closeAllKanbanMenus() {
+    document.querySelectorAll(".kanban-menu").forEach((m) => m.classList.add("hidden"));
+  }
+
   async function renderKanban() {
     const board = $("kanban-board");
     if (!board) return;
+    // 点击页面任意处收起卡片菜单（只绑一次）
+    if (!renderKanban._menuListenerWired) {
+      renderKanban._menuListenerWired = true;
+      document.addEventListener("click", () => closeAllKanbanMenus());
+    }
     let todos;
     try { todos = await api("/api/todos"); }
     catch (e) { return; }
@@ -360,45 +370,38 @@
     cancelled: { text: "已取消", cls: "cancelled" },
   };
 
-  // 单张看板卡（v2）：优先级色条 + 标题 + 可展开摘要 + 底部时间/徽章/图标操作，支持拖拽换列
+  // 单张看板卡（v3）：右上角单一菜单按钮 + 可点击主体（跳转会话）+ 底部时间/徽章，支持拖拽换列
   function renderKanbanCard(t, status) {
     const sess = t.session_id ? state.sessions.find((s) => s.id === t.session_id) : null;
     const hasProgress = t.progress && t.progress.trim();
-    const progressText = hasProgress ? t.progress : "暂无进展，点击「刷新」获取";
-    const timeText = t.progress_at ? fmtRelTime(t.progress_at) : "";
+    const progressText = hasProgress ? t.progress : "暂无进展";
+    const timeText = t.progress_at ? fmtRelTime(t.progress_at) : (t.updated_at ? fmtRelTime(t.updated_at) : "");
     // 徽章按 todo 的真实 status（done 桶里可能混入 cancelled）
     const badge = KANBAN_BADGE[t.status] || KANBAN_BADGE[status] || KANBAN_BADGE.pending;
     const level = kanbanPriorityLevel(t.priority);
 
-    // 操作按钮改为纯图标（title 提示文案），减少空间占用
-    let actionBtns = "";
-    if (t.session_id) actionBtns += `<button class="kanban-btn btn-refresh" data-act="refresh" title="刷新进展">↻</button>`;
-    actionBtns += `<button class="kanban-btn btn-detail" data-act="detail" title="查看详情">→</button>`;
-    actionBtns += `<button class="kanban-btn btn-edit" data-act="edit" title="编辑">✎</button>`;
-    actionBtns += `<button class="kanban-btn btn-del" data-act="delete" title="删除">🗑</button>`;
-
-    const card = el("div", "kanban-card kanban-card-v2");
+    const card = el("div", "kanban-card kanban-card-v3");
     card.dataset.id = t.id;
     card.draggable = true;
     card.style.borderLeftColor = KANBAN_PRIORITY_COLORS[level];
     card.innerHTML = `
-      <div class="kanban-card-title">${escapeHtml(t.title)}</div>
-      <div class="kanban-card-body kanban-card-body-collapsed">${escapeHtml(progressText)}</div>
+      <button class="kanban-menu-btn" data-act="menu" title="操作">⋯</button>
+      <div class="kanban-menu hidden">
+        <button data-act="edit">✎ 编辑</button>
+        ${t.session_id ? `<button data-act="refresh">↻ 刷新进展</button>` : ""}
+        <button data-act="delete" class="danger">🗑 删除</button>
+      </div>
+      <div class="kanban-card-main">
+        <div class="kanban-card-title">${escapeHtml(t.title)}</div>
+        <div class="kanban-card-body kanban-card-body-collapsed">${escapeHtml(progressText)}</div>
+      </div>
       <div class="kanban-card-footer">
         <span class="kanban-card-time">${timeText ? "🕐 " + escapeHtml(timeText) : ""}</span>
         <span class="kanban-badge kanban-badge--${badge.cls}">${badge.text}</span>
-        <span class="kanban-card-actions">${actionBtns}</span>
       </div>`;
 
     const bodyEl = card.querySelector(".kanban-card-body");
     if (!hasProgress) bodyEl.classList.add("no-progress");
-
-    // 点卡片主体：展开/收起摘要全文（点按钮或链接不触发）
-    card.onclick = (e) => {
-      if (e.target.closest(".kanban-btn")) return;
-      bodyEl.classList.toggle("kanban-card-body-collapsed");
-      bodyEl.classList.toggle("kanban-card-body-expanded");
-    };
 
     // ---- 拖拽换列 ----
     card.addEventListener("dragstart", () => {
@@ -408,58 +411,72 @@
     });
     card.addEventListener("dragend", () => card.classList.remove("kanban-card-dragging"));
 
-    // ---- 详情：跳转关联会话并高亮 ----
-    const detailBtn = card.querySelector('[data-act="detail"]');
-    if (detailBtn) {
-      detailBtn.onclick = (e) => {
-        e.stopPropagation();
-        if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
-        else toast("暂无关联会话", "info", 1800);
-      };
-    }
+    // ---- 点击卡片主体：跳转关联会话并高亮 ----
+    const mainEl = card.querySelector(".kanban-card-main");
+    mainEl.onclick = () => {
+      closeAllKanbanMenus();
+      if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
+      if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
+      else toast("会话不存在", "info", 1500);
+    };
 
-    // ---- 单卡刷新进展 ----
-    const refreshBtn = card.querySelector('[data-act="refresh"]');
-    if (refreshBtn) {
-      refreshBtn.onclick = async (e) => {
-        e.stopPropagation();
-        refreshBtn.classList.add("loading");
-        try {
-          const res = await api(`/api/todos/${t.id}/refresh_progress`, { method: "POST", retry: true });
-          if (res.ok && res.progress) {
-            bodyEl.textContent = res.progress;
-            bodyEl.classList.remove("no-progress");
-            if (res.progress_at) {
-              const tEl = card.querySelector(".kanban-card-time");
-              if (tEl) tEl.textContent = "🕐 " + fmtRelTime(res.progress_at);
-            }
-            toast(res.cached ? "进展无变化" : "进展已更新", "success", 1600);
-          } else {
-            toast(res.reason || "无法获取进展", "info", 2200);
+    // ---- ⋯ 菜单开关 ----
+    const menuBtn = card.querySelector('[data-act="menu"]');
+    const menuEl = card.querySelector(".kanban-menu");
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const wasHidden = menuEl.classList.contains("hidden");
+      closeAllKanbanMenus();
+      if (wasHidden) menuEl.classList.remove("hidden");
+    };
+
+    // ---- 菜单项：编辑 ----
+    const editBtn = menuEl.querySelector('[data-act="edit"]');
+    if (editBtn) editBtn.onclick = (e) => {
+      e.stopPropagation();
+      closeAllKanbanMenus();
+      showEditTodoModal(t);
+    };
+
+    // ---- 菜单项：刷新进展 ----
+    const refreshBtn = menuEl.querySelector('[data-act="refresh"]');
+    if (refreshBtn) refreshBtn.onclick = async (e) => {
+      e.stopPropagation();
+      closeAllKanbanMenus();
+      refreshBtn.textContent = "↻ 刷新中…";
+      refreshBtn.disabled = true;
+      try {
+        const res = await api(`/api/todos/${t.id}/refresh_progress?force=true`, { method: "POST", retry: true });
+        if (res.ok && res.progress) {
+          bodyEl.textContent = res.progress;
+          bodyEl.classList.remove("no-progress");
+          if (res.progress_at) {
+            const tEl = card.querySelector(".kanban-card-time");
+            if (tEl) tEl.textContent = "🕐 " + fmtRelTime(res.progress_at);
           }
-        } catch (err) {
-          toast("刷新失败：" + err.message, "error");
-        } finally {
-          refreshBtn.classList.remove("loading");
+          toast(res.cached ? "进展无变化" : "进展已更新", "success", 1500);
+        } else {
+          toast(res.reason || "刷新失败", "info", 2200);
         }
-      };
-    }
+      } catch (err) {
+        toast("刷新失败：" + err.message, "error");
+      } finally {
+        refreshBtn.textContent = "↻ 刷新进展";
+        refreshBtn.disabled = false;
+      }
+    };
 
-    // ---- 编辑：打开编辑弹窗 ----
-    const editBtn = card.querySelector('[data-act="edit"]');
-    if (editBtn) editBtn.onclick = (e) => { e.stopPropagation(); showEditTodoModal(t); };
-
-    // ---- 删除：二次确认后就地移除并更新列计数 ----
-    const delBtn = card.querySelector('[data-act="delete"]');
+    // ---- 菜单项：删除（二次确认后就地移除并更新列计数）----
+    const delBtn = menuEl.querySelector('[data-act="delete"]');
     if (delBtn) delBtn.onclick = async (e) => {
       e.stopPropagation();
+      closeAllKanbanMenus();
       const yes = await confirmDialog(`确定删除任务「${t.title}」？`, { okText: "删除", danger: true });
       if (!yes) return;
       try {
         await api(`/api/todos/${t.id}`, { method: "DELETE" });
         const col = card.closest(".kanban-col");
         card.remove();
-        // 更新列头计数
         if (col) {
           const cntEl = col.querySelector(".col-count");
           if (cntEl) cntEl.textContent = Math.max(0, parseInt(cntEl.textContent || "0") - 1);
