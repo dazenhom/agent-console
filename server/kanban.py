@@ -76,11 +76,11 @@ async def summarize_progress(context_text: str) -> str:
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, env=_child_env(),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
         try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=config.SUMMARY_TIMEOUT)
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=config.SUMMARY_TIMEOUT)
         except asyncio.TimeoutError:
             try:
                 proc.kill()
@@ -104,7 +104,12 @@ async def summarize_progress(context_text: str) -> str:
             result = (data.get("result") or "").strip()
             break
     result = re.sub(r"\s+", " ", result).strip().strip('"“”')
-    return result[:160] if result else "暂无进展信息"
+    if not result:
+        # 解析不到结果：把子进程 stderr 前 200 字打出来，方便定位模型/CLI 报错
+        err_text = err.decode("utf-8", errors="replace")[:200] if err else ""
+        print(f"[kanban] summarize_progress: no result, stderr={err_text!r}")
+        return "暂无进展信息"
+    return result[:160]
 
 
 async def refresh_todo_progress(tid: str, force: bool = False) -> dict:
