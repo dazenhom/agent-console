@@ -311,6 +311,13 @@
     }
   }
 
+  // 防抖：活跃会话每几秒推一次 session_update，避免每次都打 /api/todos + 重建 DOM
+  function debounce(fn, delay) {
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), delay); };
+  }
+  const renderKanbanDebounced = debounce(() => renderKanban(), 2000);
+
   // 单张看板卡：标题 + 进展摘要 + 关联会话/时间 + 操作按钮
   function renderKanbanCard(t, status) {
     const sess = t.session_id ? state.sessions.find((s) => s.id === t.session_id) : null;
@@ -515,7 +522,7 @@
       if (data.title) s.title = data.title;
       s.updated_at = data.updated_at || s.updated_at;
       patchSessionRow(s);
-      renderKanban();  // 看板卡片的关联会话名/状态可能随之变化
+      renderKanbanDebounced();  // 看板卡片的关联会话名/状态可能随之变化（防抖，避免高频刷新）
       // 当前会话同步页头标题
       if (data.session_id === state.sessionId) {
         const titleEl = $('session-title');
@@ -1260,12 +1267,12 @@
         const li = el("li");
         const head = el("div", "e-head");
         head.appendChild(el("span", "e-name", escapeHtml(it.title)));
-        const tag = it.status === "done" ? "完成" : it.status === "cancelled" ? "取消" : (it.priority ? "⚡高优" : "待办");
+        const tag = it.status === "done" ? "完成" : it.status === "cancelled" ? "取消" : it.status === "in_progress" ? "进行中" : (it.priority ? "⚡高优" : "待办");
         head.appendChild(el("span", "e-tag", tag));
         li.appendChild(head);
         if (it.description) li.appendChild(el("div", "e-desc", escapeHtml(it.description)));
         const actions = el("div", "e-actions");
-        if (it.status === "pending") {
+        if (it.status !== "done" && it.status !== "cancelled") {
           const doneBtn = el("button", "btn-sm", "完成");
           doneBtn.onclick = async () => {
             try {
