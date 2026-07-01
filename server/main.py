@@ -390,11 +390,13 @@ async def todos_create(payload: dict):
     title = (payload.get("title") or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="title 不能为空")
+    status = payload.get("status") if payload.get("status") in ("pending", "in_progress") else "pending"
     return db.create_todo(
         title,
         payload.get("description", ""),
         int(payload.get("priority", 0)),
         payload.get("session_id"),
+        status,
     )
 
 
@@ -410,6 +412,30 @@ async def todos_update(tid: str, payload: dict):
 async def todos_delete(tid: str):
     db.delete_todo(tid)
     return {"ok": True}
+
+
+# ---------------- 智能任务看板：进展摘要 ----------------
+@app.post("/api/todos/{tid}/refresh_progress", dependencies=[Depends(require_auth)])
+async def todo_refresh_progress(tid: str, force: bool = False):
+    from .kanban import refresh_todo_progress
+    return await refresh_todo_progress(tid, force=force)
+
+
+@app.post("/api/kanban/refresh", dependencies=[Depends(require_auth)])
+async def kanban_refresh_all():
+    from .kanban import refresh_todo_progress
+    rows = db._query(
+        "SELECT id FROM todos WHERE status='in_progress' AND session_id IS NOT NULL AND session_id != ''"
+    )
+    sem = asyncio.Semaphore(3)
+
+    async def bounded(tid):
+        async with sem:
+            return await refresh_todo_progress(tid)
+
+    results = await asyncio.gather(*[bounded(r["id"]) for r in rows], return_exceptions=True)
+    updated = sum(1 for r in results if isinstance(r, dict) and r.get("ok"))
+    return {"ok": True, "updated": updated, "total": len(rows)}
 
 
 # ---------------- 日报 ----------------

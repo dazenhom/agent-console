@@ -1,0 +1,140 @@
+"""看板进展总结：读取会话 jsonl，用一次性子进程概括开发进展。
+
+与 summarizer 一脉相承：独立的一次性子进程，绝不碰会话的常驻上下文；
+复用 claude_runner._child_env() 剔除编排态环境变量（否则 403）。
+每个 todo 卡片带 mtime 缓存：jsonl 没变就复用上次的摘要，避免重复烧模型。
+"""
+import asyncio
+import json
+import re
+import time
+from pathlib import Path
+
+from . import config, db
+from .claude_runner import _child_env
+
+
+def _slug(path: str) -> str:
+    """workdir → tclaude 项目目录 slug（与 session_import._slug 一致：/ _ . → -）。"""
+    return re.sub(r"[/_.]", "-", path)
+
+
+def _session_jsonl_path(claude_session_id: str, workdir: str) -> Path | None:
+    slug = _slug(workdir or config.DEFAULT_WORKDIR)
+    p = Path(config.TCLAUDE_HOME) / "projects" / slug / (claude_session_id + ".jsonl")
+    return p if p.exists() else None
+
+
+def _extract_recent_text(jsonl_path: Path, max_chars: int = 3000) -> str:
+    """读 jsonl 最后若干条 user/assistant 文本消息，拼成上下文。"""
+    lines = []
+    try:
+        with jsonl_path.open(encoding="utf-8", errors="replace") as fh:
+            raw = fh.readlines()
+    except OSError:
+        return ""
+    # 只取最后 40 行，够概括"最近在干什么"即可
+    for line in raw[-40:]:
+        try:
+            obj = json.loads(line.strip())
+        except Exception:
+            continue
+        role = obj.get("type") or obj.get("role", "")
+        content = (obj.get("message") or {}).get("content", "")
+        if role == "assistant":
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        lines.append(f"[Assistant]: {block['text'][:300]}")
+            elif isinstance(content, str):
+                lines.append(f"[Assistant]: {content[:300]}")
+        elif role == "user":
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        lines.append(f"[User]: {block['text'][:200]}")
+            elif isinstance(content, str):
+                lines.append(f"[User]: {content[:200]}")
+    text = "\n".join(lines)
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
+async def summarize_progress(context_text: str) -> str:
+    """用一次性子进程概括进展。返回干净摘要；任何异常兜底成友好提示。"""
+    prompt = (
+        "以下是一个 AI 任务会话的最新对话片段。"
+        "请用不超过 40 字的中文总结：当前任务完成到哪一步了，正在做什么，有无问题。"
+        "只输出总结本身，不要引号或任何前后缀。\n\n" + context_text
+    )
+    cmd = [
+        config.CLAUDE_BIN, "--", "-p", prompt,
+        "--model", config.CLAUDE_MODEL_FAST, "--output-format", "json",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, env=_child_env(),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=config.SUMMARY_TIMEOUT)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return "进展获取超时"
+    except Exception:
+        return "进展获取失败"
+    # 输出里可能混有噪音行，挑出 JSON 那行解析（与 summarizer 一致）
+    text = out.decode("utf-8", errors="replace")
+    result = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if data.get("type") == "result" and not data.get("is_error"):
+            result = (data.get("result") or "").strip()
+            break
+    result = re.sub(r"\s+", " ", result).strip().strip('"“”')
+    return result[:60] if result else "暂无进展信息"
+
+
+async def refresh_todo_progress(tid: str, force: bool = False) -> dict:
+    """刷新单个 todo 卡片的进展摘要，带 jsonl mtime 缓存。"""
+    rows = db._query(
+        "SELECT id, title, session_id, progress, progress_at, progress_src_mtime FROM todos WHERE id=?",
+        (tid,),
+    )
+    if not rows:
+        return {"ok": False, "reason": "todo not found"}
+    todo = dict(rows[0])
+    session_id = todo.get("session_id")
+    if not session_id:
+        return {"ok": False, "reason": "该任务未关联 Agent 会话"}
+
+    sess = db.get_session(session_id)
+    if not sess or not sess.get("claude_session_id"):
+        return {"ok": False, "reason": "关联会话无 claude_session_id"}
+
+    jsonl_path = _session_jsonl_path(sess["claude_session_id"], sess.get("workdir"))
+    if not jsonl_path:
+        return {"ok": False, "reason": "会话记录文件不存在"}
+
+    # mtime 缓存：文件没变（且已有摘要）就直接复用，不再烧模型
+    current_mtime = jsonl_path.stat().st_mtime
+    prev_mtime = todo.get("progress_src_mtime") or 0
+    if not force and prev_mtime and abs(current_mtime - prev_mtime) < 1.0 and todo.get("progress"):
+        return {"ok": True, "progress": todo["progress"], "progress_at": todo.get("progress_at"), "cached": True}
+
+    context = _extract_recent_text(jsonl_path)
+    if not context.strip():
+        return {"ok": False, "reason": "会话内容为空"}
+
+    new_progress = await summarize_progress(context)
+    db.set_todo_progress(tid, new_progress, current_mtime)
+    return {"ok": True, "progress": new_progress, "progress_at": time.time(), "cached": False}

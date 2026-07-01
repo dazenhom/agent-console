@@ -132,6 +132,10 @@ def init_db() -> None:
             _add_col("sessions", "is_secretary INTEGER DEFAULT 0")
         if "title_auto" not in cols:
             _add_col("sessions", "title_auto INTEGER DEFAULT 1")
+        # 看板进展摘要三列：正文 / 生成时间 / 生成时所依据的 jsonl mtime（用于缓存判断）
+        _add_col("todos", "progress TEXT DEFAULT ''")
+        _add_col("todos", "progress_at REAL DEFAULT 0")
+        _add_col("todos", "progress_src_mtime REAL DEFAULT 0")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")
@@ -338,18 +342,19 @@ def list_todos(status: str | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def create_todo(title: str, description: str = "", priority: int = 0, session_id: str | None = None) -> dict:
+def create_todo(title: str, description: str = "", priority: int = 0, session_id: str | None = None, status: str = "pending") -> dict:
     tid = new_id()
     now = _now()
     _exec(
         "INSERT INTO todos(id,title,description,status,priority,session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-        (tid, title, description, "pending", priority, session_id, now, now),
+        (tid, title, description, status, priority, session_id, now, now),
     )
     return dict(_query("SELECT * FROM todos WHERE id=?", (tid,))[0])
 
 
 def update_todo(tid: str, **fields) -> bool:
-    allowed = {"title", "description", "status", "priority", "session_id"}
+    allowed = {"title", "description", "status", "priority", "session_id",
+               "progress", "progress_at", "progress_src_mtime"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False
@@ -358,6 +363,14 @@ def update_todo(tid: str, **fields) -> bool:
     vals = list(updates.values()) + [tid]
     cur = _exec(f"UPDATE todos SET {sets} WHERE id=?", vals)
     return cur.rowcount > 0
+
+
+def set_todo_progress(tid: str, progress: str, src_mtime: float) -> None:
+    now = _now()
+    _exec(
+        "UPDATE todos SET progress=?, progress_at=?, progress_src_mtime=?, updated_at=? WHERE id=?",
+        (progress, now, src_mtime, now, tid),
+    )
 
 
 def delete_todo(tid: str) -> bool:
