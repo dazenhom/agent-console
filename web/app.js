@@ -2264,7 +2264,7 @@
         method: "POST",
         body: JSON.stringify({ session_id: state.sessionId, image: dataUrl, mime: file.type, name: file.name }),
       });
-      state.pendingImages.push(r.path);
+      state.pendingImages.push(r.abs || r.path);
       renderImageTray(dataUrl);
       toast("图片已就绪，可加文字一起发送", "success", 1800);
     } catch (e) {
