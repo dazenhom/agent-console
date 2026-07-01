@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=14" />
+  <link rel="stylesheet" href="style.css?v=16" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -56,7 +56,18 @@
               <div class="dash-kicker">Work dashboard</div>
               <div class="dash-title" id="dash-title">Agent 调度台</div>
             </div>
-            <div class="dashboard" id="dashboard"></div>
+            <div class="mini-stats" id="dashboard"></div>
+
+            <!-- 智能任务看板 -->
+            <div class="kanban-head">
+              <span class="section-label">智能任务看板</span>
+              <div class="kanban-actions">
+                <button id="kanban-refresh-btn" class="btn-ghost btn-sm">↻ 刷新进展</button>
+                <button id="kanban-add-btn" class="btn-ghost btn-sm">＋ 新任务</button>
+              </div>
+            </div>
+            <div id="kanban-list" class="kanban-list"></div>
+
             <div class="agents-head">
               <div>
                 <div class="agents-title">Agents</div>
@@ -141,6 +152,9 @@
         </div>
       </aside>
 
+      <!-- PC 端左右栏拖拽分隔条 -->
+      <div class="hub-resizer" id="hub-resizer" role="separator" aria-orientation="vertical" title="拖动调整宽度"></div>
+
       <!-- 右栏：会话详情面板 -->
       <section class="hub-right" id="detail-panel">
         <div class="detail-head">
@@ -221,7 +235,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=14"></script>
+  <script src="app.js?v=17"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

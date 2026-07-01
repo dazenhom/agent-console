@@ -31,6 +31,8 @@ CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() 
 #   claude-sonnet-4-6 / claude-sonnet-4-6[1m] / claude-opus-4-8[1m] /
 #   claude-opus-4-7[1m] / claude-opus-4-6[1m] / claude-haiku-4-5 / claude-hy3-preview
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
+# 看板进展摘要专用模型：用 hy preview（tclaude 提供的预览档模型），概括质量更好。
+CLAUDE_MODEL_KANBAN = os.environ.get("CLAUDE_MODEL_KANBAN", "claude-hy3-preview")
 CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-4-6")
 CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-4-8[1m]")
 # 新会话默认档位：fast / strong / super。默认 strong（sonnet）——速度与智能平衡，要最强顶栏切 super。
@@ -59,7 +61,9 @@ TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "5"))
 # ---- 图片上传（手机拍照/截图发给 Agent）----
 # 存到会话 workdir 下的子目录，tclaude 用 Read 工具读图。
 UPLOAD_DIR_NAME = os.environ.get("UPLOAD_DIR_NAME", ".console_uploads")
+UPLOAD_DIR = BASE_DIR / UPLOAD_DIR_NAME
 UPLOAD_MAX_BYTES = int(os.environ.get("UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
+UPLOAD_TTL_DAYS = int(os.environ.get("UPLOAD_TTL_DAYS", "7"))
 
 # ---- Knot HTTPS API ----
 # 文档：https://iwiki.woa.com/p/4016921090

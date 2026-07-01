@@ -125,7 +125,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* ---------- 双栏 hub ---------- */
 .hub {
   flex: 1 1 auto; min-height: 0; display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px;
+  grid-template-columns: var(--hub-left-w, minmax(0, 1fr)) 6px minmax(0, 1fr); gap: 12px;
 }
 .hub-left, .hub-right {
   min-height: 0; display: flex; flex-direction: column;
@@ -133,6 +133,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   box-shadow: var(--shadow); overflow: hidden;
 }
 .hub-left { padding: 0; }
+
+/* PC 端左右栏拖拽分隔条 */
+.hub-resizer {
+  align-self: stretch;
+  width: 6px;
+  cursor: col-resize;
+  border-radius: 6px;
+  background: transparent;
+  transition: background var(--ease);
+}
+.hub-resizer:hover, .hub-resizer.dragging {
+  background: var(--accent-glow);
+}
+body.hub-resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 /* Tab 页面容器：默认隐藏，激活显示 */
 .tab-pane { display: none; min-height: 0; flex: 1 1 auto; flex-direction: column; }
@@ -160,15 +178,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* ---------- Agents 列表 ---------- */
 .agents-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
-.agents-title { font-size: 18px; font-weight: 700; }
-.agents-sub { font-size: 12.5px; color: var(--muted); }
+.agents-title { font-size: 15px; font-weight: 700; }
+.agents-sub { font-size: 11.5px; color: var(--muted); }
 .refresh-link { background: none; border: none; color: var(--accent); font-size: 13px; padding: 2px 4px; }
 
-.session-list { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.session-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .session-list li {
   position: relative; background: var(--bg-2); border: 1px solid var(--line);
-  border-left: 4px solid var(--muted-2); border-radius: 13px; padding: 13px 14px;
-  display: flex; align-items: flex-start; gap: 10px;
+  border-left: 3px solid var(--muted-2); border-radius: 10px; padding: 9px 11px;
+  display: flex; align-items: flex-start; gap: 8px;
   transition: background var(--ease), border-color var(--ease), box-shadow var(--ease);
   cursor: pointer;
 }
@@ -179,12 +197,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .session-list li.st-failed  { border-left-color: var(--red); }
 .session-list li.st-idle    { border-left-color: var(--muted-2); }
 
-.s-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-.s-row1 { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-.s-title { font-weight: 600; font-size: 15px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
-.s-sub { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.s-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.s-row1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.s-title { font-weight: 600; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.s-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .s-sub:empty { display: none; }
-.s-meta { font-size: 12px; color: var(--muted-2); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.s-meta { font-size: 11px; color: var(--muted-2); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .s-meta .dot-sep { opacity: .5; }
 .s-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
 .s-peek, .s-del {
@@ -282,6 +300,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   background: var(--bg-2); color: var(--accent); font-weight: 500; transition: background var(--ease), color var(--ease);
 }
 .ask-opt:hover { background: var(--accent); color: #fff; }
+
+/* Quick-reply 按钮条（assistant 消息末尾短列表自动提取） */
+.qr-bar { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; padding: 0 2px; }
+.qr-btn {
+  padding: 5px 13px; font-size: 13px; border-radius: 18px;
+  border: 1.5px solid var(--accent); background: var(--bg-2); color: var(--accent);
+  font-weight: 500; transition: background var(--ease), color var(--ease), transform .12s;
+  white-space: nowrap;
+}
+.qr-btn:hover { background: var(--accent); color: #fff; }
 
 .result-line { text-align: center; color: var(--muted); font-size: 12px; margin: 6px 0 14px; }
 /* 历史窗口「加载更早」按钮 */
@@ -611,6 +639,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
   /* 左栏内容：收紧内边距 */
   .hub { grid-template-columns: 1fr; gap: 0; }
+  .hub-resizer { display: none; }
   .hub-left { border-radius: 14px; }
   .hub-left-scroll, .list-pane-inner, .new-pane-inner, .exp-inner { padding: 14px; }
 
@@ -707,3 +736,334 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   font-size: 15px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
 .queue-chip .q-edit:hover { color: var(--accent); background: var(--bg-2); }
 .queue-chip .q-del:hover { color: var(--red, #e74c3c); background: var(--bg-2); }
+
+/* ===== 智能任务看板 ===== */
+.kanban-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 4px 0 10px;
+}
+.kanban-head .section-label {
+  font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: .2px;
+}
+.kanban-actions { display: flex; gap: 6px; }
+.btn-ghost {
+  background: var(--bg-2); border: 1px solid var(--line); color: var(--muted);
+  border-radius: 8px; padding: 4px 10px; font-size: 12.5px; cursor: pointer;
+  transition: border-color var(--ease), color var(--ease), background var(--ease);
+}
+.btn-ghost:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.btn-ghost:disabled { opacity: .55; pointer-events: none; }
+.btn-ghost.btn-sm { padding: 3px 9px; font-size: 12px; }
+
+.kanban {
+  display: flex; gap: 10px; overflow-x: auto; margin-bottom: 22px;
+  padding-bottom: 4px; scrollbar-width: thin;
+}
+.kanban-col {
+  flex: 0 0 calc(33.333% - 7px); min-width: 150px;
+  background: var(--bg-3); border: 1px solid var(--line-soft); border-radius: 14px;
+  padding: 10px 9px; display: flex; flex-direction: column; gap: 8px;
+}
+.kanban-col-header {
+  display: flex; align-items: center; gap: 6px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 2px;
+}
+.col-icon { font-size: 12px; color: var(--muted-2); }
+.col-title { font-size: 13px; font-weight: 700; flex: 1; color: var(--text); }
+.col-count {
+  font-size: 11.5px; font-weight: 600; background: var(--gray-soft); color: var(--muted);
+  border-radius: 10px; padding: 1px 8px; min-width: 20px; text-align: center;
+}
+.kanban-col#kanban-col-inprogress .col-icon { color: var(--accent); }
+.kanban-col#kanban-col-done .col-icon { color: var(--green); }
+
+.kanban-cards { display: flex; flex-direction: column; gap: 8px; }
+.kanban-card {
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-left: 3px solid var(--muted-2); border-radius: 11px;
+  padding: 10px 11px; cursor: pointer; box-shadow: var(--shadow);
+  transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease);
+}
+.kanban-col#kanban-col-inprogress .kanban-card { border-left-color: var(--accent); }
+.kanban-col#kanban-col-done .kanban-card { border-left-color: var(--green); }
+.kanban-card:hover { border-color: var(--accent); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+
+.kanban-card-title {
+  font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 5px; line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kanban-card-progress {
+  font-size: 12px; color: var(--muted); line-height: 1.45; margin-bottom: 6px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.kanban-card-progress.no-progress { color: var(--muted-2); font-style: italic; }
+.kanban-card-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 4px;
+}
+.kanban-card-session {
+  font-size: 11px; color: var(--accent); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 90px;
+}
+.kanban-card-time { font-size: 11px; color: var(--muted-2); white-space: nowrap; }
+/* v2 footer 里时间撑开占位，把徽章和图标按钮推到右侧成组 */
+.kanban-card-v2 .kanban-card-time { flex: 1; }
+.kanban-card-actions { display: flex; gap: 5px; margin-top: 7px; }
+.kanban-btn {
+  font-size: 11px; padding: 3px 7px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--bg-2); color: var(--muted); cursor: pointer; flex: 1; text-align: center;
+  transition: border-color var(--ease), background var(--ease);
+}
+.kanban-btn:hover { border-color: currentColor; }
+.kanban-btn.btn-start { color: var(--accent); }
+.kanban-btn.btn-done { color: var(--green); }
+.kanban-btn.btn-refresh { color: var(--yellow); }
+.kanban-btn.btn-refresh.loading { opacity: .5; pointer-events: none; }
+.kanban-empty { font-size: 12px; color: var(--muted-2); text-align: center; padding: 14px 0; }
+
+@media (max-width: 600px) {
+  .kanban { gap: 8px; }
+  .kanban-col { flex: 0 0 78vw; min-width: 78vw; }
+}
+
+/* ===== 升级版 Kanban 样式（v2） ===== */
+/* 列头「刷新进行中」小按钮 */
+.kanban-col-refresh {
+  background: none; border: none; color: var(--muted-2); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px;
+  transition: color var(--ease), background var(--ease), transform var(--ease);
+}
+.kanban-col-refresh:hover { color: var(--accent); background: var(--accent-soft); }
+.kanban-col-refresh:active { transform: rotate(90deg); }
+
+/* 卡片本体：更大圆角、更轻阴影、更明显的 hover 抬升；左侧 4px 竖色条走内联 border-left-color */
+.kanban-card-v2 {
+  border-left-width: 4px;
+  border-radius: 10px;
+  padding: 11px 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease-spring);
+}
+.kanban-card-v2:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+/* v2 用内联 border-left-color 表达优先级，覆盖旧列级着色规则 */
+.kanban-col .kanban-card-v2 { border-left-color: inherit; }
+/* 卡片之间留更大间距，减少拥挤感 */
+.kanban-cards { gap: 12px; }
+
+/* 可展开的进展摘要：默认最多 3 行省略，点击展开全文 */
+.kanban-card-body {
+  font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 7px;
+  white-space: pre-wrap; word-break: break-word; cursor: pointer;
+}
+.kanban-card-body.no-progress { color: var(--muted-2); font-style: italic; }
+.kanban-card-body-collapsed {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.kanban-card-body-expanded { overflow: visible; }
+
+/* 状态徽章：更小字号、更紧凑 padding */
+.kanban-badge {
+  font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 2px 7px; border-radius: 20px; white-space: nowrap;
+}
+.kanban-badge--pending { background: var(--gray-soft); color: var(--muted); }
+.kanban-badge--done { background: var(--green-soft); color: var(--green); }
+.kanban-badge--cancelled { background: var(--red-soft); color: var(--red); }
+.kanban-badge--inprogress {
+  background: var(--accent-soft); color: var(--accent);
+  position: relative; padding-left: 16px;
+}
+/* 进行中徽章的脉冲小圆点 */
+.kanban-badge--inprogress::before {
+  content: ""; position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: kanban-pulse 1.4s ease-in-out infinite;
+}
+@keyframes kanban-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-glow); }
+  50% { opacity: .55; box-shadow: 0 0 0 5px transparent; }
+}
+
+/* 底部操作区：图标按钮内联在 footer 右侧，不再占整行 */
+.kanban-card-v2 .kanban-card-actions { display: flex; gap: 4px; margin-top: 0; }
+.kanban-card-v2 .kanban-btn {
+  flex: none; width: 24px; height: 24px; padding: 0; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+/* 详情按钮 */
+.kanban-btn.btn-detail { color: var(--accent); }
+.kanban-btn.btn-refresh.loading { opacity: .6; pointer-events: none; }
+.kanban-btn.btn-edit { color: var(--muted); }
+.kanban-btn.btn-del { color: #ff4d4f; }
+.kanban-btn.btn-del:hover { color: #ff7875; background: rgba(255,77,79,0.1); }
+
+/* 拖拽中的卡片 */
+.kanban-card-dragging {
+  opacity: .5; transform: scale(.97);
+  box-shadow: var(--shadow-lg);
+}
+/* 拖拽悬停时的落点列高亮 */
+.kanban-col-dropzone {
+  background: var(--accent-soft);
+  outline: 2px dashed var(--accent); outline-offset: -4px;
+  border-radius: 10px;
+}
+
+/* ---------- 紧凑统计摘要行 ---------- */
+.mini-stats { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.mini-stat { display: flex; align-items: baseline; gap: 4px; }
+.mini-stat-label { font-size: 11px; color: var(--muted-2); }
+.mini-stat-val { font-size: 14px; font-weight: 600; color: var(--text); }
+.mini-stat-val--active { color: var(--accent); }
+.mini-stat-val--failed { color: #ff4d4f; }
+
+/* ===== 看板卡片 v3：右上角单菜单 + 可点击主体，收敛按钮、提升空间利用 ===== */
+.kanban-card-v3 {
+  position: relative;
+  border-left-width: 4px;
+  border-radius: 10px;
+  padding: 12px 12px 10px 12px;
+  cursor: default;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease-spring);
+}
+.kanban-card-v3:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+/* v3 用内联 border-left-color 表达优先级，覆盖旧列级着色规则 */
+.kanban-col .kanban-card-v3 { border-left-color: inherit; }
+
+/* 卡片主体：点击跳转会话，右侧给操作按钮组留空间 */
+.kanban-card-v3 .kanban-card-main { cursor: pointer; padding-right: 60px; }
+.kanban-card-v3 .kanban-card-title {
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+  margin-bottom: 5px; line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kanban-card-v3 .kanban-card-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+}
+
+/* 卡片右上角操作按钮组：默认隐藏，卡片 hover 时淡入 */
+.kanban-actions {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 10;
+}
+.kanban-card-v3:hover .kanban-actions {
+  opacity: 1;
+}
+.kanban-act-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--muted, #6b7280);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.kanban-act-btn:hover {
+  background: var(--bg-3, #f3f4f6);
+  color: var(--text, #1b212b);
+}
+.kanban-act-btn.btn-delete:hover {
+  color: #ff4d4f;
+  background: rgba(255,77,79,0.08);
+}
+.kanban-act-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* 看板列表模式 */
+.kanban-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.kanban-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-2, #fff);
+  min-height: 44px;
+  transition: background 0.1s;
+  cursor: default;
+}
+.kanban-row:hover {
+  background: var(--bg-3, #f3f4f6);
+}
+.kanban-row:hover .kanban-row-actions {
+  opacity: 1;
+}
+
+/* 状态点 */
+.kanban-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+}
+.dot-pending    { border: 2px solid #9ca3af; background: transparent; }
+.dot-inprogress { background: #3b82f6; animation: pulse-dot 1.5s infinite; }
+.dot-done       { background: #22c55e; color: #fff; font-size: 8px; }
+.dot-cancelled  { background: #ef4444; color: #fff; font-size: 8px; }
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); }
+  50%       { box-shadow: 0 0 0 4px rgba(59,130,246,0); }
+}
+
+/* 行主体 */
+.kanban-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.kanban-row-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text, #1b212b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kanban-row-progress {
+  font-size: 11.5px;
+  color: var(--muted, #6b7280);
+  line-height: 1.55;
+  cursor: pointer;
+}
+.kanban-row-progress.collapsed {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 行操作按钮 */
+.kanban-row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}

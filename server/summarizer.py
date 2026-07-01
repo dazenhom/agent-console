@@ -66,7 +66,7 @@ async def _haiku(user_text: str, reply_text: str) -> str:
             summary = (data.get("result") or "").strip()
             break
     # 清掉可能的引号/换行，限长
-    summary = re.sub(r"\s+", " ", summary).strip().strip('"“”')
+    summary = re.sub(r"\s+", " ", summary).strip().strip('"""')
     return summary[:40]
 
 
@@ -86,13 +86,13 @@ async def _gen_title_haiku(convo: str) -> str:
     """一次性 Haiku 起标题：给一段对话内容取一个不超过 10 字的中文标题。任何异常/超时抛出由上层兜底。"""
     clean = re.sub(r"\s+", " ", convo).strip()[:800]
     prompt = (
-        "给下面这段对话内容起一个不超过 10 个字的简洁中文标题，概括对话主题，"
-        "只输出标题本身，不要引号、标点或任何前后缀。"
+        "给下面这段对话内容起一个不超过 40 个字的中文标题，要具体说明做什么事、遇到什么问题，"
+        "让人一眼看出对话在干什么，只输出标题本身，不要引号、标点或任何前后缀。"
         f"对话：『{clean}』"
     )
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
-        "--model", config.CLAUDE_MODEL_FAST, "--output-format", "json",
+        "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd, env=_child_env(),
@@ -122,13 +122,13 @@ async def _gen_title_haiku(convo: str) -> str:
             result = (data.get("result") or "").strip()
             break
     # 清掉可能的引号/换行，限长
-    result = re.sub(r"\s+", " ", result).strip().strip('"“”')[:12]
+    result = re.sub(r"\s+", " ", result).strip().strip('"""')[:45]
     return result
 
 
 async def gen_title(convo: str) -> str:
     """给一段对话内容生成语义标题。关闭/失败返回空串（上层保留截取标题）。永不抛异常。"""
-    if not config.SUMMARY_ENABLED:
+    if not config.TITLE_REFRESH_ENABLED:
         return ""
     try:
         return await _gen_title_haiku(convo) or ""

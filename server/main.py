@@ -390,11 +390,13 @@ async def todos_create(payload: dict):
     title = (payload.get("title") or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="title 不能为空")
+    status = payload.get("status") if payload.get("status") in ("pending", "in_progress") else "pending"
     return db.create_todo(
         title,
         payload.get("description", ""),
         int(payload.get("priority", 0)),
         payload.get("session_id"),
+        status,
     )
 
 
@@ -410,6 +412,30 @@ async def todos_update(tid: str, payload: dict):
 async def todos_delete(tid: str):
     db.delete_todo(tid)
     return {"ok": True}
+
+
+# ---------------- 智能任务看板：进展摘要 ----------------
+@app.post("/api/todos/{tid}/refresh_progress", dependencies=[Depends(require_auth)])
+async def todo_refresh_progress(tid: str, force: bool = False):
+    from .kanban import refresh_todo_progress
+    return await refresh_todo_progress(tid, force=force)
+
+
+@app.post("/api/kanban/refresh", dependencies=[Depends(require_auth)])
+async def kanban_refresh_all():
+    from .kanban import refresh_todo_progress
+    rows = db._query(
+        "SELECT id FROM todos WHERE status='in_progress' AND session_id IS NOT NULL AND session_id != ''"
+    )
+    sem = asyncio.Semaphore(3)
+
+    async def bounded(tid):
+        async with sem:
+            return await refresh_todo_progress(tid)
+
+    results = await asyncio.gather(*[bounded(r["id"]) for r in rows], return_exceptions=True)
+    updated = sum(1 for r in results if isinstance(r, dict) and r.get("ok"))
+    return {"ok": True, "updated": updated, "total": len(rows)}
 
 
 # ---------------- 日报 ----------------
@@ -496,9 +522,21 @@ _IMG_MIME_TO_EXT = {
 }
 
 
+def _cleanup_uploads(directory, cutoff):
+    try:
+        for f in directory.iterdir():
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 @app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload_image(payload: dict):
-    """收 base64 图片存到会话 workdir 下的上传目录，返回相对路径供注入消息。
+    """收 base64 图片存到项目固定目录 UPLOAD_DIR 下，返回绝对路径供注入消息。
 
     body: {"session_id": "...", "image": "<dataURL或纯base64>", "mime": "image/jpeg", "name": "可选原名"}
     用 JSON+base64 而非 multipart，与 /api/asr 一致，绕过反向代理的 body 限制。
@@ -541,12 +579,10 @@ async def upload_image(payload: dict):
     if not ext:
         ext = ".png"
 
-    base = _P(sess.get("workdir") or config.DEFAULT_WORKDIR)
-    rel_dir = config.UPLOAD_DIR_NAME
+    base = config.UPLOAD_DIR
     fname = f"{int(_t.time())}_{db.new_id()}{ext}"
-    rel_path = f"{rel_dir}/{fname}"
     try:
-        target = safe_path_under(base, rel_path)
+        target = safe_path_under(base, fname)
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -554,8 +590,11 @@ async def upload_image(payload: dict):
         target.write_bytes(raw)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败：{e}")
-    # 返回相对路径（注入消息用 ./xxx 形式，tclaude 在 workdir 里能直接 Read）
-    return {"path": f"./{rel_path}", "abs": str(target), "bytes": len(raw)}
+    ttl_days = config.UPLOAD_TTL_DAYS
+    if ttl_days > 0:
+        cutoff = _t.time() - ttl_days * 86400
+        await asyncio.to_thread(_cleanup_uploads, base, cutoff)
+    return {"path": str(target), "abs": str(target), "bytes": len(raw)}
 
 
 # ---------------- 语音识别 ----------------
