@@ -633,6 +633,21 @@
   }
 
   function handleMonitorMessage(data) {
+    // 看板进展异步更新：回合结束后 AI 刷新 in_progress 卡片进展，就地 patch 卡片
+    if (data.type === "todo_progress_update") {
+      const card = document.querySelector(`.kanban-card[data-id="${data.todo_id}"]`);
+      if (card) {
+        const bodyEl = card.querySelector(".kanban-card-body");
+        if (bodyEl && data.progress) {
+          bodyEl.textContent = data.progress;
+        }
+        if (data.progress_at) {
+          const tEl = card.querySelector(".kanban-card-time");
+          if (tEl) tEl.textContent = "🕐 " + fmtRelTime(data.progress_at);
+        }
+      }
+      return;
+    }
     // 秘书日报生成完成通知（无论企微是否启用，在线用户都能收到 toast 提示）
     if (data.type === "secretary_report") {
       toast(`📋 ${data.title} 已生成`, "success", 5000);
