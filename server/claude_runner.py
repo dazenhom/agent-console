@@ -163,10 +163,12 @@ class ClaudeRunner:
         resume_claude_session: str | None,
         on_event: EventCallback,
         model: str | None = None,
+        on_permission=None,
     ) -> dict:
         """跑一个回合。返回 {claude_session_id, returncode, error}。
 
         model: 传给 `tclaude -- -p ... --model <name>`，None/空字符串则不传由 CLI 决定。
+        on_permission: 老模式无 stdin 回写权限，忽略此参数（仅常驻模式支持）。
         """
         cmd = self._build_cmd(message=message, model=model,
                               resume=resume_claude_session, stream_input=False)
@@ -267,6 +269,26 @@ class ClaudeRunner:
         }
 
     # ============== 常驻进程模式（--input-format stream-json）==============
+    async def respond_permission(self, session_id: str, request_id: str, behavior: str) -> None:
+        """回一行 control_response 给 CLI，放行/拒绝一个待授权的工具调用。"""
+        sess = self._sessions.get(session_id)
+        if not sess or not sess.get("proc"):
+            return
+        resp = {
+            "type": "control_response",
+            "response": {
+                "request_id": request_id,
+                "subtype": "success",
+                "response": {"behavior": behavior},
+            },
+        }
+        line = json.dumps(resp, ensure_ascii=False) + "\n"
+        try:
+            sess["proc"].stdin.write(line.encode())
+            await sess["proc"].stdin.drain()
+        except Exception:
+            pass
+
     async def _kill_session(self, session_id: str) -> None:
         """杀掉某会话的常驻进程（不删记录，spawn 时会覆盖）。"""
         sess = self._sessions.get(session_id)
@@ -296,7 +318,8 @@ class ClaudeRunner:
         sess = {
             "proc": proc, "stdin": proc.stdin, "claude_sid": resume,
             "last_active": time.monotonic(), "turn_active": False,
-            "cancelled": False, "on_event": None, "result_evt": None, "workdir": workdir,
+            "cancelled": False, "on_event": None, "on_permission": None,
+            "result_evt": None, "workdir": workdir,
             "model": model,
         }
         self._sessions[session_id] = sess
@@ -326,6 +349,21 @@ class ClaudeRunner:
             sid = evt.get("session_id")
             if sid:
                 sess["claude_sid"] = sid
+            # control_request：CLI 请求授权某个未放行的工具（--input-format stream-json 下），
+            # 等我们回一行 control_response。转给 on_permission 回调走前端弹窗，不当作普通事件，
+            # 更不触发 result（本回合还没结束，仍在等授权）。
+            if evt.get("type") == "control_request":
+                req = evt.get("request", {}) or {}
+                request_id = evt.get("request_id") or req.get("request_id")
+                tool_name = req.get("tool_name") or evt.get("tool_name")
+                tool_input = req.get("input") or evt.get("input") or {}
+                cb = sess.get("on_permission")
+                if cb and request_id:
+                    try:
+                        await cb(request_id, tool_name, tool_input)
+                    except Exception:
+                        pass
+                continue
             cb = sess.get("on_event")
             if cb:
                 try:
@@ -344,7 +382,7 @@ class ClaudeRunner:
 
     async def send_turn(self, session_id: str, message: str, workdir: str,
                         resume_claude_session: str | None, on_event: EventCallback,
-                        model: str | None = None) -> dict:
+                        model: str | None = None, on_permission=None) -> dict:
         """常驻进程模式跑一回合。进程不存在/已死则拉起（带 resume），写 stdin，等本回合 result。"""
         sess = self._sessions.get(session_id)
         proc_dead = (not sess) or (sess["proc"].returncode is not None)
@@ -358,6 +396,7 @@ class ClaudeRunner:
                         "error": f"找不到 Claude CLI：{config.CLAUDE_BIN}"}
 
         sess["on_event"] = on_event
+        sess["on_permission"] = on_permission
         sess["cancelled"] = False
         sess["turn_active"] = True
         sess["last_active"] = time.monotonic()
@@ -388,6 +427,7 @@ class ClaudeRunner:
         cancelled = bool(sess.get("cancelled"))
         sess["turn_active"] = False
         sess["on_event"] = None
+        sess["on_permission"] = None
         sess["result_evt"] = None
         sess["last_active"] = time.monotonic()
 

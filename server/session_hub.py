@@ -118,6 +118,9 @@ class SessionHub:
         self._monitor: set[Subscriber] = set()           # 全局监控订阅者
         self._turns: dict[str, asyncio.Task] = {}        # session_id -> 当前回合 task
         self._activity: dict[str, str] = {}              # session_id -> 当前活动一行
+        # session_id -> {request_id: {request_id, tool_name, input}} 待用户确认的权限请求。
+        # 用户回应/回合取消后清空；WS 重连时重发，避免弹窗因断线丢失。
+        self._pending_perms: dict[str, dict] = {}
 
     # ---------- 订阅管理 ----------
     def subscribe(self, sid: str, sub: Subscriber) -> None:
@@ -292,6 +295,18 @@ class SessionHub:
                         "num_turns": c.get("num_turns"),
                     })
 
+        async def on_permission(request_id: str, tool_name: str, tool_input: dict):
+            """CLI 请求授权某工具：记入 pending 并广播弹窗给所有订阅者。"""
+            info = {"request_id": request_id, "tool_name": tool_name, "input": tool_input}
+            self._pending_perms.setdefault(sid, {})[request_id] = info
+            await self.broadcast(sid, {
+                "type": "permission_request",
+                "session_id": sid,
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "input": tool_input,
+            })
+
         try:
             sess = db.get_session(sid)
             # 模型档位 → 模型名
@@ -310,6 +325,7 @@ class SessionHub:
                 resume_claude_session=(sess or {}).get("claude_session_id"),
                 on_event=on_event,
                 model=model_name,
+                on_permission=on_permission if config.CLAUDE_PERMISSION_PROMPT else None,
             )
             if ret.get("claude_session_id"):
                 db.update_session(sid, claude_session_id=ret["claude_session_id"])
@@ -336,6 +352,7 @@ class SessionHub:
             )
             db.update_session(sid, status="idle")
             self._activity[sid] = ""
+            self._pending_perms.pop(sid, None)  # 回合结束：清掉本会话所有待确认权限
             self._turns.pop(sid, None)
             await self.broadcast(sid, {"type": "status", "status": "idle", "result": final_result})
 
@@ -420,7 +437,35 @@ class SessionHub:
         except Exception:
             pass
 
+    async def respond_permission(self, sid: str, request_id: str, behavior: str) -> None:
+        """用户点了允许/拒绝：清掉这条 pending，回 control_response 给 CLI。"""
+        pend = self._pending_perms.get(sid)
+        if pend:
+            pend.pop(request_id, None)
+            if not pend:
+                self._pending_perms.pop(sid, None)
+        await runner.respond_permission(sid, request_id, behavior)
+
+    async def resend_pending_perms(self, sid: str, sub: "Subscriber") -> None:
+        """WS 连接建立时，把该会话未决的权限请求重发给这条订阅者（补断线期间漏掉的弹窗）。"""
+        for info in list(self._pending_perms.get(sid, {}).values()):
+            try:
+                await sub.send({
+                    "type": "permission_request",
+                    "session_id": sid,
+                    "request_id": info["request_id"],
+                    "tool_name": info.get("tool_name"),
+                    "input": info.get("input"),
+                })
+            except Exception:
+                pass
+
     async def cancel(self, sid: str) -> None:
+        # 取消回合前，对该会话所有待确认权限自动回 deny，避免 CLI 卡在等授权
+        pend = self._pending_perms.pop(sid, None)
+        if pend:
+            for request_id in list(pend.keys()):
+                await runner.respond_permission(sid, request_id, "deny")
         await runner.cancel(sid)
 
 

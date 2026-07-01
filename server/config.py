@@ -12,14 +12,17 @@ CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "tclaude")
 # 这个参数（"cannot be used with root/sudo privileges"），加了会导致每个回合启动失败。
 # 所以 root 部署务必保持 false，靠下面的 CLAUDE_ALLOWED_TOOLS 放行工具来免权限提示。
 CLAUDE_SKIP_PERMISSIONS = os.environ.get("CLAUDE_SKIP_PERMISSIONS", "false").lower() == "true"
-# 放行的工具列表（传给 --allowedTools，空格分隔）。这是 root 下绕开权限提示的正路：
-# headless -p 默认模式会静默拒绝工具调用（permission_denials），导致 Agent 干不了实事；
-# 显式 allowedTools 不受 root 限制，放行后零拒绝。默认放行全套常用工具。
+# 放行的工具列表（传给 --allowedTools，空格分隔）：只放行只读/安全工具，免权限提示直接跑；
+# 写类工具（Bash / Write / Edit / MultiEdit）不放行，遇到就触发 control_request，
+# 经 WS 推前端弹窗让用户逐次确认（见 CLAUDE_PERMISSION_PROMPT）。
 # 想精细控制可改成如 "Bash(git *) Read Write"；设为空字符串则不加该参数（回到默认拒绝）。
 CLAUDE_ALLOWED_TOOLS = os.environ.get(
     "CLAUDE_ALLOWED_TOOLS",
-    "Bash Read Write Edit Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit",
+    "Read Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit",
 )
+# 是否开启权限请求弹窗：未放行的工具触发 control_request 时，经 WS 推前端弹窗让用户确认，
+# 用户点允许/拒绝后回 control_response 给 CLI。仅在常驻模式（有 stdin 可回写）下生效。
+CLAUDE_PERMISSION_PROMPT = os.getenv("CLAUDE_PERMISSION_PROMPT", "true").lower() == "true"
 # 单次 Agent 回合的超时（秒），防止卡死
 CLAUDE_TURN_TIMEOUT = int(os.environ.get("CLAUDE_TURN_TIMEOUT", "1800"))
 # 是否加 --include-partial-messages：开启后 CLI 逐字推送文本增量，前端做打字机效果。
@@ -41,7 +44,7 @@ CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "strong")
 CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "medium")
 # 常驻进程模式：每会话维持一个长生命周期 tclaude 进程（--input-format stream-json），
 # 更接近交互式，上下文常驻进程内。false=老的每回合新进程+resume 模式（回退用）。
-CLAUDE_PERSISTENT = os.environ.get("CLAUDE_PERSISTENT", "false").lower() == "true"
+CLAUDE_PERSISTENT = os.environ.get("CLAUDE_PERSISTENT", "true").lower() == "true"
 # 常驻进程空闲多久无消息就回收（秒），下次消息自动重起 + resume 续上下文。
 # 设长一点（1小时）减少冷启动重复发生——冷启动是 tclaude 加载工具/认证的固有开销。
 CLAUDE_SESSION_IDLE_SEC = int(os.environ.get("CLAUDE_SESSION_IDLE_SEC", "3600"))

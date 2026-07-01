@@ -688,6 +688,8 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default=""), sess
     })
     # 连上时把当前队列同步给前端，驱动队列托盘。
     await send({"type": "queue_update", "queue": db.list_queue(session_id)})
+    # 重发断线期间可能漏掉的权限请求弹窗（回合仍在等授权时）。
+    await hub.resend_pending_perms(session_id, sub)
 
     async def _handle_message(raw: str):
         try:
@@ -709,6 +711,14 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default=""), sess
 
         if mtype == "cancel":
             await hub.cancel(session_id)
+            return
+
+        if mtype == "permission_response":
+            # 用户在弹窗点了允许/拒绝：回 control_response 给 CLI
+            request_id = data.get("request_id")
+            behavior = data.get("behavior", "deny")
+            if request_id:
+                await hub.respond_permission(session_id, request_id, behavior)
             return
 
         if mtype != "user_message":
