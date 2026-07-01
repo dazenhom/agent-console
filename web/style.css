@@ -793,3 +793,92 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .kanban { gap: 8px; }
   .kanban-col { flex: 0 0 78vw; min-width: 78vw; }
 }
+
+/* ===== 升级版 Kanban 样式（v2） ===== */
+/* 列头「刷新进行中」小按钮 */
+.kanban-col-refresh {
+  background: none; border: none; color: var(--muted-2); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px;
+  transition: color var(--ease), background var(--ease), transform var(--ease);
+}
+.kanban-col-refresh:hover { color: var(--accent); background: var(--accent-soft); }
+.kanban-col-refresh:active { transform: rotate(90deg); }
+
+/* 卡片本体：更大圆角、更柔阴影、更明显的 hover 抬升；左侧 4px 竖色条走内联 border-left-color */
+.kanban-card-v2 {
+  border-left-width: 4px;
+  border-radius: 14px;
+  padding: 11px 12px;
+  box-shadow: var(--shadow);
+  transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease-spring);
+}
+.kanban-card-v2:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+/* v2 用内联 border-left-color 表达优先级，覆盖旧列级着色规则 */
+.kanban-col .kanban-card-v2 { border-left-color: inherit; }
+
+/* 可展开的进展摘要 */
+.kanban-card-body {
+  font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 7px;
+  white-space: pre-wrap; word-break: break-word; cursor: pointer;
+}
+.kanban-card-body.no-progress { color: var(--muted-2); font-style: italic; }
+.kanban-card-body-collapsed {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.kanban-card-body-expanded { overflow: visible; }
+
+/* 进度条 */
+.kanban-card-progress-bar {
+  height: 6px; border-radius: 6px; background: var(--bg-4);
+  overflow: hidden; margin: 2px 0 3px;
+}
+.kanban-card-progress-fill {
+  height: 100%; border-radius: 6px; background: var(--grad-accent);
+  transition: width 0.5s cubic-bezier(.4,0,.2,1);
+}
+.kanban-card-pct {
+  font-size: 10.5px; font-weight: 600; color: var(--accent);
+  text-align: right; margin-bottom: 5px;
+}
+
+/* 状态徽章 */
+.kanban-badge {
+  font-size: 10.5px; font-weight: 600; line-height: 1;
+  padding: 3px 8px; border-radius: 20px; white-space: nowrap;
+}
+.kanban-badge--pending { background: var(--gray-soft); color: var(--muted); }
+.kanban-badge--done { background: var(--green-soft); color: var(--green); }
+.kanban-badge--cancelled { background: var(--red-soft); color: var(--red); }
+.kanban-badge--inprogress {
+  background: var(--accent-soft); color: var(--accent);
+  position: relative; padding-left: 16px;
+}
+/* 进行中徽章的脉冲小圆点 */
+.kanban-badge--inprogress::before {
+  content: ""; position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: kanban-pulse 1.4s ease-in-out infinite;
+}
+@keyframes kanban-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-glow); }
+  50% { opacity: .55; box-shadow: 0 0 0 5px transparent; }
+}
+
+/* 详情按钮 */
+.kanban-btn.btn-detail { color: var(--accent); }
+.kanban-btn.btn-refresh.loading { opacity: .6; pointer-events: none; }
+
+/* 拖拽中的卡片 */
+.kanban-card-dragging {
+  opacity: .5; transform: scale(.97);
+  box-shadow: var(--shadow-lg);
+}
+/* 拖拽悬停时的落点列高亮 */
+.kanban-col-dropzone {
+  background: var(--accent-soft);
+  outline: 2px dashed var(--accent); outline-offset: -4px;
+  border-radius: 10px;
+}

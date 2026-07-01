@@ -305,10 +305,36 @@
       container.innerHTML = "";
       if (!tlist.length) {
         container.innerHTML = '<div class="kanban-empty">暂无任务</div>';
-        continue;
+      } else {
+        for (const t of tlist) container.appendChild(renderKanbanCard(t, status));
       }
-      for (const t of tlist) container.appendChild(renderKanbanCard(t, status));
+      wireDropzone(container, status);
     }
+  }
+
+  // 给每个看板列绑定拖拽落点：拖入高亮、松手时若列变了就 PUT 更新状态
+  function wireDropzone(container, status) {
+    if (container._dropWired) return;  // 容器 DOM 常驻，只需绑定一次
+    container._dropWired = true;
+    container.addEventListener("dragover", (e) => {
+      if (!state.dragTodoId) return;
+      e.preventDefault();
+      container.classList.add("kanban-col-dropzone");
+    });
+    container.addEventListener("dragleave", () => container.classList.remove("kanban-col-dropzone"));
+    container.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      container.classList.remove("kanban-col-dropzone");
+      const id = state.dragTodoId;
+      const from = state.dragTodoStatus;
+      state.dragTodoId = null;
+      state.dragTodoStatus = null;
+      if (!id || from === status) return;
+      try {
+        await api(`/api/todos/${id}`, { method: "PUT", body: JSON.stringify({ status }) });
+        renderKanban();
+      } catch (err) { toast("状态更新失败：" + err.message, "error"); }
+    });
   }
 
   // 防抖：活跃会话每几秒推一次 session_update，避免每次都打 /api/todos + 重建 DOM
@@ -318,53 +344,98 @@
   }
   const renderKanbanDebounced = debounce(() => renderKanban(), 2000);
 
-  // 单张看板卡：标题 + 进展摘要 + 关联会话/时间 + 操作按钮
+  // 优先级 → 竖色条颜色。数值 priority（DB 存 INTEGER，1=⚡高优）与未来的字符串级别都支持。
+  const KANBAN_PRIORITY_COLORS = { high: "#ff4d4f", medium: "#faad14", low: "#52c41a", none: "#8c8c8c" };
+  function kanbanPriorityLevel(p) {
+    if (typeof p === "string") return KANBAN_PRIORITY_COLORS[p] ? p : "none";
+    if (p >= 2) return "high";
+    if (p === 1) return "high";   // 现有 UI 把 priority=1 标为「⚡高优」，映射为高优红条
+    return "none";
+  }
+  // 状态徽章文案 + class 后缀
+  const KANBAN_BADGE = {
+    pending: { text: "待开始", cls: "pending" },
+    in_progress: { text: "进行中", cls: "inprogress" },
+    done: { text: "已完成", cls: "done" },
+    cancelled: { text: "已取消", cls: "cancelled" },
+  };
+
+  // 单张看板卡（v2）：优先级色条 + 标题 + 可展开摘要 + 进度条 + 时间/徽章 + 操作，支持拖拽换列
   function renderKanbanCard(t, status) {
     const sess = t.session_id ? state.sessions.find((s) => s.id === t.session_id) : null;
-    const sessName = sess ? sess.title : "";
     const hasProgress = t.progress && t.progress.trim();
-    const progressText = hasProgress ? t.progress : "暂无进展，点击刷新";
-    const timeText = t.progress_at ? fmtTime(t.progress_at) : "";
+    const progressText = hasProgress ? t.progress : "暂无进展，点击「刷新」获取";
+    const timeText = t.progress_at ? fmtRelTime(t.progress_at) : "";
+    // 摘要里若带百分比（如「已完成 80%」）则渲染进度条
+    const pctMatch = hasProgress ? t.progress.match(/(\d{1,3})\s*%/) : null;
+    const pct = pctMatch ? Math.min(100, parseInt(pctMatch[1], 10)) : null;
+    // 徽章按 todo 的真实 status（done 桶里可能混入 cancelled）
+    const badge = KANBAN_BADGE[t.status] || KANBAN_BADGE[status] || KANBAN_BADGE.pending;
+    const level = kanbanPriorityLevel(t.priority);
 
     let actionBtns = "";
-    if (t.session_id) actionBtns += `<button class="kanban-btn btn-refresh" data-act="refresh">↻进展</button>`;
-    if (status === "pending") actionBtns += `<button class="kanban-btn btn-start" data-act="start">▶开始</button>`;
-    else if (status === "in_progress") actionBtns += `<button class="kanban-btn btn-done" data-act="done">✓完成</button>`;
+    if (t.session_id) actionBtns += `<button class="kanban-btn btn-refresh" data-act="refresh">↻ 刷新</button>`;
+    actionBtns += `<button class="kanban-btn btn-detail" data-act="detail">详情 →</button>`;
 
-    const card = el("div", "kanban-card");
+    const card = el("div", "kanban-card kanban-card-v2");
     card.dataset.id = t.id;
+    card.draggable = true;
+    card.style.borderLeftColor = KANBAN_PRIORITY_COLORS[level];
     card.innerHTML = `
       <div class="kanban-card-title">${escapeHtml(t.title)}</div>
-      <div class="kanban-card-progress${hasProgress ? "" : " no-progress"}">${escapeHtml(progressText)}</div>
+      <div class="kanban-card-body kanban-card-body-collapsed">${escapeHtml(progressText)}</div>
+      ${pct != null ? `
+      <div class="kanban-card-progress-bar"><div class="kanban-card-progress-fill" style="width:${pct}%"></div></div>
+      <div class="kanban-card-pct">${pct}%</div>` : ""}
       <div class="kanban-card-footer">
-        ${sessName ? `<span class="kanban-card-session">${escapeHtml(sessName)}</span>` : "<span></span>"}
-        ${timeText ? `<span class="kanban-card-time">${escapeHtml(timeText)}</span>` : ""}
+        <span class="kanban-card-time">${timeText ? "🕐 " + escapeHtml(timeText) : ""}</span>
+        <span class="kanban-badge kanban-badge--${badge.cls}">${badge.text}</span>
       </div>
-      ${actionBtns ? `<div class="kanban-card-actions">${actionBtns}</div>` : ""}`;
+      <div class="kanban-card-actions">${actionBtns}</div>`;
 
-    // 点卡片主体跳转关联会话
+    const bodyEl = card.querySelector(".kanban-card-body");
+    if (!hasProgress) bodyEl.classList.add("no-progress");
+
+    // 点卡片主体：展开/收起摘要全文（点按钮或链接不触发）
     card.onclick = (e) => {
       if (e.target.closest(".kanban-btn")) return;
-      if (sess) { switchSession(sess.id); openDetail(); }
+      bodyEl.classList.toggle("kanban-card-body-collapsed");
+      bodyEl.classList.toggle("kanban-card-body-expanded");
     };
 
-    // 刷新进展
+    // ---- 拖拽换列 ----
+    card.addEventListener("dragstart", () => {
+      state.dragTodoId = t.id;
+      state.dragTodoStatus = status;
+      card.classList.add("kanban-card-dragging");
+    });
+    card.addEventListener("dragend", () => card.classList.remove("kanban-card-dragging"));
+
+    // ---- 详情：跳转关联会话并高亮 ----
+    const detailBtn = card.querySelector('[data-act="detail"]');
+    if (detailBtn) {
+      detailBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
+        else toast("暂无关联会话", "info", 1800);
+      };
+    }
+
+    // ---- 单卡刷新进展 ----
     const refreshBtn = card.querySelector('[data-act="refresh"]');
     if (refreshBtn) {
       refreshBtn.onclick = async (e) => {
         e.stopPropagation();
         refreshBtn.classList.add("loading");
-        refreshBtn.textContent = "…";
+        refreshBtn.textContent = "刷新中…";
         try {
           const res = await api(`/api/todos/${t.id}/refresh_progress`, { method: "POST", retry: true });
           if (res.ok && res.progress) {
-            const pEl = card.querySelector(".kanban-card-progress");
-            pEl.textContent = res.progress;
-            pEl.classList.remove("no-progress");
+            bodyEl.textContent = res.progress;
+            bodyEl.classList.remove("no-progress");
             if (res.progress_at) {
-              let tEl = card.querySelector(".kanban-card-time");
-              if (!tEl) { tEl = el("span", "kanban-card-time"); card.querySelector(".kanban-card-footer").appendChild(tEl); }
-              tEl.textContent = fmtTime(res.progress_at);
+              const tEl = card.querySelector(".kanban-card-time");
+              if (tEl) tEl.textContent = "🕐 " + fmtRelTime(res.progress_at);
             }
             toast(res.cached ? "进展无变化" : "进展已更新", "success", 1600);
           } else {
@@ -374,21 +445,8 @@
           toast("刷新失败：" + err.message, "error");
         } finally {
           refreshBtn.classList.remove("loading");
-          refreshBtn.textContent = "↻进展";
+          refreshBtn.textContent = "↻ 刷新";
         }
-      };
-    }
-
-    // 状态切换（开始 / 完成）
-    const actBtn = card.querySelector('[data-act="start"], [data-act="done"]');
-    if (actBtn) {
-      actBtn.onclick = async (e) => {
-        e.stopPropagation();
-        const newStatus = actBtn.dataset.act === "start" ? "in_progress" : "done";
-        try {
-          await api(`/api/todos/${t.id}`, { method: "PUT", body: JSON.stringify({ status: newStatus }) });
-          renderKanban();
-        } catch (err) { toast("状态更新失败：" + err.message, "error"); }
       };
     }
     return card;
@@ -694,6 +752,7 @@
   // 看板顶部按钮：批量刷新进展 / 新建任务
   $("kanban-refresh-btn").onclick = refreshKanbanAll;
   $("kanban-add-btn").onclick = showAddTodoModal;
+  { const b = $("kanban-col-refresh"); if (b) b.onclick = (e) => { e.stopPropagation(); refreshKanbanAll(); }; }
 
   // 接续电脑/终端聊过的会话：列出 → 单击某个即接续并切过去（带完整上下文）
   $("resume-pc-btn").onclick = async () => {
@@ -2180,6 +2239,17 @@
   function escapeAttr(s) { return escapeHtml(s == null ? "" : s); }
   function nowTs() { return Date.now() / 1000; }
   function fmtTime(ts) { if (!ts) return ""; const d = new Date(ts * 1000); return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
+  // 相对时间：「刚刚」「3小时前」「昨天」等，看板卡片底部用
+  function fmtRelTime(ts) {
+    if (!ts) return "";
+    const diff = nowTs() - ts;
+    if (diff < 60) return "刚刚";
+    if (diff < 3600) return Math.floor(diff / 60) + "分钟前";
+    if (diff < 86400) return Math.floor(diff / 3600) + "小时前";
+    if (diff < 172800) return "昨天";
+    if (diff < 604800) return Math.floor(diff / 86400) + "天前";
+    return fmtTime(ts);
+  }
   // 气泡时间戳：今天只显时分，跨天显月日+时分
   function fmtClock(ts) {
     if (!ts) return "";
