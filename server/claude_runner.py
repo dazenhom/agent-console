@@ -1,0 +1,418 @@
+"""封装 Claude Code CLI 的 headless 模式。
+
+通过 `claude -p <msg> --output-format stream-json --verbose [--resume <sid>]`
+启动子进程，逐行解析 stream-json 事件，回调给上层（WebSocket 推送 + 持久化）。
+
+事件类型（Claude Code stream-json）：
+  system/init   -> 初始化，含 session_id、可用工具
+  assistant     -> 助手消息，content 是 block 列表（text / tool_use）
+  user          -> 工具结果回填（tool_result）
+  result        -> 本回合结束，含耗时、花费、num_turns
+"""
+import asyncio
+import json
+import os
+import signal
+import time
+from typing import Awaitable, Callable
+
+from . import config
+
+EventCallback = Callable[[dict], Awaitable[None]]
+
+# stream-json 单行可能很大（含命令输出），放大缓冲上限
+_STREAM_LIMIT = 16 * 1024 * 1024
+
+# 若本服务本身是被某个 claude-code / tclaude 会话拉起的（常见于在 Agent
+# 终端里 `nohup bash run.sh`），进程会继承一批“编排态”环境变量：
+#   ANTHROPIC_BASE_URL  -> 指向父会话的临时网关代理（127.0.0.1:<随机端口>）
+#   ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY -> 只对那个代理有效的临时令牌
+#   CLAUDE_CODE_CHILD_SESSION / CLAUDE_CODE_SESSION_ID / ANTHROPIC_CUSTOM_HEADERS ...
+# 这些值会让我们 spawn 出来的 tclaude 子进程去连父会话的代理，导致
+# “403 API key not allowed for this path or method”——每个回合都鉴权失败。
+# 解决：spawn 前把这些继承来的编排变量清掉，让 tclaude 用它自己的 IOA 登录凭证。
+_STRIP_ENV_KEYS = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_TEAMMATE_COMMAND",
+    "CLAUDE_CONFIG_DIR",      # 让 tclaude 回落到自己的默认配置目录（/root/.tclaude）
+    "CLAUDE_SETTINGS_DIR",
+    "CLAUDECODE",
+)
+
+
+def _child_env() -> dict:
+    """构造给 tclaude 子进程的环境：复制当前环境，剔除继承来的编排态变量。"""
+    env = {k: v for k, v in os.environ.items() if k not in _STRIP_ENV_KEYS}
+    return env
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process, sig: int) -> bool:
+    """优雅地把 proc 整个进程组发信号。返回 True 表示信号已发出。"""
+    if proc.returncode is not None:
+        return False
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, sig)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        # 兜底：至少把直接子进程杀掉
+        try:
+            if sig == signal.SIGKILL:
+                proc.kill()
+            else:
+                proc.terminate()
+            return True
+        except Exception:
+            return False
+
+
+class ClaudeRunner:
+    def __init__(self):
+        # session_id -> {"proc": Process, "cancelled": bool}  （老模式：每回合一个进程）
+        self._procs: dict[str, dict] = {}
+        # session_id -> 常驻进程记录（新模式）：
+        #   {proc, stdin, reader_task, claude_sid, last_active, on_event, result_evt,
+        #    cancelled, lock, error}
+        self._sessions: dict[str, dict] = {}
+
+    def _build_cmd(self, *, message: str | None, model: str | None,
+                   resume: str | None, stream_input: bool) -> list[str]:
+        """组 tclaude 命令。stream_input=True 时走常驻 stream-json 输入（message 走 stdin）。"""
+        cmd = [config.CLAUDE_BIN, "--", "-p"]
+        if not stream_input:
+            cmd.append(message)
+        cmd += ["--output-format", "stream-json", "--verbose"]
+        if stream_input:
+            cmd += ["--input-format", "stream-json"]
+        if model:
+            cmd += ["--model", model]
+        if config.CLAUDE_EFFORT:
+            cmd += ["--effort", config.CLAUDE_EFFORT]
+        if config.CLAUDE_STREAM_PARTIAL:
+            cmd += ["--include-partial-messages"]
+        try:
+            from . import agent_store
+            aj = agent_store.agents_json()
+            if aj:
+                cmd += ["--agents", aj]
+        except Exception:
+            pass
+        if resume:
+            cmd += ["--resume", resume]
+        if config.CLAUDE_SKIP_PERMISSIONS:
+            cmd += ["--dangerously-skip-permissions"]
+        elif config.CLAUDE_ALLOWED_TOOLS.strip():
+            # root 下 skip-permissions 被拒，改用 allowedTools 放行工具免权限提示。
+            # 空格分隔的工具名直接作为多个参数传给 --allowedTools。
+            cmd += ["--allowedTools", *config.CLAUDE_ALLOWED_TOOLS.split()]
+        return cmd
+
+    def _get_proc(self, session_id: str) -> asyncio.subprocess.Process | None:
+        rec = self._procs.get(session_id)
+        return rec["proc"] if rec else None
+
+    def is_running(self, session_id: str) -> bool:
+        # 常驻模式：以"本回合是否进行中"为准（进程常活着）
+        sess = self._sessions.get(session_id)
+        if sess is not None:
+            return bool(sess.get("turn_active"))
+        proc = self._get_proc(session_id)
+        return proc is not None and proc.returncode is None
+
+    def was_cancelled(self, session_id: str) -> bool:
+        rec = self._procs.get(session_id)
+        return bool(rec and rec.get("cancelled"))
+
+    async def cancel(self, session_id: str) -> None:
+        """中断当前回合。常驻模式：杀进程（下回合自动 resume 续上）；老模式：杀进程组。"""
+        sess = self._sessions.get(session_id)
+        if sess is not None:
+            sess["cancelled"] = True
+            await self._kill_session(session_id)
+            # 唤醒在等本回合结束的 send_turn
+            evt = sess.get("result_evt")
+            if evt:
+                evt.set()
+            return
+        rec = self._procs.get(session_id)
+        if not rec:
+            return
+        proc = rec["proc"]
+        if proc.returncode is not None:
+            return
+        rec["cancelled"] = True
+        _kill_process_group(proc, signal.SIGTERM)
+        # 异步等 2 秒，看是否需要 SIGKILL
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            _kill_process_group(proc, signal.SIGKILL)
+
+    async def run_turn(
+        self,
+        session_id: str,
+        message: str,
+        workdir: str,
+        resume_claude_session: str | None,
+        on_event: EventCallback,
+        model: str | None = None,
+    ) -> dict:
+        """跑一个回合。返回 {claude_session_id, returncode, error}。
+
+        model: 传给 `tclaude -- -p ... --model <name>`，None/空字符串则不传由 CLI 决定。
+        """
+        cmd = self._build_cmd(message=message, model=model,
+                              resume=resume_claude_session, stream_input=False)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=workdir,
+                env=_child_env(),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_STREAM_LIMIT,
+                # 把子进程放到独立的 process group，cancel 时一次性杀掉
+                # （否则 node + bash 子进程会变孤儿继续跑）
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            return {
+                "claude_session_id": resume_claude_session,
+                "returncode": -1,
+                "error": f"找不到 Claude CLI：{config.CLAUDE_BIN}，请设置环境变量 CLAUDE_BIN 指向真实路径。",
+            }
+
+        self._procs[session_id] = {"proc": proc, "cancelled": False}
+        claude_session_id = resume_claude_session
+
+        async def _read_stdout():
+            nonlocal claude_session_id
+            while True:
+                try:
+                    line = await proc.stdout.readline()
+                except (asyncio.LimitOverrunError, ValueError):
+                    # 单行超长，跳过该行避免崩溃
+                    continue
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text:
+                    continue
+                try:
+                    evt = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                sid = evt.get("session_id")
+                if sid:
+                    claude_session_id = sid
+                await on_event(evt)
+
+        error = ""
+        try:
+            await asyncio.wait_for(_read_stdout(), timeout=config.CLAUDE_TURN_TIMEOUT)
+            # 读完 stdout 后再等子进程退出，但同样给个上限，防 wait 永远卡住
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    pass
+        except asyncio.TimeoutError:
+            proc.terminate()
+            error = f"Agent 回合超过 {config.CLAUDE_TURN_TIMEOUT}s 超时，已终止。"
+            # 超时后给一点时间让子进程响应 SIGTERM，否则强杀
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            stderr_bytes = b""
+            try:
+                # 读 stderr 也加超时，避免 fd 异常时永远阻塞
+                stderr_bytes = await asyncio.wait_for(proc.stderr.read(), timeout=3)
+            except Exception:
+                pass
+            if stderr_bytes and proc.returncode not in (0, None):
+                error = error or stderr_bytes.decode("utf-8", errors="replace").strip()
+            # 注意：此处不 pop，留到 return 前再 pop，这样上面能读到 cancelled 标记
+
+        # 若是用户主动 cancel，覆盖原始 error，给前端一个清晰提示
+        cancelled = bool(self._procs.get(session_id, {}).get("cancelled"))
+        if cancelled and not error:
+            error = "已取消"
+        elif cancelled:
+            error = f"已取消（{error}）"
+        # 注意：此处先读 cancelled 再 pop，避免 finally 已经 pop 后丢状态
+        self._procs.pop(session_id, None)
+
+        return {
+            "claude_session_id": claude_session_id,
+            "returncode": proc.returncode,
+            "error": error,
+            "cancelled": cancelled,
+        }
+
+    # ============== 常驻进程模式（--input-format stream-json）==============
+    async def _kill_session(self, session_id: str) -> None:
+        """杀掉某会话的常驻进程（不删记录，spawn 时会覆盖）。"""
+        sess = self._sessions.get(session_id)
+        if not sess:
+            return
+        proc = sess.get("proc")
+        if proc and proc.returncode is None:
+            _kill_process_group(proc, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                _kill_process_group(proc, signal.SIGKILL)
+        rt = sess.get("reader_task")
+        if rt and not rt.done():
+            rt.cancel()
+
+    async def _spawn_session(self, session_id: str, workdir: str, model: str | None,
+                             resume: str | None) -> dict:
+        """为会话拉起一个常驻 stream-json 进程，启动后台 reader。返回 sess 记录。"""
+        cmd = self._build_cmd(message=None, model=model, resume=resume, stream_input=True)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=workdir, env=_child_env(),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            limit=_STREAM_LIMIT, start_new_session=True,
+        )
+        sess = {
+            "proc": proc, "stdin": proc.stdin, "claude_sid": resume,
+            "last_active": time.monotonic(), "turn_active": False,
+            "cancelled": False, "on_event": None, "result_evt": None, "workdir": workdir,
+            "model": model,
+        }
+        self._sessions[session_id] = sess
+        sess["reader_task"] = asyncio.ensure_future(self._reader(session_id))
+        return sess
+
+    async def _reader(self, session_id: str):
+        """后台持续读常驻进程 stdout，把事件转给当前回合的 on_event；result 标志回合结束。"""
+        sess = self._sessions.get(session_id)
+        if not sess:
+            return
+        proc = sess["proc"]
+        while True:
+            try:
+                line = await proc.stdout.readline()
+            except (asyncio.LimitOverrunError, ValueError):
+                continue
+            if not line:
+                break  # 进程结束/ stdout 关闭
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+            try:
+                evt = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            sid = evt.get("session_id")
+            if sid:
+                sess["claude_sid"] = sid
+            cb = sess.get("on_event")
+            if cb:
+                try:
+                    await cb(evt)
+                except Exception:
+                    pass
+            # result 事件 = 本回合结束，唤醒 send_turn
+            if evt.get("type") == "result":
+                ev = sess.get("result_evt")
+                if ev:
+                    ev.set()
+        # 进程退出：若有人在等回合结束，也唤醒（让其按崩溃处理）
+        ev = sess.get("result_evt")
+        if ev:
+            ev.set()
+
+    async def send_turn(self, session_id: str, message: str, workdir: str,
+                        resume_claude_session: str | None, on_event: EventCallback,
+                        model: str | None = None) -> dict:
+        """常驻进程模式跑一回合。进程不存在/已死则拉起（带 resume），写 stdin，等本回合 result。"""
+        sess = self._sessions.get(session_id)
+        proc_dead = (not sess) or (sess["proc"].returncode is not None)
+        if proc_dead:
+            # 崩溃/超时/首次：重新拉起，用上次 claude_sid 或传入的 resume 续上下文
+            resume = (sess or {}).get("claude_sid") or resume_claude_session
+            try:
+                sess = await self._spawn_session(session_id, workdir, model, resume)
+            except FileNotFoundError:
+                return {"claude_session_id": resume_claude_session, "returncode": -1,
+                        "error": f"找不到 Claude CLI：{config.CLAUDE_BIN}"}
+
+        sess["on_event"] = on_event
+        sess["cancelled"] = False
+        sess["turn_active"] = True
+        sess["last_active"] = time.monotonic()
+        result_evt = asyncio.Event()
+        sess["result_evt"] = result_evt
+
+        # 写一行 stream-json 用户消息
+        payload = json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": message}]},
+        }, ensure_ascii=False) + "\n"
+        try:
+            sess["stdin"].write(payload.encode("utf-8"))
+            await sess["stdin"].drain()
+        except Exception as e:
+            sess["turn_active"] = False
+            return {"claude_session_id": sess.get("claude_sid"), "returncode": -1,
+                    "error": f"写入失败，进程可能已退出：{e}"}
+
+        # 等本回合 result（或被 cancel/崩溃唤醒），带超时
+        error = ""
+        try:
+            await asyncio.wait_for(result_evt.wait(), timeout=config.CLAUDE_TURN_TIMEOUT)
+        except asyncio.TimeoutError:
+            error = f"Agent 回合超过 {config.CLAUDE_TURN_TIMEOUT}s 超时，已终止。"
+            await self._kill_session(session_id)
+
+        cancelled = bool(sess.get("cancelled"))
+        sess["turn_active"] = False
+        sess["on_event"] = None
+        sess["result_evt"] = None
+        sess["last_active"] = time.monotonic()
+
+        # 进程是否在本回合中死掉（崩溃或被 cancel 杀）
+        if sess["proc"].returncode is not None and not error:
+            if cancelled:
+                error = "已取消"
+            else:
+                error = "Agent 进程已退出（下次发送会自动重启续上下文）"
+
+        return {
+            "claude_session_id": sess.get("claude_sid"),
+            "returncode": sess["proc"].returncode,
+            "error": error,
+            "cancelled": cancelled,
+        }
+
+    async def cleanup_idle(self) -> None:
+        """回收空闲超时的常驻进程（下次消息会自动重起 + resume）。"""
+        now = time.monotonic()
+        for sid, sess in list(self._sessions.items()):
+            if sess.get("turn_active"):
+                continue
+            if now - sess.get("last_active", now) > config.CLAUDE_SESSION_IDLE_SEC:
+                await self._kill_session(sid)
+
+
+runner = ClaudeRunner()

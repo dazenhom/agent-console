@@ -1,0 +1,36 @@
+# ---- 运行时数据（含会话DB）----
+data/console.db
+data/console.db-wal
+data/console.db-shm
+data/*.db
+data/*.sqlite*
+
+# ---- 私钥/证书（run.sh 会自动生成）----
+data/certs/
+*.key
+*.crt
+*.pem
+
+# ---- 日志与临时产物 ----
+*.log
+_mt.log
+_models.out
+*.out
+
+# ---- 上传文件 ----
+.console_uploads/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# ---- 编辑器/系统 ----
+.DS_Store
+*.swp
+
+# ---- Claude 本地配置 ----
+.claude/settings.local.json

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#eef1f5" />
+  <title>Agent Console</title>
+  <!-- PWA：添加到主屏，独立窗口全屏启动。资源用相对路径，兼容 /proxy/80/ 子路径访问 -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Agent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <link rel="stylesheet" href="style.css?v=13" />
+</head>
+<body>
+  <!-- 登录页 -->
+  <div id="login-view" class="view">
+    <div class="login-card">
+      <h1>Agent Console</h1>
+      <p class="muted">多 Agent 调度台</p>
+      <input id="token-input" type="password" placeholder="访问口令" autocomplete="current-password" />
+      <button id="login-btn">进 入</button>
+      <div id="login-error" class="error-text"></div>
+    </div>
+  </div>
+
+  <!-- 主界面：顶部 Tab + 双栏 hub -->
+  <div id="app-view" class="view hidden">
+    <!-- 顶部 Tab 导航 -->
+    <nav class="tabbar">
+      <button class="tab-btn active" data-tab="overview"><span class="tab-ico">▦</span><span class="tab-label">Overview</span></button>
+      <button class="tab-btn" data-tab="sessions"><span class="tab-ico">☷</span><span class="tab-label">Sessions</span></button>
+      <button class="tab-btn" data-tab="new"><span class="tab-ico">＋</span><span class="tab-label">New</span></button>
+      <button class="tab-btn" data-tab="review"><span class="tab-ico">▤</span><span class="tab-label">Review</span></button>
+      <button class="tab-btn" data-tab="experimental"><span class="tab-ico">⌬</span><span class="tab-label">Experimental</span></button>
+      <span class="tabbar-spacer"></span>
+      <select id="mode-select" class="mode-select" title="模型档位">
+        <option value="fast">极速</option>
+        <option value="strong">均衡</option>
+        <option value="super">最强</option>
+      </select>
+      <span id="conn-dot" class="conn-dot" title="连接状态"></span>
+    </nav>
+
+    <!-- 双栏：左 = 当前 Tab 内容，右 = 会话详情 -->
+    <div class="hub">
+      <!-- 左栏：多个 Tab 面板共用此容器 -->
+      <aside class="hub-left">
+        <!-- Overview：工作看板 + Agents 列表 -->
+        <div class="tab-pane active" data-pane="overview">
+          <div class="hub-left-scroll">
+            <div class="dashboard-head">
+              <div class="dash-kicker">Work dashboard</div>
+              <div class="dash-title" id="dash-title">Agent 调度台</div>
+            </div>
+            <div class="dashboard" id="dashboard"></div>
+            <div class="agents-head">
+              <div>
+                <div class="agents-title">Agents</div>
+                <div class="agents-sub" id="agents-sub">加载中…</div>
+              </div>
+              <button id="refresh-tasks" class="refresh-link">刷新</button>
+              <button id="new-advanced-btn" class="refresh-link">高级新建</button>
+            </div>
+            <ul id="session-list" class="session-list"></ul>
+          </div>
+        </div>
+
+        <!-- Sessions：全量会话列表 + 搜索 -->
+        <div class="tab-pane list-pane" data-pane="sessions">
+          <div class="list-pane-inner">
+            <div class="pane-head">所有会话</div>
+            <input id="session-search" class="session-search" type="search" placeholder="搜索会话…" />
+            <ul id="session-list-all" class="session-list"></ul>
+          </div>
+        </div>
+
+        <!-- New：新建会话（点顶部「＋」可一键新建；这里是高级配置 + 接续入口） -->
+        <div class="tab-pane new-pane" data-pane="new">
+          <div class="new-pane-inner">
+            <div class="pane-head">新建会话</div>
+            <div class="agents-sub" style="margin-bottom:12px">点顶部「＋」可一键新建（走默认配置）。需要自定义时，在下方展开高级配置。</div>
+            <details class="new-advanced">
+              <summary>高级配置</summary>
+              <form id="new-form" class="entity-form">
+                <label>会话标题
+                  <input id="nf-title" placeholder="例：排查训练 loss 异常" />
+                </label>
+                <label>工作目录（workdir）
+                  <input id="nf-workdir" placeholder="留空用默认目录" />
+                </label>
+                <label>模型档位
+                  <select id="nf-mode">
+                    <option value="fast">极速</option>
+                    <option value="strong">均衡</option>
+                    <option value="super">最强</option>
+                  </select>
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="save">创建会话</button>
+                </div>
+              </form>
+            </details>
+            <div class="form-actions" style="margin-top:14px">
+              <button type="button" id="resume-pc-btn" class="cancel">💻 接续电脑会话</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Review：待审视会话 -->
+        <div class="tab-pane list-pane" data-pane="review">
+          <div class="list-pane-inner">
+            <div class="pane-head">待审视</div>
+            <div class="agents-sub" style="margin-bottom:12px">已完成、等待你查看结果的会话</div>
+            <ul id="session-list-review" class="session-list"></ul>
+          </div>
+        </div>
+
+        <!-- Experimental：管理中心 -->
+        <div class="tab-pane exp-pane" data-pane="experimental">
+          <div class="exp-inner">
+            <div class="pane-head">管理中心</div>
+            <div class="exp-grid">
+              <button id="open-memory-btn" class="manage-entry">🧠 记忆库</button>
+              <button id="open-agents-btn" class="manage-entry">🤖 子智能体</button>
+              <button id="open-snippets-btn" class="manage-entry">⚡ 快捷指令</button>
+              <button id="open-schedules-btn" class="manage-entry">⏰ 定时任务</button>
+              <button id="open-todos-btn" class="manage-entry">✅ 待办清单</button>
+              <button id="open-reports-btn" class="manage-entry">📋 日报记录</button>
+              <button id="secretary-trigger-btn" class="manage-entry">🤖 立即生成日报</button>
+              <button id="notify-toggle" class="manage-entry">🔔 完成提醒：关</button>
+              <button id="voicesend-toggle" class="manage-entry">🎙️ 语音直发：关</button>
+            </div>
+            <div class="exp-sub-head">最近任务</div>
+            <ul id="task-list" class="task-list"></ul>
+            <button id="logout-btn" class="logout-btn">退出登录</button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 右栏：会话详情面板 -->
+      <section class="hub-right" id="detail-panel">
+        <div class="detail-head">
+          <div class="detail-head-row">
+            <div class="detail-title" id="session-title">会话</div>
+            <div class="detail-head-btns">
+              <button id="detail-peek-btn" class="detail-icon-btn" title="速览">👁</button>
+              <button id="detail-close-btn" class="detail-icon-btn" title="返回列表" aria-label="返回">&#8592;</button>
+            </div>
+          </div>
+          <div class="detail-meta">
+            <span id="workdir-bar" class="workdir-bar hidden" title="点击修改工作目录"></span>
+            <span id="session-id-bar" class="sid-bar hidden" title="点击复制会话 ID"></span>
+          </div>
+        </div>
+
+        <!-- 聊天 / 正文 -->
+        <main id="chat" class="chat"></main>
+
+        <!-- 快捷指令 chip 行 -->
+        <div id="snippet-bar" class="snippet-bar hidden"></div>
+
+        <!-- 待发送图片预览条 -->
+        <div id="img-tray" class="img-tray hidden"></div>
+
+        <!-- Reply 输入区 -->
+        <footer class="composer">
+          <button id="cancel-btn" class="cancel-btn hidden">停止</button>
+          <button id="img-btn" class="img-btn" aria-label="发图片" title="拍照/选图发给 Agent">&#128247;</button>
+          <input id="img-input" type="file" accept="image/*" capture="environment" hidden />
+          <button id="mic-btn" class="mic-btn" aria-label="语音输入" title="点击录音">&#127908;</button>
+          <div class="input-wrap">
+            <textarea id="input" rows="1" placeholder="给 Agent 下达指令…"></textarea>
+            <span id="char-count" class="char-count hidden"></span>
+          </div>
+          <button id="send-btn" class="send-btn" aria-label="发送">&#9993; Send</button>
+        </footer>
+
+        <!-- 底部操作：Resume / Stop / Archive -->
+        <div class="detail-actions">
+          <button id="act-resume" class="act-btn">▷ Resume</button>
+          <button id="act-stop" class="act-btn danger">‖ Stop</button>
+          <button id="act-archive" class="act-btn">🗄 Archive</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 语音录制浮层 -->
+  <div id="voice-overlay" class="voice-overlay hidden">
+    <div class="voice-card">
+      <div class="voice-wave"><span></span><span></span><span></span><span></span><span></span></div>
+      <div id="voice-text" class="voice-text">正在录音…</div>
+      <div class="voice-actions">
+        <button id="voice-cancel" class="voice-btn cancel" type="button">取消</button>
+        <button id="voice-done" class="voice-btn done" type="button">完成发送</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 全屏管理面板（记忆库 / 子智能体 / 快捷指令 / 定时任务 编辑） -->
+  <div id="manage-view" class="view manage-view hidden">
+    <header class="topbar">
+      <button id="manage-back" class="icon-btn" aria-label="返回">&#8592;</button>
+      <div class="topbar-title" id="manage-title">管理</div>
+      <button id="manage-new" class="mini-btn">+ 新建</button>
+    </header>
+    <main class="manage-body">
+      <ul id="manage-list" class="entity-list"></ul>
+      <form id="manage-form" class="entity-form hidden"></form>
+    </main>
+  </div>
+
+  <!-- 浮层容器：toast 通知 + 模态确认框 -->
+  <div id="toast-root" class="toast-root"></div>
+  <div id="modal-root" class="modal-root hidden"></div>
+
+  <script src="app.js?v=13"></script>
+  <script>
+    // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
+    if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("sw.js").catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
