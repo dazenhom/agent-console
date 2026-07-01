@@ -640,6 +640,7 @@
         const bodyEl = card.querySelector(".kanban-card-body");
         if (bodyEl && data.progress) {
           bodyEl.textContent = data.progress;
+          bodyEl.classList.remove("no-progress");
         }
         if (data.progress_at) {
           const tEl = card.querySelector(".kanban-card-time");
