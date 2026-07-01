@@ -578,6 +578,18 @@ async def upload_image(payload: dict):
         target.write_bytes(raw)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败：{e}")
+    ttl_days = config.UPLOAD_TTL_DAYS
+    if ttl_days > 0:
+        cutoff = _t.time() - ttl_days * 86400
+        try:
+            for f in base.iterdir():
+                try:
+                    if f.is_file() and f.stat().st_mtime < cutoff:
+                        f.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
     return {"path": str(target), "abs": str(target), "bytes": len(raw)}
 
 
