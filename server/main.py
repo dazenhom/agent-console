@@ -25,6 +25,8 @@ async def lifespan(app: FastAPI):
     _uploads_cleanup_task = asyncio.ensure_future(_uploads_cleanup_loop())
     yield
     # 关闭：当前没有需要清理的资源（子进程在每回合结束时会自行清理）。
+    if _uploads_cleanup_task and not _uploads_cleanup_task.done():
+        _uploads_cleanup_task.cancel()
 
 
 app = FastAPI(title="Agent Console", lifespan=lifespan)
