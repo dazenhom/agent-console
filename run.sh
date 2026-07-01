@@ -35,8 +35,11 @@ export NVM_BIN="${NVM_BIN:-$(dirname "$CLAUDE_BIN")}"
 export PATH="$NVM_BIN:$PATH"
 # tclaude 在 root 下会拒绝 --dangerously-skip-permissions；默认权限模式 root 已能跑工具，保持 false
 export CLAUDE_SKIP_PERMISSIONS="${CLAUDE_SKIP_PERMISSIONS:-false}"
-# 单次回合超时
+# 单次回合超时（老模式 run_turn 硬超时用；常驻模式已改看门狗，见下方）
 export CLAUDE_TURN_TIMEOUT="${CLAUDE_TURN_TIMEOUT:-1800}"
+# 看门狗：空闲多久判卡死、回合绝对安全上限（常驻模式 send_turn 用）
+export CLAUDE_IDLE_TIMEOUT="${CLAUDE_IDLE_TIMEOUT:-600}"
+export CLAUDE_TURN_MAX="${CLAUDE_TURN_MAX:-7200}"
 
 # ====== Knot 配置（保留：knot_runner.py 仍可作为备份后端切换） ======
 export KNOT_TOKEN="${KNOT_TOKEN:-}"

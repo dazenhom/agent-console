@@ -10,7 +10,10 @@
   result        -> 本回合结束，含耗时、花费、num_turns
 """
 import asyncio
+import collections
+import hashlib
 import json
+import logging
 import os
 import signal
 import time
@@ -18,7 +21,57 @@ from typing import Awaitable, Callable
 
 from . import config
 
+logger = logging.getLogger(__name__)
+
 EventCallback = Callable[[dict], Awaitable[None]]
+
+
+class LoopDetector:
+    """轻量循环检测：喂进原始 stream-json 事件，判断 agent 是否卡在循环里。
+
+    两种循环信号：
+      1. 连续 repeat_threshold 次完全相同的工具调用（name+input 一致）；
+      2. 连续 error_threshold 次工具报错（tool_result.is_error）。
+    """
+
+    def __init__(self, repeat_threshold=8, error_threshold=10):
+        self.repeat_threshold = repeat_threshold
+        self.error_threshold = error_threshold
+        self._recent_calls = collections.deque(maxlen=repeat_threshold + 2)
+        self._consec_errors = 0
+
+    def feed(self, evt: dict):
+        """返回 (is_loop: bool, reason: str)。"""
+        # 真实 stream-json 事件里 content 嵌在 message 下（见 session_hub.translate_event），
+        # 少数场景可能直接挂在顶层，两处都兼容。
+        content = (evt.get("message") or {}).get("content")
+        if content is None:
+            content = evt.get("content")
+        if not isinstance(content, list):
+            content = []
+        # 从 assistant 事件提取 tool_use，检测重复调用
+        if evt.get("role") == "assistant" or evt.get("type") == "assistant":
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    sig = block.get("name", "") + "|" + hashlib.md5(
+                        json.dumps(block.get("input", {}), sort_keys=True).encode()
+                    ).hexdigest()[:8]
+                    self._recent_calls.append(sig)
+                    if len(self._recent_calls) >= self.repeat_threshold:
+                        tail = list(self._recent_calls)[-self.repeat_threshold:]
+                        if len(set(tail)) == 1:
+                            return True, f"工具 '{block.get('name')}' 连续相同调用 {self.repeat_threshold} 次"
+        # 从 user 事件提取 tool_result，检测连续报错
+        if evt.get("role") == "user" or evt.get("type") == "user":
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    if block.get("is_error"):
+                        self._consec_errors += 1
+                        if self._consec_errors >= self.error_threshold:
+                            return True, f"连续工具报错 {self._consec_errors} 次"
+                    else:
+                        self._consec_errors = 0
+        return False, ""
 
 # stream-json 单行可能很大（含命令输出），放大缓冲上限
 _STREAM_LIMIT = 16 * 1024 * 1024
@@ -321,6 +374,10 @@ class ClaudeRunner:
             "cancelled": False, "on_event": None, "on_permission": None,
             "result_evt": None, "workdir": workdir,
             "model": model,
+            # 看门狗：循环检测器 + 循环命中标记（reader 里喂事件，send_turn 里轮询判定）
+            "loop_detector": LoopDetector(config.CLAUDE_LOOP_REPEAT, config.CLAUDE_LOOP_ERRORS),
+            "loop_detected": False,
+            "loop_reason": "",
         }
         self._sessions[session_id] = sess
         sess["reader_task"] = asyncio.ensure_future(self._reader(session_id))
@@ -349,6 +406,12 @@ class ClaudeRunner:
             sid = evt.get("session_id")
             if sid:
                 sess["claude_sid"] = sid
+            # 看门狗：任何一条成功解析的事件都算"仍在推进"，刷新活跃时间并喂给循环检测器
+            sess["last_active"] = time.monotonic()
+            is_loop, reason = sess["loop_detector"].feed(evt)
+            if is_loop:
+                sess["loop_detected"] = True
+                sess["loop_reason"] = reason
             # control_request：CLI 请求授权某个未放行的工具（--input-format stream-json 下），
             # 等我们回一行 control_response。转给 on_permission 回调走前端弹窗，不当作普通事件，
             # 更不触发 result（本回合还没结束，仍在等授权）。
@@ -406,6 +469,9 @@ class ClaudeRunner:
         sess["cancelled"] = False
         sess["turn_active"] = True
         sess["last_active"] = time.monotonic()
+        # 每回合开始清掉上一回合的循环命中标记（检测器内部计数也随之作为新回合基线）
+        sess["loop_detected"] = False
+        sess["loop_reason"] = ""
         result_evt = asyncio.Event()
         sess["result_evt"] = result_evt
 
@@ -422,13 +488,46 @@ class ClaudeRunner:
             return {"claude_session_id": sess.get("claude_sid"), "returncode": -1,
                     "error": f"写入失败，进程可能已退出：{e}"}
 
-        # 等本回合 result（或被 cancel/崩溃唤醒），带超时
+        # 等本回合 result（或被 cancel/崩溃唤醒）。看门狗轮询：只要 agent 还在推进
+        # （有新事件刷新 last_active）就继续等；仅在检测到循环、长时间空闲、或超过绝对
+        # 安全上限时才主动终止。
         error = ""
-        try:
-            await asyncio.wait_for(result_evt.wait(), timeout=config.CLAUDE_TURN_TIMEOUT)
-        except asyncio.TimeoutError:
-            error = f"Agent 回合超过 {config.CLAUDE_TURN_TIMEOUT}s 超时，已终止。"
-            await self._kill_session(session_id)
+        start = time.monotonic()
+        while True:
+            try:
+                await asyncio.wait_for(result_evt.wait(), timeout=config.CLAUDE_WATCHDOG_INTERVAL)
+                break  # 回合正常结束（result 事件或进程退出唤醒）
+            except asyncio.TimeoutError:
+                now = time.monotonic()
+                # 会话记录理论上不会被 _kill_session 移除（它只杀进程不删记录），
+                # 但仍防御性判空，避免竞态下解引用崩溃。
+                cur = self._sessions.get(session_id)
+                if cur is None:
+                    break
+                # 循环检测
+                if cur.get("loop_detected"):
+                    reason = cur.get("loop_reason", "未知循环")
+                    error = f"检测到 Agent 循环（{reason}），已终止。"
+                    logger.warning("session %s: loop detected: %s", session_id, reason)
+                    await self._kill_session(session_id)
+                    break
+                # 空闲超时
+                idle = now - cur.get("last_active", start)
+                if idle > config.CLAUDE_IDLE_TIMEOUT:
+                    error = f"Agent {int(idle)}s 内无任何输出，判定卡死，已终止。"
+                    logger.warning("session %s: idle timeout after %ds", session_id, int(idle))
+                    await self._kill_session(session_id)
+                    break
+                # 绝对上限
+                elapsed = now - start
+                if elapsed > config.CLAUDE_TURN_MAX:
+                    error = f"Agent 回合超过安全上限 {config.CLAUDE_TURN_MAX}s，已终止。"
+                    logger.warning("session %s: hard ceiling %ds reached", session_id, int(elapsed))
+                    await self._kill_session(session_id)
+                    break
+                # 仍在推进，继续等
+                logger.debug("session %s: watchdog tick, idle=%.1fs, elapsed=%.1fs",
+                             session_id, idle, elapsed)
 
         cancelled = bool(sess.get("cancelled"))
         sess["turn_active"] = False

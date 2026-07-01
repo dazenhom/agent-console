@@ -23,8 +23,17 @@ CLAUDE_ALLOWED_TOOLS = os.environ.get(
 # 是否开启权限请求弹窗：未放行的工具触发 control_request 时，经 WS 推前端弹窗让用户确认，
 # 用户点允许/拒绝后回 control_response 给 CLI。仅在常驻模式（有 stdin 可回写）下生效。
 CLAUDE_PERMISSION_PROMPT = os.getenv("CLAUDE_PERMISSION_PROMPT", "true").lower() == "true"
-# 单次 Agent 回合的超时（秒），防止卡死
+# 单次 Agent 回合的超时（秒），防止卡死。
+# 注意：常驻模式已改为"空闲超时 + 循环检测 + 安全上限"的看门狗机制（见下方几个变量），
+# 这个值仅老模式（run_turn）仍作硬超时用，保留向后兼容。
 CLAUDE_TURN_TIMEOUT = int(os.environ.get("CLAUDE_TURN_TIMEOUT", "1800"))
+# 看门狗机制（常驻模式 send_turn）：只要 agent 还在推进（有新事件）就不杀，
+# 只有真正卡死（长时间无事件）、在循环、或超过绝对安全上限才终止。
+CLAUDE_IDLE_TIMEOUT = int(os.environ.get("CLAUDE_IDLE_TIMEOUT", "600"))   # 600s无事件 → 判定卡死
+CLAUDE_TURN_MAX = int(os.environ.get("CLAUDE_TURN_MAX", "7200"))           # 2h绝对上限
+CLAUDE_LOOP_REPEAT = int(os.environ.get("CLAUDE_LOOP_REPEAT", "8"))        # 相同工具调用连续N次 → 循环
+CLAUDE_LOOP_ERRORS = int(os.environ.get("CLAUDE_LOOP_ERRORS", "10"))       # 连续报错N次 → 循环
+CLAUDE_WATCHDOG_INTERVAL = int(os.environ.get("CLAUDE_WATCHDOG_INTERVAL", "15"))  # 看门狗检查间隔
 # 是否加 --include-partial-messages：开启后 CLI 逐字推送文本增量，前端做打字机效果。
 # 关掉则回到整段输出（向后兼容）。
 CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() == "true"
