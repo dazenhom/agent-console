@@ -13,11 +13,16 @@ from .claude_runner import runner
 from .session_hub import hub, Subscriber
 
 
+_uploads_cleanup_task = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动：初始化 SQLite。比 @app.on_event("startup") 更可靠，TestClient / 多种部署方式都能触发。
     db.init_db()
     scheduler.start()  # 挂起定时任务后台循环
+    global _uploads_cleanup_task
+    _uploads_cleanup_task = asyncio.ensure_future(_uploads_cleanup_loop())
     yield
     # 关闭：当前没有需要清理的资源（子进程在每回合结束时会自行清理）。
 
@@ -534,6 +539,21 @@ def _cleanup_uploads(directory, cutoff):
         pass
 
 
+async def _uploads_cleanup_loop():
+    import time as _t2
+    ttl_days = config.UPLOAD_TTL_DAYS
+    interval = config.UPLOAD_CLEAN_INTERVAL_HOURS
+    if ttl_days <= 0 or interval <= 0:
+        return
+    while True:
+        try:
+            cutoff = _t2.time() - ttl_days * 86400
+            await asyncio.to_thread(_cleanup_uploads, config.UPLOAD_DIR, cutoff)
+        except Exception:
+            pass
+        await asyncio.sleep(interval * 3600)
+
+
 @app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload_image(payload: dict):
     """收 base64 图片存到项目固定目录 UPLOAD_DIR 下，返回绝对路径供注入消息。
@@ -590,10 +610,6 @@ async def upload_image(payload: dict):
         target.write_bytes(raw)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败：{e}")
-    ttl_days = config.UPLOAD_TTL_DAYS
-    if ttl_days > 0:
-        cutoff = _t.time() - ttl_days * 86400
-        await asyncio.to_thread(_cleanup_uploads, base, cutoff)
     return {"path": str(target), "abs": str(target), "bytes": len(raw)}
 
 

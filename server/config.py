@@ -64,6 +64,7 @@ UPLOAD_DIR_NAME = os.environ.get("UPLOAD_DIR_NAME", ".console_uploads")
 UPLOAD_DIR = BASE_DIR / UPLOAD_DIR_NAME
 UPLOAD_MAX_BYTES = int(os.environ.get("UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
 UPLOAD_TTL_DAYS = int(os.environ.get("UPLOAD_TTL_DAYS", "7"))
+UPLOAD_CLEAN_INTERVAL_HOURS = int(os.environ.get("UPLOAD_CLEAN_INTERVAL_HOURS", "6"))
 
 # ---- Knot HTTPS API ----
 # 文档：https://iwiki.woa.com/p/4016921090
