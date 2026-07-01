@@ -522,6 +522,18 @@ _IMG_MIME_TO_EXT = {
 }
 
 
+def _cleanup_uploads(directory, cutoff):
+    try:
+        for f in directory.iterdir():
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 @app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload_image(payload: dict):
     """收 base64 图片存到项目固定目录 UPLOAD_DIR 下，返回绝对路径供注入消息。
@@ -581,15 +593,7 @@ async def upload_image(payload: dict):
     ttl_days = config.UPLOAD_TTL_DAYS
     if ttl_days > 0:
         cutoff = _t.time() - ttl_days * 86400
-        try:
-            for f in base.iterdir():
-                try:
-                    if f.is_file() and f.stat().st_mtime < cutoff:
-                        f.unlink()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        await asyncio.to_thread(_cleanup_uploads, base, cutoff)
     return {"path": str(target), "abs": str(target), "bytes": len(raw)}
 
 
