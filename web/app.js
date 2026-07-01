@@ -954,6 +954,7 @@
   // 看板顶部按钮：批量刷新进展 / 新建任务
   $("kanban-refresh-btn").onclick = refreshKanbanAll;
   $("kanban-add-btn").onclick = showAddTodoModal;
+  { const b = $("dash-add-btn"); if (b) b.onclick = showAddTodoModal; }
   { const b = $("kanban-col-refresh"); if (b) b.onclick = (e) => { e.stopPropagation(); refreshKanbanAll(); }; }
 
   // 接续电脑/终端聊过的会话：列出 → 单击某个即接续并切过去（带完整上下文）
