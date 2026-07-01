@@ -161,7 +161,7 @@ body.hub-resizing {
 .dashboard-head { margin-bottom: 16px; position: relative; }
 #dash-add-btn { position: absolute; top: 0; right: 0; }
 .dash-kicker { font-size: 12.5px; font-weight: 600; color: var(--muted); letter-spacing: .3px; }
-.dash-title { font-size: 25px; font-weight: 700; margin-top: 2px; letter-spacing: -.2px; }
+.dash-title { font-size: 25px; font-weight: 700; margin-top: 2px; letter-spacing: -.2px; padding-right: 80px; }
 .dashboard {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 22px;
 }
