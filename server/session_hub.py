@@ -43,17 +43,24 @@ def translate_event(evt: dict) -> list[dict]:
                 out.append({"role": "assistant_delta", "content": {"text": delta["text"]}})
 
     elif etype == "assistant":
+        # sub-agent（Agent 工具）内部产生的事件带 parent_tool_use_id，指向发起它的
+        # Agent tool_use id；顶层事件该字段为空。透传给前端做子智能体折叠归拢。
+        pid = evt.get("parent_tool_use_id")
         for block in evt.get("message", {}).get("content", []):
             btype = block.get("type")
             if btype == "text" and block.get("text", "").strip():
-                out.append({"role": "assistant", "content": {"text": block["text"]}})
+                c = {"text": block["text"]}
+                if pid:
+                    c["parent"] = pid
+                out.append({"role": "assistant", "content": c})
             elif btype == "tool_use":
-                out.append({
-                    "role": "tool_use",
-                    "content": {"id": block.get("id"), "name": block.get("name"), "input": block.get("input", {})},
-                })
+                c = {"id": block.get("id"), "name": block.get("name"), "input": block.get("input", {})}
+                if pid:
+                    c["parent"] = pid
+                out.append({"role": "tool_use", "content": c})
 
     elif etype == "user":
+        pid = evt.get("parent_tool_use_id")
         content = evt.get("message", {}).get("content", [])
         if isinstance(content, list):
             for block in content:
@@ -61,14 +68,14 @@ def translate_event(evt: dict) -> list[dict]:
                     raw = block.get("content")
                     if isinstance(raw, list):
                         raw = "\n".join(b.get("text", "") for b in raw if isinstance(b, dict))
-                    out.append({
-                        "role": "tool_result",
-                        "content": {
-                            "tool_use_id": block.get("tool_use_id"),
-                            "output": raw,
-                            "is_error": block.get("is_error", False),
-                        },
-                    })
+                    c = {
+                        "tool_use_id": block.get("tool_use_id"),
+                        "output": raw,
+                        "is_error": block.get("is_error", False),
+                    }
+                    if pid:
+                        c["parent"] = pid
+                    out.append({"role": "tool_result", "content": c})
 
     elif etype == "result":
         out.append({
