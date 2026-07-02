@@ -29,6 +29,7 @@
     heartbeatTimer: null, // WS 应用层心跳定时器
     queue: [],           // 当前会话排队待执行的指令
     drafts: {},          // sessionId -> { text: string, images: [{path, dataUrl}] }（草稿按会话隔离）
+    agentGroups: {},     // Agent tool_use id -> 该子智能体卡片的 .subagent-body 元素（内部步骤归拢用）
   };
 
   // ---------------- API ----------------
@@ -1040,6 +1041,7 @@
     clearStream();
     state.sessionId = id;
     state.toolIdMap = {};  // 清空工具 id 映射，避免跨会话串号
+    state.agentGroups = {};  // 清空子智能体归拢映射，避免跨会话串号
     state.queue = [];      // 清空上个会话的队列，等新会话 queue_update 广播刷新
     renderQueue();
     localStorage.setItem("ac_session", id);
@@ -1118,7 +1120,8 @@
       state.histShown = Math.min(HISTORY_WINDOW, msgs.length);
       const start = msgs.length - state.histShown;
       if (start > 0) renderLoadEarlierBtn(start);
-      for (let i = start; i < msgs.length; i++) renderMessage(msgs[i].role, msgs[i].content, false, msgs[i].created_at, false);
+      const localGroups = {};  // 本次历史渲染的 Agent id -> body 映射，与实时通道隔离
+      for (let i = start; i < msgs.length; i++) appendMessageGrouped(chat, localGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
       scrollBottom(true);
     } catch (e) {
       chat.innerHTML = "";
@@ -1142,10 +1145,10 @@
       // 记录加载前的滚动高度，渲染后补偿，避免视图跳动
       const prevH = chat.scrollHeight, prevTop = chat.scrollTop;
       const frag = document.createDocumentFragment();
+      const localGroups = {};  // 本批更早消息的子智能体归拢映射
       // 在按钮之后、现有消息之前插入更早的消息
       for (let i = newStart; i < curStart; i++) {
-        const node = buildMessageNode(msgs[i].role, msgs[i].content, msgs[i].created_at, false);
-        if (node) frag.appendChild(node);
+        appendMessageGrouped(frag, localGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
       }
       btn.after(frag);
       state.histShown = msgs.length - newStart;
@@ -1826,7 +1829,25 @@
     } else if (role === "tool_use") {
       const toolName = content.name || "";
       const isAskTool = /^Ask(Followup|User|Clarif)/i.test(toolName);
-      if (isAskTool) {
+      if (toolName === "Agent") {
+        // 子智能体（Agent 工具）：折叠卡片，默认只显示摘要，内部步骤归拢进 .subagent-body，
+        // 最终结果填入 .subagent-result。内部步骤/结果由 appendMessageGrouped 按 parent 路由填充。
+        const inp = content.input || {};
+        const subtype = inp.subagent_type || "agent";
+        const desc = String(inp.description || inp.prompt || "").slice(0, 60);
+        node = el("details", "subagent");
+        if (content.id) node.dataset.agentId = content.id;
+        node.innerHTML = `<summary>
+            <span class="subagent-icon">🤖</span>
+            <span class="subagent-title">${escapeHtml(subtype)}${desc ? " · " + escapeHtml(desc) : ""}</span>
+            <span class="subagent-status running">运行中</span>
+          </summary>
+          <div class="subagent-body"></div>
+          <div class="subagent-result" style="display:none">
+            <div class="subagent-result-label">最终结果</div>
+            <div class="subagent-result-content"></div>
+          </div>`;
+      } else if (isAskTool) {
         // 问答类工具：渲染为高亮问题卡片
         node = el("div", "msg-ask");
         const inp = content.input || {};
@@ -1896,6 +1917,49 @@
     chat.appendChild(node);
     requestAnimationFrame(() => node.classList.add("msg-in"));
     if (doScroll) scrollBottom();
+  }
+
+  // 子智能体归拢：构建消息节点后按 parent 路由。父容器 parentEl（#chat），groups 为
+  // Agent id -> .subagent-body 映射。历史渲染用局部 groups，实时用 state.agentGroups。
+  // 老历史消息无 parent 字段时容忍缺失，正常平铺，不报错。
+  function appendMessageGrouped(parentEl, groups, role, content, ts = null) {
+    // 1) Agent 工具调用：建卡片挂到父容器，登记其 body 供内部步骤归拢
+    if (role === "tool_use" && content.name === "Agent") {
+      const node = buildMessageNode(role, content, ts, false);
+      if (!node) return;
+      parentEl.appendChild(node);
+      if (content.id) groups[content.id] = node.querySelector(".subagent-body");
+      return;
+    }
+    // 2) 子智能体的最终结果：tool_result 的 tool_use_id 命中某张卡片 → 填入结果区并收尾
+    if (role === "tool_result" && content.tool_use_id && groups[content.tool_use_id]) {
+      const bodyEl = groups[content.tool_use_id];
+      const card = bodyEl.closest(".subagent");
+      if (card) {
+        const rc = card.querySelector(".subagent-result-content");
+        const rbox = card.querySelector(".subagent-result");
+        if (rc) { rc.classList.add("markdown"); rc.innerHTML = renderMarkdown(String(content.output || "")); }
+        if (rbox) rbox.style.display = "block";
+        const status = card.querySelector(".subagent-status");
+        if (status) { status.textContent = "✓ 完成"; status.classList.remove("running"); status.classList.add("done"); }
+      }
+      delete groups[content.tool_use_id];  // 注销：卡片已收尾，后续同 id 不再归拢
+      return;  // 结果已入卡片，不再平铺这条 tool_result
+    }
+    // 3) 子智能体内部步骤：parent 命中某张卡片 → 追加到该卡片 body
+    if (content.parent && groups[content.parent]) {
+      const node = buildMessageNode(role, content, ts, false);
+      if (node) groups[content.parent].appendChild(node);
+      return;
+    }
+    // 4) 其余：正常平铺到父容器
+    const node = buildMessageNode(role, content, ts, false);
+    if (!node) return;
+    const welcome = parentEl.querySelector(".chat-welcome");
+    if (welcome) welcome.remove();
+    node.classList.add("msg-enter");
+    parentEl.appendChild(node);
+    requestAnimationFrame(() => node.classList.add("msg-in"));
   }
 
   // 队列托盘：渲染排队待执行的指令，支持编辑/删除。
@@ -2117,7 +2181,8 @@
         const toolName = state.toolIdMap[data.content.tool_use_id] || "";
         if (/^Ask(Followup|User|Clarif)/i.test(toolName)) { hideTyping(); clearStream(); showTyping(); return; }
       }
-      renderMessage(data.role, data.content);
+      appendMessageGrouped($("chat"), state.agentGroups, data.role, data.content);
+      scrollBottom();
       if (data.role === "tool_use" || data.role === "tool_result") {
         hideTyping(); clearStream();
         // 问答类工具：Claude 在等用户回答，不显示"思考中"

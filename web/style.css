@@ -283,6 +283,35 @@ body.hub-resizing {
 }
 .tool .summary-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 子智能体（Agent 工具）折叠卡片：内部步骤归拢进 body，最终结果单独成区。
+   沿用 .tool 的结构与圆角，用紫色作为区别于普通工具的身份色（适配浅色主题变量）。 */
+.subagent {
+  margin-bottom: 10px; border: 1px solid #c7cbf5; border-radius: 13px; overflow: hidden;
+  background: #f6f5ff; box-shadow: var(--shadow);
+}
+.subagent summary {
+  list-style: none; cursor: pointer; padding: 10px 13px; display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: #5b53c7; user-select: none; transition: background var(--ease);
+}
+.subagent summary:hover { background: #efeeff; }
+.subagent summary::-webkit-details-marker { display: none; }
+.subagent-icon { font-size: 16px; }
+.subagent-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-status {
+  font-size: 10.5px; padding: 3px 9px; border-radius: 10px; font-weight: 600;
+  background: #e6e4fb; color: #6d5fd8; white-space: nowrap;
+}
+.subagent-status.done { background: var(--green-soft); color: var(--green); }
+.subagent-body {
+  padding: 4px 10px 6px; border-top: 1px solid #dcd9f7; max-height: 600px; overflow-y: auto;
+}
+.subagent-result { padding: 10px 13px; border-top: 1px solid #dcd9f7; background: #fbfaff; }
+.subagent-result-label {
+  font-size: 10.5px; color: #6d5fd8; margin-bottom: 5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .4px;
+}
+.subagent-result-content { font-size: 13.5px; color: var(--text); line-height: 1.55; }
+
 /* 问答卡片（AskFollowupQuestions / AskUserQuestion） */
 .msg-ask {
   margin-bottom: 14px; border: 1.5px solid var(--accent); border-radius: var(--radius);
