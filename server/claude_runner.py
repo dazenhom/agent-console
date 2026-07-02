@@ -167,6 +167,9 @@ class ClaudeRunner:
             # root 下 skip-permissions 被拒，改用 allowedTools 放行工具免权限提示。
             # 空格分隔的工具名直接作为多个参数传给 --allowedTools。
             cmd += ["--allowedTools", *config.CLAUDE_ALLOWED_TOOLS.split()]
+        if config.CLAUDE_DISALLOWED_TOOLS.strip():
+            # 禁用 AskUserQuestion 等会阻塞等待终端输入的交互式工具（headless 下会卡死）。
+            cmd += ["--disallowedTools", *config.CLAUDE_DISALLOWED_TOOLS.split()]
         return cmd
 
     def _get_proc(self, session_id: str) -> asyncio.subprocess.Process | None:
@@ -337,17 +340,24 @@ class ClaudeRunner:
         }
 
     # ============== 常驻进程模式（--input-format stream-json）==============
-    async def respond_permission(self, session_id: str, request_id: str, behavior: str) -> None:
-        """回一行 control_response 给 CLI，放行/拒绝一个待授权的工具调用。"""
+    async def respond_permission(self, session_id: str, request_id: str, behavior: str,
+                                 updated_input: dict = None) -> None:
+        """回一行 control_response 给 CLI，放行/拒绝一个待授权的工具调用。
+
+        updated_input 用于 AskUserQuestion 这类工具：答案必须经 updatedInput 回填，
+        CLI 才能拿到用户的选择（如 {"answers": {...}}），否则模型只能自答。"""
         sess = self._sessions.get(session_id)
         if not sess or not sess.get("proc"):
             return
+        inner = {"behavior": behavior}
+        if updated_input:
+            inner["updatedInput"] = updated_input
         resp = {
             "type": "control_response",
             "response": {
                 "request_id": request_id,
                 "subtype": "success",
-                "response": {"behavior": behavior},
+                "response": inner,
             },
         }
         line = json.dumps(resp, ensure_ascii=False) + "\n"

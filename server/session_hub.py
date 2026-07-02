@@ -478,14 +478,17 @@ class SessionHub:
         except Exception:
             pass
 
-    async def respond_permission(self, sid: str, request_id: str, behavior: str) -> None:
-        """用户点了允许/拒绝：清掉这条 pending，回 control_response 给 CLI。"""
+    async def respond_permission(self, sid: str, request_id: str, behavior: str,
+                                 updated_input: dict = None) -> None:
+        """用户点了允许/拒绝：清掉这条 pending，回 control_response 给 CLI。
+
+        updated_input 透传给 runner，供 AskUserQuestion 回填用户选择。"""
         pend = self._pending_perms.get(sid)
         if pend:
             pend.pop(request_id, None)
             if not pend:
                 self._pending_perms.pop(sid, None)
-        await runner.respond_permission(sid, request_id, behavior)
+        await runner.respond_permission(sid, request_id, behavior, updated_input)
 
     async def resend_pending_perms(self, sid: str, sub: "Subscriber") -> None:
         """WS 连接建立时，把该会话未决的权限请求重发给这条订阅者（补断线期间漏掉的弹窗）。"""

@@ -735,10 +735,12 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default=""), sess
 
         if mtype == "permission_response":
             # 用户在弹窗点了允许/拒绝：回 control_response 给 CLI
+            # updated_input 供 AskUserQuestion 回填用户选择（answers）
             request_id = data.get("request_id")
             behavior = data.get("behavior", "deny")
+            updated_input = data.get("updated_input")
             if request_id:
-                await hub.respond_permission(session_id, request_id, behavior)
+                await hub.respond_permission(session_id, request_id, behavior, updated_input)
             return
 
         if mtype != "user_message":
