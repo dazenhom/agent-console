@@ -1852,26 +1852,8 @@
           html += `<div class="ask-opts">${opts.map(o => { const t = optText(o); return `<span class="ask-opt" data-value="${escapeAttr(t)}">${escapeHtml(t)}</span>`; }).join("")}</div>`;
         }
         node.innerHTML = html;
-        // 选项点击直接发送：填入输入框、触发 input 事件后立即 send（AskUserQuestion 已在
-        // 后端禁用，问答走普通文本，这里让用户点一下选项即可作答，无需再手动点发送）。
-        // 历史重放（interactive=false）时不绑事件、置灰，避免误触发送。
-        if (interactive) {
-          node.querySelectorAll(".ask-opt").forEach(btn => {
-            btn.onclick = () => {
-              // 点击后立即禁用整张卡片所有选项，防止重复点击发出重复消息
-              node.querySelectorAll(".ask-opt").forEach(b => b.style.pointerEvents = "none");
-              const val = btn.dataset.value || btn.textContent.trim();
-              input.value = val;
-              input.dispatchEvent(new Event("input"));
-              send();
-            };
-          });
-        } else {
-          node.querySelectorAll(".ask-opt").forEach(b => {
-            b.style.pointerEvents = "none";
-            b.style.opacity = "0.5";
-          });
-        }
+        // ask-opt 仅作展示，不响应点击：作答统一走 showAskQuestionDialog 弹窗，
+        // 经 permission_response 的 updated_input.answers 通道回传。
       } else {
         node = el("details", "tool");
         const inputStr = typeof content.input === "object" ? JSON.stringify(content.input, null, 2) : String(content.input ?? "");
@@ -2854,7 +2836,7 @@
       ).join("");
       body += `</div>`;
     });
-    body += `</div><div class="modal-actions"><button class="modal-cancel" type="button">跳过</button></div>`;
+    body += `</div><div class="modal-actions"><button class="modal-cancel" type="button">跳过</button><button class="modal-ok modal-confirm" type="button">确认</button></div>`;
     card.innerHTML = body;
     overlay.appendChild(card);
     document.body.appendChild(overlay);
@@ -2868,14 +2850,19 @@
       overlay.remove();
     };
 
+    // 多问题场景：先在此累积每道题的选择，点"确认"再一次性回传全部答案。
+    const selectedAnswers = {};
     card.querySelectorAll(".ask-opt").forEach(btn => {
       btn.onclick = () => {
         const qi = Number(btn.dataset.qi);
-        const answers = {};
-        answers[norm[qi].qtext] = btn.dataset.value;
-        send("allow", { questions, answers });
+        const qtext = norm[qi].qtext;
+        selectedAnswers[qtext] = btn.dataset.value;
+        // 高亮当前选项，取消同题其他选项的高亮（单选语义）
+        card.querySelectorAll(`.ask-opt[data-qi="${qi}"]`).forEach(b => b.classList.remove("selected"));
+        btn.classList.add("selected");
       };
     });
+    card.querySelector(".modal-confirm").onclick = () => send("allow", { questions, answers: selectedAnswers });
     card.querySelector(".modal-cancel").onclick = () => send("deny");
   }
 
