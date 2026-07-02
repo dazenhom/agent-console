@@ -179,6 +179,15 @@ class ClaudeRunner:
         proc = self._get_proc(session_id)
         return proc is not None and proc.returncode is None
 
+    async def ensure_warm(self, session_id: str, workdir: str, resume: str | None = None) -> str:
+        """预热常驻进程：进程已存活则返回 'running'，否则 spawn 并返回 'warmed'。"""
+        sess = self._sessions.get(session_id)
+        if sess and sess["proc"].returncode is None:
+            return "running"
+        # 进程不存在或已退出，重新 spawn（model=None 沿用会话默认 model）
+        await self._spawn_session(session_id, workdir, model=None, resume=resume)
+        return "warmed"
+
     def was_cancelled(self, session_id: str) -> bool:
         rec = self._procs.get(session_id)
         return bool(rec and rec.get("cancelled"))

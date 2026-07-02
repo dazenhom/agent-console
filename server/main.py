@@ -106,6 +106,26 @@ async def remove_session(sid: str):
     return {"ok": True}
 
 
+@app.post("/api/sessions/{sid}/resume", dependencies=[Depends(require_auth)])
+async def resume_session(sid: str):
+    sess = db.get_session(sid)
+    if not sess:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    claude_session_id = sess.get("claude_session_id")
+
+    # 非常驻模式：无进程可预热，直接返回
+    if not config.CLAUDE_PERSISTENT:
+        return {"ok": True, "status": "idle", "claude_session_id": claude_session_id}
+
+    try:
+        workdir = sess.get("workdir") or config.DEFAULT_WORKDIR
+        status = await runner.ensure_warm(sid, workdir, resume=claude_session_id)
+        return {"ok": True, "status": status, "claude_session_id": claude_session_id}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=f"找不到 Claude CLI：{e}")
+
+
 @app.get("/api/sessions/{sid}/messages", dependencies=[Depends(require_auth)])
 async def get_messages(sid: str):
     if not db.get_session(sid):
