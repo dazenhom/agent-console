@@ -168,10 +168,18 @@
   // 全局开关：一键展开/折叠当前会话所有子智能体的思考与执行过程
   function toggleAllSubagents() {
     state.subagentExpanded = !state.subagentExpanded;
-    document.querySelectorAll("#chat .subagent-process").forEach((proc) => {
-      const body = proc.querySelector(".subagent-body");
-      if (state.subagentExpanded) { proc.classList.add("open"); if (body) body.style.display = ""; }
-      else { proc.classList.remove("open"); if (body) body.style.display = "none"; }
+    document.querySelectorAll("#chat .subagent").forEach((card) => {
+      const body = card.querySelector(".subagent-body");
+      const rbox = card.querySelector(".subagent-result");
+      if (state.subagentExpanded) {
+        card.classList.add("open");
+        if (body) body.style.display = "";
+        if (rbox && rbox.dataset.hasResult) rbox.style.display = "";
+      } else {
+        card.classList.remove("open");
+        if (body) body.style.display = "none";
+        if (rbox) rbox.style.display = "none";
+      }
     });
     updateSubagentToggleBtn();
   }
@@ -1910,23 +1918,21 @@
         if (content.id) node.dataset.agentId = content.id;
         const expanded = state.subagentExpanded;
         node.innerHTML = `<div class="subagent-head">
+            <span class="sap-caret">▸</span>
             <span class="subagent-icon">🤖</span>
             <span class="subagent-title">${escapeHtml(subtype)}${desc ? " · " + escapeHtml(desc) : ""}</span>
             <span class="subagent-status running">运行中</span>
           </div>
-          <div class="subagent-process${expanded ? " open" : ""}">
-            <div class="subagent-process-toggle"><span class="sap-caret">▸</span>思考与执行过程</div>
-            <div class="subagent-body" style="${expanded ? "" : "display:none"}"></div>
-          </div>
+          <div class="subagent-body" style="${expanded ? "" : "display:none"}"></div>
           <div class="subagent-result" style="display:none">
-            <div class="subagent-result-label">最终结果</div>
             <div class="subagent-result-content"></div>
           </div>`;
-        node.querySelector(".subagent-process-toggle").addEventListener("click", function() {
-          const proc = this.closest(".subagent-process");
-          const body = proc.querySelector(".subagent-body");
-          const isOpen = proc.classList.toggle("open");
-          body.style.display = isOpen ? "" : "none";
+        if (expanded) node.classList.add("open");
+        node.querySelector(".subagent-head").addEventListener("click", function() {
+          const isOpen = node.classList.toggle("open");
+          node.querySelector(".subagent-body").style.display = isOpen ? "" : "none";
+          const rbox = node.querySelector(".subagent-result");
+          if (rbox && rbox.dataset.hasResult) rbox.style.display = isOpen ? "" : "none";
         });
       } else if (isAskTool) {
         // 问答类工具：渲染为高亮问题卡片
@@ -2024,7 +2030,7 @@
         const rc = card.querySelector(".subagent-result-content");
         const rbox = card.querySelector(".subagent-result");
         if (rc) { rc.classList.add("markdown"); rc.innerHTML = renderMarkdown(String(content.output || "")); }
-        if (rbox) rbox.style.display = "block";
+        if (rbox) { rbox.dataset.hasResult = "1"; rbox.style.display = card.classList.contains("open") ? "" : "none"; }
         const status = card.querySelector(".subagent-status");
         if (status) { status.textContent = "✓ 完成"; status.classList.remove("running"); status.classList.add("done"); }
       }
@@ -2294,12 +2300,14 @@
         // 订阅时的状态对齐（非真实回合结束）：只解禁/复位按钮，不触发完成通知等副作用。
         // 修复：超长回合期间断线 → 回合后台跑完的 status:idle 被错过 → 重连卡在 running。
         setRunning(false); hideTyping(); clearStream();
-      } else { setRunning(false); hideTyping(); clearStream(); loadTasks(); maybeNotify(data.result); }
+      } else { setRunning(false); hideTyping(); clearStream(); loadTasks(); maybeNotify(data.result); document.querySelectorAll(".perm-overlay").forEach(o => o.remove()); _permQueue.length = 0; }
     } else if (data.type === "error") {
       hideTyping();
       clearStream();
       renderMessage("error", { message: data.message });
       setRunning(false);
+      document.querySelectorAll(".perm-overlay").forEach(o => o.remove());
+      _permQueue.length = 0;
     } else if (data.type === "queue_update") {
       state.queue = data.queue || [];
       renderQueue();
@@ -2959,12 +2967,20 @@
   // Claude Code 遇到未放行的工具（Bash/Write/Edit 等）会发 control_request 等授权，
   // 后端经 WS 推 permission_request，这里弹窗让用户点允许/拒绝，回传 permission_response。
   // 用独立浮层（不占 modal-root，避免与 confirm/编辑弹窗互相顶掉），z-index 高于一切。
+  // 弹窗串行化队列：同一时刻只展示一个授权弹窗，其余排队，关闭一个再弹下一个。
+  const _permQueue = [];
   function showPermissionDialog(req) {
     const tool = req.tool_name || "未知工具";
     const inp = req.input || {};
 
     // 同一 request_id 已有弹窗（如断线重发）就不重复弹
     if (document.querySelector(`.perm-overlay[data-req="${cssEscape(req.request_id)}"]`)) return;
+
+    // 已有弹窗在展示：入队等待，避免多个弹窗堆叠
+    if (document.querySelector(".perm-overlay")) {
+      _permQueue.push(req);
+      return;
+    }
 
     // AskUserQuestion 类工具特判：不走通用 allow/deny，而是渲染问题+选项，
     // 用户选择经 updated_input.answers 回填 CLI（否则模型只能自答）。
@@ -3004,6 +3020,7 @@
         try { state.ws.send(JSON.stringify({ type: "permission_response", request_id: req.request_id, behavior })); } catch (e) {}
       }
       overlay.remove();
+      if (_permQueue.length) showPermissionDialog(_permQueue.shift());
     };
     card.querySelector(".modal-ok").onclick = () => respond("allow");
     card.querySelector(".modal-cancel").onclick = () => respond("deny");
@@ -3034,7 +3051,7 @@
       body += `<div class="ask-question" style="margin-top:${qi ? 12 : 0}px">${escapeHtml(n.qtext)}</div>`;
       body += `<div class="ask-opts" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">`;
       body += n.qopts.map((t, oi) =>
-        `<button class="modal-ok ask-opt" type="button" data-qi="${qi}" data-value="${escapeAttr(t)}" style="margin:0">${escapeHtml(t)}</button>`
+        `<button class="ask-opt" type="button" data-qi="${qi}" data-value="${escapeAttr(t)}" style="margin:0">${escapeHtml(t)}</button>`
       ).join("");
       body += `</div>`;
     });
@@ -3050,12 +3067,18 @@
         try { state.ws.send(JSON.stringify(msg)); } catch (e) {}
       }
       overlay.remove();
+      if (_permQueue.length) showPermissionDialog(_permQueue.shift());
     };
 
     // 多问题场景：先在此累积每道题的选择，点"确认"再一次性回传全部答案。
+    // 单问题场景：点选项即提交，无需再点"确认"。
     const selectedAnswers = {};
     card.querySelectorAll(".ask-opt").forEach(btn => {
       btn.onclick = () => {
+        if (norm.length === 1) {
+          send("allow", { questions, answers: { [norm[0].qtext]: btn.dataset.value } });
+          return;
+        }
         const qi = Number(btn.dataset.qi);
         const qtext = norm[qi].qtext;
         selectedAnswers[qtext] = btn.dataset.value;
