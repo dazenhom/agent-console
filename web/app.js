@@ -1063,7 +1063,8 @@
   }
 
   async function deleteSession(id) {
-    const s = state.sessions.find((x) => x.id === id);
+    const s = state.sessions.find((x) => x.id === id)
+           || state.archivedSessions.find((x) => x.id === id);
     const yes = await confirmDialog(`确定删除会话「${s ? s.title : id}」？历史记录将一并清除。`, { okText: "删除", danger: true });
     if (!yes) return;
     try {
@@ -1072,6 +1073,7 @@
       delete state.drafts[id];
       if (id === state.sessionId) state.sessionId = "";
       await loadSessions();
+      if (state.sessionView === "archived") await loadArchivedSessions();
       if (state.sessionId) await switchSession(state.sessionId);
     } catch (e) { toast("删除失败：" + e.message, "error"); }
   }
@@ -1079,7 +1081,7 @@
   // 恢复归档会话：回到活跃列表
   async function unarchiveSession(id) {
     try {
-      await api(`/api/sessions/${id}/unarchive`, { method: "POST" });
+      await api(`/api/sessions/${id}/unarchive`, { method: "POST", retry: true });
       toast("已恢复", "success", 1500);
       await loadArchivedSessions();
       await loadSessions();
@@ -2505,7 +2507,7 @@
     const yes = await confirmDialog("归档该会话？可在 Sessions 页「归档」视图恢复。", { okText: "归档" });
     if (!yes) return;
     try {
-      await api(`/api/sessions/${sid}/archive`, { method: "POST" });
+      await api(`/api/sessions/${sid}/archive`, { method: "POST", retry: true });
       toast("已归档", "success", 1500);
       state.sessionId = "";
       await loadSessions();
