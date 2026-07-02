@@ -640,6 +640,9 @@
     const root = $("modal-root");
     root.innerHTML = "";
     const card = el("div", "modal-card");
+    const sessionOpts = state.sessions.map((s) =>
+      `<option value="${escapeAttr(s.id)}"${s.id === t.session_id ? " selected" : ""}>${escapeHtml(s.title)}</option>`
+    ).join("");
     card.innerHTML = `
       <div class="modal-title">编辑任务</div>
       <div class="entity-form" style="gap:12px">
@@ -648,6 +651,11 @@
         </label>
         <label>任务描述
           <textarea id="et-desc" class="form-input" rows="3" placeholder="补充说明…">${escapeHtml(t.description || "")}</textarea>
+        </label>
+        <label>关联 Agent 会话
+          <select id="et-session" class="form-select">
+            <option value=""${t.session_id ? "" : " selected"}>不关联</option>${sessionOpts}
+          </select>
         </label>
         <label>优先级
           <select id="et-priority" class="form-select">
@@ -680,11 +688,12 @@
       const description = $("et-desc").value || "";
       const priority = $("et-priority").value;
       const status = $("et-status").value;
+      const session_id = $("et-session").value || null;
       try {
         const res = await api(`/api/todos/${t.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title, description, priority: parseInt(priority), status })
+          body: JSON.stringify({ title, description, priority: parseInt(priority), status, session_id })
         });
         close();
         await renderKanban();
