@@ -1118,7 +1118,7 @@
       state.histShown = Math.min(HISTORY_WINDOW, msgs.length);
       const start = msgs.length - state.histShown;
       if (start > 0) renderLoadEarlierBtn(start);
-      for (let i = start; i < msgs.length; i++) renderMessage(msgs[i].role, msgs[i].content, false, msgs[i].created_at);
+      for (let i = start; i < msgs.length; i++) renderMessage(msgs[i].role, msgs[i].content, false, msgs[i].created_at, false);
       scrollBottom(true);
     } catch (e) {
       chat.innerHTML = "";
@@ -1904,8 +1904,8 @@
     return node;
   }
 
-  function renderMessage(role, content, doScroll = true, ts = null) {
-    const node = buildMessageNode(role, content, ts, doScroll);
+  function renderMessage(role, content, doScroll = true, ts = null, interactive = true) {
+    const node = buildMessageNode(role, content, ts, interactive);
     if (!node) return;
     const chat = $("chat");
     node.classList.add("msg-enter");
