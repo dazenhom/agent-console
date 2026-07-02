@@ -1863,6 +1863,9 @@
         <span class="summary-text">${escapeHtml(String(content.output || "").slice(0, 80))}</span></summary>
         <pre>${escapeHtml(String(content.output || ""))}</pre>`;
     } else if (role === "result") {
+      // 兜底：resume 失败的坏 result（num_turns=0 且报错）后端一般已吞掉不下发，
+      // 万一漏网也不渲染空的“$0.0000 完成”行。
+      if (content.num_turns === 0 && content.is_error) return null;
       const dur = content.duration_ms ? (content.duration_ms / 1000).toFixed(1) + "s" : "";
       const cost = content.cost_usd != null ? " · $" + content.cost_usd.toFixed(4) : "";
       const turns = content.num_turns ? " · " + content.num_turns + " 轮" : "";
