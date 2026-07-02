@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=16" />
+  <link rel="stylesheet" href="style.css?v=22" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -161,6 +161,7 @@
           <div class="detail-head-row">
             <div class="detail-title" id="session-title">会话</div>
             <div class="detail-head-btns">
+              <button id="detail-subagent-btn" class="detail-icon-btn" title="展开全部子任务过程">⊞</button>
               <button id="detail-peek-btn" class="detail-icon-btn" title="速览">👁</button>
               <button id="detail-close-btn" class="detail-icon-btn" title="返回列表" aria-label="返回">&#8592;</button>
             </div>
@@ -235,7 +236,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=24"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
@@ -246,3 +247,4 @@
   </script>
 </body>
 </html>
+
