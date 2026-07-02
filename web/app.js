@@ -1843,19 +1843,16 @@
             const qopts = typeof q === "object" ? (q.options || []) : [];
             let qhtml = `<div class="ask-question">${escapeHtml(qtext)}</div>`;
             if (qopts.length) {
-              qhtml += `<div class="ask-opts">${qopts.map(o => { const t = optText(o); return `<button class="ask-opt" type="button" data-value="${escapeAttr(t)}">${escapeHtml(t)}</button>`; }).join("")}</div>`;
+              qhtml += `<div class="ask-opts">${qopts.map(o => { const t = optText(o); return `<span class="ask-opt" data-value="${escapeAttr(t)}">${escapeHtml(t)}</span>`; }).join("")}</div>`;
             }
             return qhtml;
           }).join("");
         }
         if (opts.length) {
-          html += `<div class="ask-opts">${opts.map(o => { const t = optText(o); return `<button class="ask-opt" type="button" data-value="${escapeAttr(t)}">${escapeHtml(t)}</button>`; }).join("")}</div>`;
+          html += `<div class="ask-opts">${opts.map(o => { const t = optText(o); return `<span class="ask-opt" data-value="${escapeAttr(t)}">${escapeHtml(t)}</span>`; }).join("")}</div>`;
         }
         node.innerHTML = html;
-        // 选项按钮点击后填入输入框
-        node.querySelectorAll(".ask-opt").forEach(btn => {
-          btn.onclick = () => { input.value = btn.dataset.value || btn.textContent; input.dispatchEvent(new Event("input")); input.focus(); };
-        });
+        // 选项仅作展示：真正的选择交互已移到 permission 授权弹窗（AskUserQuestion 特判）
       } else {
         node = el("details", "tool");
         const inputStr = typeof content.input === "object" ? JSON.stringify(content.input, null, 2) : String(content.input ?? "");
@@ -2762,6 +2759,17 @@
   function showPermissionDialog(req) {
     const tool = req.tool_name || "未知工具";
     const inp = req.input || {};
+
+    // 同一 request_id 已有弹窗（如断线重发）就不重复弹
+    if (document.querySelector(`.perm-overlay[data-req="${cssEscape(req.request_id)}"]`)) return;
+
+    // AskUserQuestion 类工具特判：不走通用 allow/deny，而是渲染问题+选项，
+    // 用户选择经 updated_input.answers 回填 CLI（否则模型只能自答）。
+    if (/^Ask(User|Followup|Clarif)/i.test(tool)) {
+      showAskQuestionDialog(req);
+      return;
+    }
+
     // 关键入参：命令类显命令，文件类显路径，其余 JSON 截断
     let detail = inp.command || inp.file_path || inp.path;
     if (!detail) {
@@ -2769,9 +2777,6 @@
     }
     detail = String(detail || "");
     if (detail.length > 600) detail = detail.slice(0, 600) + "…";
-
-    // 同一 request_id 已有弹窗（如断线重发）就不重复弹
-    if (document.querySelector(`.perm-overlay[data-req="${cssEscape(req.request_id)}"]`)) return;
 
     const overlay = el("div", "perm-overlay");
     overlay.dataset.req = req.request_id;
@@ -2799,6 +2804,60 @@
     };
     card.querySelector(".modal-ok").onclick = () => respond("allow");
     card.querySelector(".modal-cancel").onclick = () => respond("deny");
+  }
+
+  // AskUserQuestion 专用弹窗：渲染每个问题的选项按钮，用户点选后把答案
+  // 经 permission_response 的 updated_input.answers 回传 CLI（{问题文本: 选项label}）。
+  function showAskQuestionDialog(req) {
+    const inp = req.input || {};
+    const questions = inp.questions || (inp.question ? [inp.question] : []);
+    const optText = (o) => (o && typeof o === "object")
+      ? (o.label ?? o.text ?? o.value ?? JSON.stringify(o))
+      : String(o);
+    // 归一化：每个问题取出文本与选项列表
+    const norm = questions.map(q => {
+      const qtext = typeof q === "string" ? q : (q.question || q.text || JSON.stringify(q));
+      const qopts = (typeof q === "object" ? (q.options || []) : []).map(optText);
+      return { qtext, qopts };
+    });
+
+    const overlay = el("div", "perm-overlay");
+    overlay.dataset.req = req.request_id;
+    overlay.style.cssText = "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;" +
+      "background:rgba(0,0,0,0.45);padding:16px";
+    const card = el("div", "modal-card");
+    let body = `<div class="modal-title">需要你的选择</div><div class="modal-msg" style="text-align:left">`;
+    norm.forEach((n, qi) => {
+      body += `<div class="ask-question" style="margin-top:${qi ? 12 : 0}px">${escapeHtml(n.qtext)}</div>`;
+      body += `<div class="ask-opts" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">`;
+      body += n.qopts.map((t, oi) =>
+        `<button class="modal-ok ask-opt" type="button" data-qi="${qi}" data-value="${escapeAttr(t)}" style="margin:0">${escapeHtml(t)}</button>`
+      ).join("");
+      body += `</div>`;
+    });
+    body += `</div><div class="modal-actions"><button class="modal-cancel" type="button">跳过</button></div>`;
+    card.innerHTML = body;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    const send = (behavior, updated_input) => {
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        const msg = { type: "permission_response", request_id: req.request_id, behavior };
+        if (updated_input) msg.updated_input = updated_input;
+        try { state.ws.send(JSON.stringify(msg)); } catch (e) {}
+      }
+      overlay.remove();
+    };
+
+    card.querySelectorAll(".ask-opt").forEach(btn => {
+      btn.onclick = () => {
+        const qi = Number(btn.dataset.qi);
+        const answers = {};
+        answers[norm[qi].qtext] = btn.dataset.value;
+        send("allow", { questions, answers });
+      };
+    });
+    card.querySelector(".modal-cancel").onclick = () => send("deny");
   }
 
   // CSS 选择器里的 request_id 转义（id 含特殊字符时避免选择器报错）
