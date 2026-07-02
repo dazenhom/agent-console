@@ -35,12 +35,18 @@ def translate_event(evt: dict) -> list[dict]:
         pass  # init 含全套工具列表，前端不展示，丢弃避免 messages 膨胀
 
     elif etype == "stream_event":
-        # --include-partial-messages 的实时增量，只取文本增量做打字机
+        # --include-partial-messages 的实时增量，只取文本增量做打字机。
+        # sub-agent 的增量同样带 parent_tool_use_id，透传给前端按 parent 路由到子卡片，
+        # 避免子智能体的流式文本绕过归拢冒到顶层。
         ev = evt.get("event", {})
         if ev.get("type") == "content_block_delta":
             delta = ev.get("delta", {})
             if delta.get("type") == "text_delta" and delta.get("text"):
-                out.append({"role": "assistant_delta", "content": {"text": delta["text"]}})
+                c = {"text": delta["text"]}
+                pid = evt.get("parent_tool_use_id")
+                if pid:
+                    c["parent"] = pid
+                out.append({"role": "assistant_delta", "content": c})
 
     elif etype == "assistant":
         # sub-agent（Agent 工具）内部产生的事件带 parent_tool_use_id，指向发起它的

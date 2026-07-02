@@ -30,6 +30,8 @@
     queue: [],           // 当前会话排队待执行的指令
     drafts: {},          // sessionId -> { text: string, images: [{path, dataUrl}] }（草稿按会话隔离）
     agentGroups: {},     // Agent tool_use id -> 该子智能体卡片的 .subagent-body 元素（内部步骤归拢用）
+    _histGroups: {},     // 历史渲染专用的 Agent id -> body 映射，跨批次共享以关联加载更早的卡片/结果
+    subStreams: {},      // Agent id -> { bubble, text } 子智能体正在流式的气泡（各卡片独立打字机）
   };
 
   // ---------------- API ----------------
@@ -1042,6 +1044,7 @@
     state.sessionId = id;
     state.toolIdMap = {};  // 清空工具 id 映射，避免跨会话串号
     state.agentGroups = {};  // 清空子智能体归拢映射，避免跨会话串号
+    state.subStreams = {};   // 清空子智能体流式气泡，避免跨会话残留
     state.queue = [];      // 清空上个会话的队列，等新会话 queue_update 广播刷新
     renderQueue();
     localStorage.setItem("ac_session", id);
@@ -1106,6 +1109,7 @@
   async function loadHistory() {
     const chat = $("chat");
     chat.innerHTML = `<div class="chat-skel">${skeleton(3)}</div>`;
+    state._histGroups = {};  // 重置历史归拢映射，跨批次（首屏 + 加载更早）共享以关联卡片与结果
     try {
       const msgs = await api(`/api/sessions/${state.sessionId}/messages`);
       chat.innerHTML = "";
@@ -1120,8 +1124,7 @@
       state.histShown = Math.min(HISTORY_WINDOW, msgs.length);
       const start = msgs.length - state.histShown;
       if (start > 0) renderLoadEarlierBtn(start);
-      const localGroups = {};  // 本次历史渲染的 Agent id -> body 映射，与实时通道隔离
-      for (let i = start; i < msgs.length; i++) appendMessageGrouped(chat, localGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+      for (let i = start; i < msgs.length; i++) appendMessageGrouped(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
       scrollBottom(true);
     } catch (e) {
       chat.innerHTML = "";
@@ -1145,10 +1148,9 @@
       // 记录加载前的滚动高度，渲染后补偿，避免视图跳动
       const prevH = chat.scrollHeight, prevTop = chat.scrollTop;
       const frag = document.createDocumentFragment();
-      const localGroups = {};  // 本批更早消息的子智能体归拢映射
-      // 在按钮之后、现有消息之前插入更早的消息
+      // 复用 state._histGroups（跨批次共享），关联更早批次里的 Agent tool_use 与本批 tool_result
       for (let i = newStart; i < curStart; i++) {
-        appendMessageGrouped(frag, localGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+        appendMessageGrouped(frag, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
       }
       btn.after(frag);
       state.histShown = msgs.length - newStart;
@@ -1927,7 +1929,11 @@
     if (role === "tool_use" && content.name === "Agent") {
       const node = buildMessageNode(role, content, ts, false);
       if (!node) return;
-      parentEl.appendChild(node);
+      // 嵌套 Agent：若本卡片自身带 parent 且命中某父卡片，挂进父级 body，否则挂顶层
+      const targetEl = (content.parent && groups[content.parent]) ? groups[content.parent] : parentEl;
+      node.classList.add("msg-enter");
+      targetEl.appendChild(node);
+      requestAnimationFrame(() => node.classList.add("msg-in"));
       if (content.id) groups[content.id] = node.querySelector(".subagent-body");
       return;
     }
@@ -2165,10 +2171,24 @@
   function handleWsMessage(data) {
     if (data.type === "pong") return;  // 心跳回应，忽略
     if (data.type === "message") {
-      if (data.role === "assistant_delta") { appendDelta(data.content.text || ""); return; }
+      if (data.role === "assistant_delta") {
+        // 子智能体增量：parent 命中某张卡片 → 追加到其 body，不碰全局 streamEl（顶层打字机）
+        const pid = data.content.parent;
+        if (pid && state.agentGroups[pid]) { appendSubagentDelta(pid, data.content.text || ""); return; }
+        appendDelta(data.content.text || "");
+        return;
+      }
       // 权威 assistant 全文：若正在流式，用 markdown 重渲染替换流式气泡；否则新建
       if (data.role === "assistant") {
         hideTyping();
+        // 子智能体的最终文本：命中卡片则走分组路由，绝不 finalize 顶层 streamEl
+        const pid = data.content.parent;
+        if (pid && state.agentGroups[pid]) {
+          finalizeSubagentDelta(pid);
+          appendMessageGrouped($("chat"), state.agentGroups, data.role, data.content);
+          scrollBottom();
+          return;
+        }
         if (state.streamEl) { finalizeStream(data.content.text || ""); return; }
       }
       if (data.role === "result" || data.role === "error") { hideTyping(); clearStream(); }
@@ -2272,6 +2292,33 @@
     if (state.streamEl) { state.streamEl.classList.remove("streaming"); }
     state.streamEl = null;
     state.streamText = "";
+  }
+
+  // 子智能体流式：把增量追加到对应 Agent 卡片 body 内的独立气泡（与顶层打字机隔离）。
+  function appendSubagentDelta(pid, text) {
+    const bodyEl = state.agentGroups[pid];
+    if (!bodyEl) { appendDelta(text); return; }  // body 已丢失则退回顶层，避免丢字
+    let s = state.subStreams[pid];
+    if (!s) {
+      const node = el("div", "msg assistant msg-enter");
+      const bubble = el("div", "bubble streaming");
+      node.appendChild(bubble);
+      bodyEl.appendChild(node);
+      requestAnimationFrame(() => node.classList.add("msg-in"));
+      s = state.subStreams[pid] = { bubble, text: "" };
+    }
+    s.text += text;
+    s.bubble.textContent = s.text;
+    scrollBottom();
+  }
+
+  // 子智能体流式收尾：收到权威全文时清掉临时气泡，改由 appendMessageGrouped 平铺 markdown 版本。
+  function finalizeSubagentDelta(pid) {
+    const s = state.subStreams[pid];
+    if (!s) return;
+    const node = s.bubble.parentElement;
+    if (node) node.remove();
+    delete state.subStreams[pid];
   }
 
   function setRunning(running) {
