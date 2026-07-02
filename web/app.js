@@ -2978,6 +2978,7 @@
 
     // 已有弹窗在展示：入队等待，避免多个弹窗堆叠
     if (document.querySelector(".perm-overlay")) {
+      if (_permQueue.some(r => r.request_id === req.request_id)) return;
       _permQueue.push(req);
       return;
     }
