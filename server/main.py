@@ -122,8 +122,8 @@ async def resume_session(sid: str):
         workdir = sess.get("workdir") or config.DEFAULT_WORKDIR
         status = await runner.ensure_warm(sid, workdir, resume=claude_session_id)
         return {"ok": True, "status": status, "claude_session_id": claude_session_id}
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=500, detail=f"找不到 Claude CLI：{e}")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"启动 Claude CLI 失败：{e}")
 
 
 @app.get("/api/sessions/{sid}/messages", dependencies=[Depends(require_auth)])
