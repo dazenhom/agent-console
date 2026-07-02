@@ -1852,7 +1852,16 @@
           html += `<div class="ask-opts">${opts.map(o => { const t = optText(o); return `<span class="ask-opt" data-value="${escapeAttr(t)}">${escapeHtml(t)}</span>`; }).join("")}</div>`;
         }
         node.innerHTML = html;
-        // 选项仅作展示：真正的选择交互已移到 permission 授权弹窗（AskUserQuestion 特判）
+        // 选项点击直接发送：填入输入框、触发 input 事件后立即 send（AskUserQuestion 已在
+        // 后端禁用，问答走普通文本，这里让用户点一下选项即可作答，无需再手动点发送）
+        node.querySelectorAll(".ask-opt").forEach(btn => {
+          btn.onclick = () => {
+            const val = btn.dataset.value || btn.textContent.trim();
+            input.value = val;
+            input.dispatchEvent(new Event("input"));
+            send();
+          };
+        });
       } else {
         node = el("details", "tool");
         const inputStr = typeof content.input === "object" ? JSON.stringify(content.input, null, 2) : String(content.input ?? "");
