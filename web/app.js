@@ -32,6 +32,7 @@
     agentGroups: {},     // Agent tool_use id -> 该子智能体卡片的 .subagent-body 元素（内部步骤归拢用）
     _histGroups: {},     // 历史渲染专用的 Agent id -> body 映射，跨批次共享以关联加载更早的卡片/结果
     subStreams: {},      // Agent id -> { bubble, text } 子智能体正在流式的气泡（各卡片独立打字机）
+    subagentExpanded: false, // 全局开关：是否展开所有子智能体的思考/执行过程
   };
 
   // ---------------- API ----------------
@@ -161,6 +162,22 @@
     if (dp && window.matchMedia("(max-width: 900px)").matches) dp.classList.add("show");
   }
   $("detail-close-btn").onclick = () => { $("detail-panel").classList.remove("show"); };
+
+  // 全局开关：一键展开/折叠当前会话所有子智能体的思考与执行过程
+  function toggleAllSubagents() {
+    state.subagentExpanded = !state.subagentExpanded;
+    document.querySelectorAll("#chat .subagent-process")
+      .forEach((d) => { d.open = state.subagentExpanded; });
+    updateSubagentToggleBtn();
+  }
+  function updateSubagentToggleBtn() {
+    const btn = $("detail-subagent-btn");
+    if (btn) {
+      btn.textContent = state.subagentExpanded ? "⊟" : "⊞";
+      btn.title = state.subagentExpanded ? "折叠全部子任务过程" : "展开全部子任务过程";
+    }
+  }
+  { const b = $("detail-subagent-btn"); if (b) b.onclick = toggleAllSubagents; }
 
   // ---------------- PC 端左右栏拖拽调宽 ----------------
   const HUB_W_KEY = "ac_hub_left_w";
@@ -1045,6 +1062,8 @@
     state.toolIdMap = {};  // 清空工具 id 映射，避免跨会话串号
     state.agentGroups = {};  // 清空子智能体归拢映射，避免跨会话串号
     state.subStreams = {};   // 清空子智能体流式气泡，避免跨会话残留
+    state.subagentExpanded = false;   // 复位子智能体展开开关，新会话默认全部折叠
+    updateSubagentToggleBtn();
     state.queue = [];      // 清空上个会话的队列，等新会话 queue_update 广播刷新
     renderQueue();
     localStorage.setItem("ac_session", id);
@@ -1832,19 +1851,24 @@
       const toolName = content.name || "";
       const isAskTool = /^Ask(Followup|User|Clarif)/i.test(toolName);
       if (toolName === "Agent") {
-        // 子智能体（Agent 工具）：折叠卡片，默认只显示摘要，内部步骤归拢进 .subagent-body，
-        // 最终结果填入 .subagent-result。内部步骤/结果由 appendMessageGrouped 按 parent 路由填充。
+        // 子智能体（Agent 工具）：卡片头始终可见，思考/执行过程折进 <details class="subagent-process">，
+        // 内部步骤归拢进 .subagent-body，最终结果填入 .subagent-result（始终可见）。
+        // 内部步骤/结果由 appendMessageGrouped 按 parent 路由填充；折叠态受全局开关 state.subagentExpanded 控制。
         const inp = content.input || {};
         const subtype = inp.subagent_type || "agent";
         const desc = String(inp.description || inp.prompt || "").slice(0, 60);
-        node = el("details", "subagent");
+        node = el("div", "subagent");
         if (content.id) node.dataset.agentId = content.id;
-        node.innerHTML = `<summary>
+        const openAttr = state.subagentExpanded ? " open" : "";
+        node.innerHTML = `<div class="subagent-head">
             <span class="subagent-icon">🤖</span>
             <span class="subagent-title">${escapeHtml(subtype)}${desc ? " · " + escapeHtml(desc) : ""}</span>
             <span class="subagent-status running">运行中</span>
-          </summary>
-          <div class="subagent-body"></div>
+          </div>
+          <details class="subagent-process"${openAttr}>
+            <summary><span class="sap-caret">▸</span>思考与执行过程</summary>
+            <div class="subagent-body"></div>
+          </details>
           <div class="subagent-result" style="display:none">
             <div class="subagent-result-label">最终结果</div>
             <div class="subagent-result-content"></div>
