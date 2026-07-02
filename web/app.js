@@ -1144,7 +1144,7 @@
       const frag = document.createDocumentFragment();
       // 在按钮之后、现有消息之前插入更早的消息
       for (let i = newStart; i < curStart; i++) {
-        const node = buildMessageNode(msgs[i].role, msgs[i].content, msgs[i].created_at);
+        const node = buildMessageNode(msgs[i].role, msgs[i].content, msgs[i].created_at, false);
         if (node) frag.appendChild(node);
       }
       btn.after(frag);
@@ -1783,7 +1783,7 @@
     return ["是的，请继续", "不用了，谢谢"];
   }
 
-  function buildMessageNode(role, content, ts = null) {
+  function buildMessageNode(role, content, ts = null, interactive = true) {
     let node;
     if (role === "user" || role === "assistant") {
       node = el("div", "msg " + role);
@@ -1853,15 +1853,25 @@
         }
         node.innerHTML = html;
         // 选项点击直接发送：填入输入框、触发 input 事件后立即 send（AskUserQuestion 已在
-        // 后端禁用，问答走普通文本，这里让用户点一下选项即可作答，无需再手动点发送）
-        node.querySelectorAll(".ask-opt").forEach(btn => {
-          btn.onclick = () => {
-            const val = btn.dataset.value || btn.textContent.trim();
-            input.value = val;
-            input.dispatchEvent(new Event("input"));
-            send();
-          };
-        });
+        // 后端禁用，问答走普通文本，这里让用户点一下选项即可作答，无需再手动点发送）。
+        // 历史重放（interactive=false）时不绑事件、置灰，避免误触发送。
+        if (interactive) {
+          node.querySelectorAll(".ask-opt").forEach(btn => {
+            btn.onclick = () => {
+              // 点击后立即禁用整张卡片所有选项，防止重复点击发出重复消息
+              node.querySelectorAll(".ask-opt").forEach(b => b.style.pointerEvents = "none");
+              const val = btn.dataset.value || btn.textContent.trim();
+              input.value = val;
+              input.dispatchEvent(new Event("input"));
+              send();
+            };
+          });
+        } else {
+          node.querySelectorAll(".ask-opt").forEach(b => {
+            b.style.pointerEvents = "none";
+            b.style.opacity = "0.5";
+          });
+        }
       } else {
         node = el("details", "tool");
         const inputStr = typeof content.input === "object" ? JSON.stringify(content.input, null, 2) : String(content.input ?? "");
@@ -1895,7 +1905,7 @@
   }
 
   function renderMessage(role, content, doScroll = true, ts = null) {
-    const node = buildMessageNode(role, content, ts);
+    const node = buildMessageNode(role, content, ts, doScroll);
     if (!node) return;
     const chat = $("chat");
     node.classList.add("msg-enter");
