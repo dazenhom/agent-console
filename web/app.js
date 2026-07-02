@@ -394,14 +394,7 @@
         <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
       </div>`;
 
-    // 点击进展摘要：展开/收起
-    const progressEl = row.querySelector(".kanban-row-progress");
-    if (progressEl) progressEl.onclick = (e) => {
-      e.stopPropagation();
-      progressEl.classList.toggle("collapsed");
-    };
-
-    // 点击整行：跳转关联会话（进展 toggle 与操作按钮已各自 stopPropagation）
+    // 点击整行：跳转关联会话
     row.onclick = () => {
       if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
       const sess = (state.sessions || []).find((s) => s.id === t.session_id);
@@ -500,7 +493,7 @@
       </div>
       <div class="kanban-card-main">
         <div class="kanban-card-title">${escapeHtml(t.title)}</div>
-        <div class="kanban-card-body kanban-card-body-collapsed">${escapeHtml(progressText)}</div>
+        <div class="kanban-card-body">${escapeHtml(progressText)}</div>
       </div>
       <div class="kanban-card-footer">
         <span class="kanban-card-time">${timeText ? "🕐 " + escapeHtml(timeText) : ""}</span>
@@ -519,11 +512,12 @@
     card.addEventListener("dragend", () => card.classList.remove("kanban-card-dragging"));
 
     // ---- 点击卡片：跳转关联会话并高亮 ----
-    card.onclick = () => {
+    function doJump() {
       if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
       if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
       else toast("会话不存在", "info", 1500);
-    };
+    }
+    card.onclick = doJump;
 
     // ---- 操作按钮：编辑 ----
     const editBtn = card.querySelector('[data-act="edit"]');
@@ -1830,6 +1824,9 @@
         // 支持 AskFollowupQuestions / AskUserQuestion 的多种字段布局
         const questions = inp.questions || (inp.question ? [inp.question] : []);
         const opts = inp.options || [];
+        const optText = (o) => (o && typeof o === "object")
+          ? (o.label ?? o.text ?? o.value ?? JSON.stringify(o))
+          : String(o);
         let html = `<div class="ask-header"><span class="ask-icon">❓</span><span class="ask-title">需要确认</span></div>`;
         if (questions.length) {
           html += questions.map(q => {
@@ -1837,18 +1834,18 @@
             const qopts = typeof q === "object" ? (q.options || []) : [];
             let qhtml = `<div class="ask-question">${escapeHtml(qtext)}</div>`;
             if (qopts.length) {
-              qhtml += `<div class="ask-opts">${qopts.map(o => `<button class="ask-opt" type="button">${escapeHtml(String(o))}</button>`).join("")}</div>`;
+              qhtml += `<div class="ask-opts">${qopts.map(o => { const t = optText(o); return `<button class="ask-opt" type="button" data-value="${escapeAttr(t)}">${escapeHtml(t)}</button>`; }).join("")}</div>`;
             }
             return qhtml;
           }).join("");
         }
         if (opts.length) {
-          html += `<div class="ask-opts">${opts.map(o => `<button class="ask-opt" type="button">${escapeHtml(String(o))}</button>`).join("")}</div>`;
+          html += `<div class="ask-opts">${opts.map(o => { const t = optText(o); return `<button class="ask-opt" type="button" data-value="${escapeAttr(t)}">${escapeHtml(t)}</button>`; }).join("")}</div>`;
         }
         node.innerHTML = html;
         // 选项按钮点击后填入输入框
         node.querySelectorAll(".ask-opt").forEach(btn => {
-          btn.onclick = () => { input.value = btn.textContent; input.dispatchEvent(new Event("input")); input.focus(); };
+          btn.onclick = () => { input.value = btn.dataset.value || btn.textContent; input.dispatchEvent(new Event("input")); input.focus(); };
         });
       } else {
         node = el("details", "tool");
@@ -2286,7 +2283,17 @@
   // 详情面板顶部/底部操作按钮
   $("detail-peek-btn").onclick = () => { if (state.sessionId) openPeek(state.sessionId); };
   // Resume：聚焦输入框继续对话（会话本就持续，这里相当于"继续聊"入口）
-  $("act-resume").onclick = () => { input.focus(); };
+  $("act-resume").onclick = async () => {
+    const sid = state.sessionId;
+    if (!sid) return;
+    try {
+      await api("/api/sessions/" + sid + "/resume", { method: "POST" });
+      toast("会话已恢复，可继续聊", "success", 1500);
+    } catch (e) {
+      toast("恢复失败：" + e.message, "error");
+    }
+    input.focus();
+  };
   // Stop：中断当前回合（同 cancel-btn）
   $("act-stop").onclick = () => { if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify({ type: "cancel" })); };
   // Archive：归档=删除会话（后端无独立归档态，复用删除并二次确认）
