@@ -20,6 +20,10 @@ CLAUDE_ALLOWED_TOOLS = os.environ.get(
     "CLAUDE_ALLOWED_TOOLS",
     "Read Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit",
 )
+# 禁用的工具列表（传给 --disallowedTools，空格分隔）。AskUserQuestion 会让 CLI 弹交互式
+# 提问并阻塞等待终端输入，headless -p 模式下没有终端可回，会导致回合卡死。禁掉后 Agent
+# 改用普通文本提问，走前端选项卡片交互。设为空字符串则不加该参数。
+CLAUDE_DISALLOWED_TOOLS = os.environ.get("CLAUDE_DISALLOWED_TOOLS", "AskUserQuestion")
 # 是否开启权限请求弹窗：未放行的工具触发 control_request 时，经 WS 推前端弹窗让用户确认，
 # 用户点允许/拒绝后回 control_response 给 CLI。仅在常驻模式（有 stdin 可回写）下生效。
 CLAUDE_PERMISSION_PROMPT = os.getenv("CLAUDE_PERMISSION_PROMPT", "true").lower() == "true"
