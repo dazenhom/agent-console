@@ -134,6 +134,8 @@ class ClaudeRunner:
         #   {proc, stdin, reader_task, claude_sid, last_active, on_event, result_evt,
         #    cancelled, lock, error}
         self._sessions: dict[str, dict] = {}
+        # session_id -> 预热锁：避免并发 ensure_warm 重复 spawn
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     def _build_cmd(self, *, message: str | None, model: str | None,
                    resume: str | None, stream_input: bool) -> list[str]:
@@ -181,12 +183,16 @@ class ClaudeRunner:
 
     async def ensure_warm(self, session_id: str, workdir: str, resume: str | None = None) -> str:
         """预热常驻进程：进程已存活则返回 'running'，否则 spawn 并返回 'warmed'。"""
-        sess = self._sessions.get(session_id)
-        if sess and sess["proc"].returncode is None:
-            return "running"
-        # 进程不存在或已退出，重新 spawn（model=None 沿用会话默认 model）
-        await self._spawn_session(session_id, workdir, model=None, resume=resume)
-        return "warmed"
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            sess = self._sessions.get(session_id)
+            if sess and sess["proc"].returncode is None:
+                return "running"
+            if sess and sess.get("turn_active"):
+                return "running"  # 回合进行中，不干预
+            # 进程不存在或已退出，重新 spawn（model=None 沿用会话默认 model）
+            await self._spawn_session(session_id, workdir, model=None, resume=resume)
+            return "warmed"
 
     def was_cancelled(self, session_id: str) -> bool:
         rec = self._procs.get(session_id)
