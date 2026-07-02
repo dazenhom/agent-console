@@ -38,15 +38,16 @@ BASE_ENV.update({
 })
 
 
-def launch(port, https, logfile):
+def launch(port, https, logfile, extra_env=None):
     cmd = ['/opt/venv/bin/uvicorn', 'server.main:app', '--host', '0.0.0.0', '--port', str(port)]
     # WS 保活：每 20s 发 ping、60s 无 pong 才判死。经 Tailscale Funnel + SSH 隧道多层代理时，
     # 主动 ping 让中间设备认为连接活跃，减少 WS 被空闲掐断（前端"连接断开"刷屏的主因）。
     cmd += ['--ws-ping-interval', '20', '--ws-ping-timeout', '60', '--timeout-keep-alive', '65']
     if https:
         cmd += ['--ssl-keyfile', CERT_DIR + '/server.key', '--ssl-certfile', CERT_DIR + '/server.crt']
+    env = BASE_ENV if not extra_env else {**BASE_ENV, **extra_env}
     p = subprocess.Popen(
-        cmd, env=BASE_ENV, cwd=ROOT,
+        cmd, env=env, cwd=ROOT,
         stdout=open(ROOT + '/' + logfile, 'w'), stderr=subprocess.STDOUT,
         start_new_session=True,
     )
@@ -56,5 +57,6 @@ def launch(port, https, logfile):
 
 print('启动 Agent Console 双端口：')
 launch(8800, True, 'console.log')       # HTTPS 语音
-launch(80, False, 'console_http.log')   # HTTP 日常
+# 只让 80 端口进程在启动时对齐僵尸 running 状态，双进程不重复做。
+launch(80, False, 'console_http.log', {'RECONCILE_ON_START': '1'})   # HTTP 日常
 print('完成。HTTPS: https://<IP>:8800  |  HTTP: http://<IP>:80')

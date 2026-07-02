@@ -320,6 +320,11 @@ class SessionHub:
                 "input": tool_input,
             })
 
+        def _on_session_id(cid: str):
+            """claude_sid 首次落定时即刻落库：即便本回合中途崩溃、走不到末尾兜底，
+            下次也能凭它 resume 续接，避免每次都从空会话重开。"""
+            db.update_session(sid, claude_session_id=cid)
+
         try:
             sess = db.get_session(sid)
             # 模型档位 → 模型名
@@ -339,6 +344,7 @@ class SessionHub:
                 on_event=on_event,
                 model=model_name,
                 on_permission=on_permission if config.CLAUDE_PERMISSION_PROMPT else None,
+                on_session_id=_on_session_id,
             )
             # resume 失败：缓存的 claude_sid 与当前 cwd 归属目录不一致，tclaude 立即报
             # "No conversation found"。此时自动重启（丢弃坏 sid，全新 spawn），并把近期
@@ -359,6 +365,7 @@ class SessionHub:
                     on_event=on_event,
                     model=model_name,
                     on_permission=on_permission if config.CLAUDE_PERMISSION_PROMPT else None,
+                    on_session_id=_on_session_id,
                 )
             if ret.get("claude_session_id"):
                 db.update_session(sid, claude_session_id=ret["claude_session_id"])

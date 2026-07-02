@@ -240,6 +240,7 @@ class ClaudeRunner:
         on_event: EventCallback,
         model: str | None = None,
         on_permission=None,
+        on_session_id=None,
     ) -> dict:
         """跑一个回合。返回 {claude_session_id, returncode, error}。
 
@@ -290,7 +291,14 @@ class ClaudeRunner:
                     continue
                 sid = evt.get("session_id")
                 if sid:
+                    first = claude_session_id is None
                     claude_session_id = sid
+                    # 首次拿到 sid 即回调落库，崩溃/超时也能保住 resume 目标
+                    if on_session_id and first:
+                        try:
+                            on_session_id(sid)
+                        except Exception:
+                            pass
                 await on_event(evt)
 
         error = ""
@@ -410,6 +418,7 @@ class ClaudeRunner:
             "proc": proc, "stdin": proc.stdin, "claude_sid": resume,
             "last_active": time.monotonic(), "turn_active": False,
             "cancelled": False, "on_event": None, "on_permission": None,
+            "on_session_id": None,
             "result_evt": None, "workdir": workdir,
             "model": model,
             # 看门狗：循环检测器 + 循环命中标记（reader 里喂事件，send_turn 里轮询判定）
@@ -443,7 +452,16 @@ class ClaudeRunner:
                 continue
             sid = evt.get("session_id")
             if sid:
+                old_sid = sess.get("claude_sid")
                 sess["claude_sid"] = sid
+                # claude_sid 首次落定（None→有值）时回调一次，让上层立刻把它落库。
+                # 这样即便回合中途进程崩溃、来不及走到 result，resume 用的 sid 也已持久化。
+                cb_sid = sess.get("on_session_id")
+                if cb_sid and old_sid is None:
+                    try:
+                        cb_sid(sid)
+                    except Exception:
+                        pass
             # 看门狗：任何一条成功解析的事件都算"仍在推进"，刷新活跃时间并喂给循环检测器
             sess["last_active"] = time.monotonic()
             is_loop, reason = sess["loop_detector"].feed(evt)
@@ -503,7 +521,8 @@ class ClaudeRunner:
 
     async def send_turn(self, session_id: str, message: str, workdir: str,
                         resume_claude_session: str | None, on_event: EventCallback,
-                        model: str | None = None, on_permission=None) -> dict:
+                        model: str | None = None, on_permission=None,
+                        on_session_id=None) -> dict:
         """常驻进程模式跑一回合。进程不存在/已死则拉起（带 resume），写 stdin，等本回合 result。"""
         sess = self._sessions.get(session_id)
         proc_dead = (not sess) or (sess["proc"].returncode is not None)
@@ -518,6 +537,7 @@ class ClaudeRunner:
 
         sess["on_event"] = on_event
         sess["on_permission"] = on_permission
+        sess["on_session_id"] = on_session_id
         sess["cancelled"] = False
         sess["resume_failed"] = False
         sess["turn_active"] = True
@@ -587,6 +607,7 @@ class ClaudeRunner:
         sess["turn_active"] = False
         sess["on_event"] = None
         sess["on_permission"] = None
+        sess["on_session_id"] = None
         sess["result_evt"] = None
         sess["last_active"] = time.monotonic()
 

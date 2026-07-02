@@ -20,6 +20,10 @@ _uploads_cleanup_task = None
 async def lifespan(app: FastAPI):
     # 启动：初始化 SQLite。比 @app.on_event("startup") 更可靠，TestClient / 多种部署方式都能触发。
     db.init_db()
+    # 仅在被显式要求的进程里对齐僵尸 running 状态（双端口下只让一个进程做，避免重复）。
+    import os
+    if os.environ.get("RECONCILE_ON_START"):
+        db.reconcile_stale_running()
     scheduler.start()  # 挂起定时任务后台循环
     global _uploads_cleanup_task
     _uploads_cleanup_task = asyncio.ensure_future(_uploads_cleanup_loop())
