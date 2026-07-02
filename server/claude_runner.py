@@ -373,6 +373,14 @@ class ClaudeRunner:
         if rt and not rt.done():
             rt.cancel()
 
+    async def forget_session(self, session_id: str) -> None:
+        """彻底丢弃缓存的常驻进程与 claude_sid：杀进程并删记录。
+
+        用于 resume 失败后的自动重启——下次 send_turn 会以全新会话 spawn，
+        不再带上那个已失效的 claude_sid。"""
+        await self._kill_session(session_id)
+        self._sessions.pop(session_id, None)
+
     async def _spawn_session(self, session_id: str, workdir: str, model: str | None,
                              resume: str | None) -> dict:
         """为会话拉起一个常驻 stream-json 进程，启动后台 reader。返回 sess 记录。"""
@@ -448,6 +456,20 @@ class ClaudeRunner:
                     except Exception:
                         pass
                 continue
+            # resume 失败：`tclaude --resume <sid>` 在 cwd 与该 sid 的 jsonl 归属目录
+            # 不一致时，会立即吐一条 error result（num_turns=0，errors 含 "No conversation
+            # found with session ID"），随后进程退出。这条坏 result 不该落库/广播（否则
+            # 前端出现空的“$0.0000 完成”行），只打标记让 session_hub 侧自动重启续接。
+            # 判定必须严格：num_turns==0 且命中 resume 失败关键字，避免误伤 agent 正常
+            # 执行中的报错（is_error=true 但 num_turns>0）。
+            if evt.get("type") == "result" and evt.get("subtype") == "error_during_execution":
+                errors_text = json.dumps(evt.get("errors", ""), ensure_ascii=False)
+                if evt.get("num_turns", 0) == 0 and "No conversation found" in errors_text:
+                    sess["resume_failed"] = True
+                    ev = sess.get("result_evt")
+                    if ev:
+                        ev.set()
+                    continue  # 不转发这条坏 result
             cb = sess.get("on_event")
             if cb:
                 try:
@@ -482,6 +504,7 @@ class ClaudeRunner:
         sess["on_event"] = on_event
         sess["on_permission"] = on_permission
         sess["cancelled"] = False
+        sess["resume_failed"] = False
         sess["turn_active"] = True
         sess["last_active"] = time.monotonic()
         # 每回合开始清掉上一回合的循环命中标记，并重建检测器让内部计数从新回合基线开始
@@ -564,6 +587,7 @@ class ClaudeRunner:
             "returncode": sess["proc"].returncode,
             "error": error,
             "cancelled": cancelled,
+            "resume_failed": bool(sess.get("resume_failed")),
         }
 
     async def cleanup_idle(self) -> None:

@@ -327,6 +327,26 @@ class SessionHub:
                 model=model_name,
                 on_permission=on_permission if config.CLAUDE_PERMISSION_PROMPT else None,
             )
+            # resume 失败：缓存的 claude_sid 与当前 cwd 归属目录不一致，tclaude 立即报
+            # "No conversation found"。此时自动重启（丢弃坏 sid，全新 spawn），并把近期
+            # 对话摘录拼到消息前面注入，让 agent 续接上下文。本回合最多重试一次，避免递归。
+            if ret.get("resume_failed"):
+                await self.broadcast(sid, {
+                    "type": "message", "role": "error",
+                    "content": {"message": "Agent 上下文已失效，正在自动重启并续接近期对话…"},
+                })
+                await runner.forget_session(sid)
+                db.update_session(sid, claude_session_id=None)
+                retry_message = self._build_resume_recovery_prompt(sid, user_text)
+                ret = await _turn_fn(
+                    session_id=sid,
+                    message=retry_message,
+                    workdir=(sess or {}).get("workdir") or config.DEFAULT_WORKDIR,
+                    resume_claude_session=None,
+                    on_event=on_event,
+                    model=model_name,
+                    on_permission=on_permission if config.CLAUDE_PERMISSION_PROMPT else None,
+                )
             if ret.get("claude_session_id"):
                 db.update_session(sid, claude_session_id=ret["claude_session_id"])
             if ret.get("error"):
@@ -394,6 +414,27 @@ class SessionHub:
                 await self._emit_session_update(sid)
         except Exception:
             pass
+
+    def _build_resume_recovery_prompt(self, sid: str, user_text: str) -> str:
+        """resume 失败自动重启后，把近期对话摘录拼到原始消息前面，帮 agent 续接上下文。
+
+        取最后若干条 user/assistant 消息（不含本回合已入库的当前 user 气泡），
+        拼成约 4000 字以内的摘要作前缀。"""
+        msgs = [m for m in db.list_messages(sid) if m["role"] in ("user", "assistant")]
+        # 本回合的用户消息在 start_turn 已入库，是列表末尾那条 user，摘要里剔除避免重复
+        if msgs and msgs[-1]["role"] == "user":
+            msgs = msgs[:-1]
+        recent = msgs[-10:]
+        parts = []
+        for m in recent:
+            who = "用户" if m["role"] == "user" else "助手"
+            txt = str((m.get("content") or {}).get("text", "")).strip()
+            if txt:
+                parts.append(f"{who}：{txt}")
+        excerpt = "\n".join(parts)[:4000]
+        if not excerpt:
+            return user_text
+        return "以下是之前对话的近期摘录，请据此继续：\n\n" + excerpt + "\n\n" + user_text
 
     def _build_title_convo(self, sid: str) -> str:
         """拼一段用于起标题的对话摘录：首条用户消息 + 最近若干轮，去重限长。"""
