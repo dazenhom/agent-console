@@ -301,7 +301,7 @@ body.hub-resizing {
 .subagent-process {
   border-top: 1px solid #dcd9f7;
 }
-.subagent-process > summary {
+.subagent-process-toggle {
   list-style: none;
   cursor: pointer;
   padding: 7px 13px;
@@ -311,14 +311,15 @@ body.hub-resizing {
   align-items: center;
   gap: 6px;
   transition: background var(--ease);
+  user-select: none;
+  -webkit-user-select: none;
 }
-.subagent-process > summary::-webkit-details-marker { display: none; }
-.subagent-process > summary:hover { background: #efeeff; }
+.subagent-process-toggle:hover { background: #efeeff; }
 .subagent-process .sap-caret {
   transition: transform var(--ease);
   display: inline-block;
 }
-.subagent-process[open] .sap-caret { transform: rotate(90deg); }
+.subagent-process.open .sap-caret { transform: rotate(90deg); }
 .subagent-icon { font-size: 16px; }
 .subagent-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-status {
@@ -464,6 +465,12 @@ body.hub-resizing {
   border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font-size: 15px;
 }
 .list-pane .session-search::placeholder { color: var(--muted-2); }
+.session-view-toggle { display: flex; gap: 6px; margin-bottom: 12px; }
+.sv-btn {
+  flex: 1; padding: 7px 0; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg-2); color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.sv-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .pane-head { font-size: 20px; font-weight: 700; margin-bottom: 14px; }
 
 /* ---------- New Tab：新建表单 ---------- */

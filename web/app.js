@@ -14,6 +14,8 @@
     ws: null,
     reconnectTimer: null,
     sessions: [],
+    archivedSessions: [],
+    sessionView: "active",  // Sessions Tab 当前视图：active / archived
     typingEl: null,
     streamEl: null,      // 当前流式气泡的 DOM 节点
     streamText: "",      // 已累积的流式文本
@@ -166,8 +168,11 @@
   // 全局开关：一键展开/折叠当前会话所有子智能体的思考与执行过程
   function toggleAllSubagents() {
     state.subagentExpanded = !state.subagentExpanded;
-    document.querySelectorAll("#chat .subagent-process")
-      .forEach((d) => { d.open = state.subagentExpanded; });
+    document.querySelectorAll("#chat .subagent-process").forEach((proc) => {
+      const body = proc.querySelector(".subagent-body");
+      if (state.subagentExpanded) { proc.classList.add("open"); if (body) body.style.display = ""; }
+      else { proc.classList.remove("open"); if (body) body.style.display = "none"; }
+    });
     updateSubagentToggleBtn();
   }
   function updateSubagentToggleBtn() {
@@ -250,6 +255,16 @@
     });
   });
 
+  // Sessions Tab 视图切换：活跃 / 归档
+  document.querySelectorAll(".sv-btn").forEach((b) => {
+    b.onclick = () => {
+      state.sessionView = b.dataset.view;
+      document.querySelectorAll(".sv-btn").forEach((x) => x.classList.toggle("active", x === b));
+      if (state.sessionView === "archived") loadArchivedSessions();
+      else fillList($("session-list-all"), state.sessions);
+    };
+  });
+
   // ---------------- 会话 ----------------
   async function loadSessions() {
     state.sessions = await api("/api/sessions");
@@ -267,7 +282,9 @@
   // 渲染三个列表：Overview(全部) / Sessions(全部，可搜) / Review(待审视)
   function renderSessionLists() {
     fillList($("session-list"), state.sessions);
-    fillList($("session-list-all"), state.sessions);
+    // Sessions Tab 在「归档」视图下不用活跃列表覆盖，交给 renderArchivedSessionList
+    if (state.sessionView === "archived") renderArchivedSessionList();
+    else fillList($("session-list-all"), state.sessions);
     fillList($("session-list-review"), state.sessions.filter((s) => deriveState(s).key === "review"));
     const sub = $("agents-sub");
     if (sub) {
@@ -279,18 +296,32 @@
     if (sq) $("session-search").dispatchEvent(new Event("input"));
   }
 
-  function fillList(ul, sessions) {
+  function fillList(ul, sessions, isArchived = false) {
     if (!ul) return;
     ul.innerHTML = "";
     if (!sessions.length) {
       ul.innerHTML = `<div class="entity-empty"><div class="empty-emoji">📭</div><div>这里还没有会话</div></div>`;
       return;
     }
-    for (const s of sessions) ul.appendChild(renderSessionRow(s));
+    for (const s of sessions) ul.appendChild(renderSessionRow(s, isArchived));
+  }
+
+  // 加载并渲染归档会话（Sessions Tab「归档」视图）
+  async function loadArchivedSessions() {
+    try {
+      state.archivedSessions = await api("/api/sessions?archived=1");
+      renderArchivedSessionList();
+    } catch (e) { console.error("loadArchivedSessions:", e); }
+  }
+
+  function renderArchivedSessionList() {
+    fillList($("session-list-all"), state.archivedSessions, true);
+    const sq = ($("session-search").value || "").trim().toLowerCase();
+    if (sq) $("session-search").dispatchEvent(new Event("input"));
   }
 
   // 单个 Agent 行：状态徽章 + 标题 + 行摘要 + meta（时间 / workdir / 档位）
-  function renderSessionRow(s) {
+  function renderSessionRow(s, isArchived = false) {
     const st = deriveState(s);
     const li = document.createElement("li");
     li.dataset.sid = s.id;
@@ -311,11 +342,20 @@
     main.onclick = () => { switchSession(s.id); openDetail(); };
 
     const actions = el("div", "s-actions");
-    const peek = el("button", "s-peek", "👁"); peek.title = "速览 / 不切会话回复";
-    peek.onclick = (e) => { e.stopPropagation(); openPeek(s.id); };
-    const del = el("button", "s-del", "×");
-    del.onclick = async (e) => { e.stopPropagation(); await deleteSession(s.id); };
-    actions.append(peek, del);
+    if (isArchived) {
+      // 归档视图：恢复 + 彻底删除（不提供速览，避免误切到已归档会话）
+      const restore = el("button", "s-peek", "↩"); restore.title = "恢复到活跃列表";
+      restore.onclick = (e) => { e.stopPropagation(); unarchiveSession(s.id); };
+      const del = el("button", "s-del", "×"); del.title = "彻底删除";
+      del.onclick = async (e) => { e.stopPropagation(); await deleteSession(s.id); };
+      actions.append(restore, del);
+    } else {
+      const peek = el("button", "s-peek", "👁"); peek.title = "速览 / 不切会话回复";
+      peek.onclick = (e) => { e.stopPropagation(); openPeek(s.id); };
+      const del = el("button", "s-del", "×");
+      del.onclick = async (e) => { e.stopPropagation(); await deleteSession(s.id); };
+      actions.append(peek, del);
+    }
 
     li.append(main, actions);
     return li;
@@ -1034,6 +1074,16 @@
       await loadSessions();
       if (state.sessionId) await switchSession(state.sessionId);
     } catch (e) { toast("删除失败：" + e.message, "error"); }
+  }
+
+  // 恢复归档会话：回到活跃列表
+  async function unarchiveSession(id) {
+    try {
+      await api(`/api/sessions/${id}/unarchive`, { method: "POST" });
+      toast("已恢复", "success", 1500);
+      await loadArchivedSessions();
+      await loadSessions();
+    } catch (e) { toast("恢复失败：" + e.message, "error"); }
   }
 
   // 草稿按会话隔离：切走时存当前输入框内容和待发图片，切回时恢复。
@@ -1851,28 +1901,31 @@
       const toolName = content.name || "";
       const isAskTool = /^Ask(Followup|User|Clarif)/i.test(toolName);
       if (toolName === "Agent") {
-        // 子智能体（Agent 工具）：卡片头始终可见，思考/执行过程折进 <details class="subagent-process">，
-        // 内部步骤归拢进 .subagent-body，最终结果填入 .subagent-result（始终可见）。
-        // 内部步骤/结果由 appendMessageGrouped 按 parent 路由填充；折叠态受全局开关 state.subagentExpanded 控制。
         const inp = content.input || {};
         const subtype = inp.subagent_type || "agent";
         const desc = String(inp.description || inp.prompt || "").slice(0, 60);
         node = el("div", "subagent");
         if (content.id) node.dataset.agentId = content.id;
-        const openAttr = state.subagentExpanded ? " open" : "";
+        const expanded = state.subagentExpanded;
         node.innerHTML = `<div class="subagent-head">
             <span class="subagent-icon">🤖</span>
             <span class="subagent-title">${escapeHtml(subtype)}${desc ? " · " + escapeHtml(desc) : ""}</span>
             <span class="subagent-status running">运行中</span>
           </div>
-          <details class="subagent-process"${openAttr}>
-            <summary><span class="sap-caret">▸</span>思考与执行过程</summary>
-            <div class="subagent-body"></div>
-          </details>
+          <div class="subagent-process${expanded ? " open" : ""}">
+            <div class="subagent-process-toggle"><span class="sap-caret">▸</span>思考与执行过程</div>
+            <div class="subagent-body" style="${expanded ? "" : "display:none"}"></div>
+          </div>
           <div class="subagent-result" style="display:none">
             <div class="subagent-result-label">最终结果</div>
             <div class="subagent-result-content"></div>
           </div>`;
+        node.querySelector(".subagent-process-toggle").addEventListener("click", function() {
+          const proc = this.closest(".subagent-process");
+          const body = proc.querySelector(".subagent-body");
+          const isOpen = proc.classList.toggle("open");
+          body.style.display = isOpen ? "" : "none";
+        });
       } else if (isAskTool) {
         // 问答类工具：渲染为高亮问题卡片
         node = el("div", "msg-ask");
@@ -2445,8 +2498,19 @@
   };
   // Stop：中断当前回合（同 cancel-btn）
   $("act-stop").onclick = () => { if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify({ type: "cancel" })); };
-  // Archive：归档=删除会话（后端无独立归档态，复用删除并二次确认）
-  $("act-archive").onclick = async () => { if (state.sessionId) await deleteSession(state.sessionId); };
+  // Archive：归档=从活跃列表隐藏（不物理删除），可在 Sessions 页「归档」视图恢复
+  $("act-archive").onclick = async () => {
+    const sid = state.sessionId;
+    if (!sid) return;
+    const yes = await confirmDialog("归档该会话？可在 Sessions 页「归档」视图恢复。", { okText: "归档" });
+    if (!yes) return;
+    try {
+      await api(`/api/sessions/${sid}/archive`, { method: "POST" });
+      toast("已归档", "success", 1500);
+      state.sessionId = "";
+      await loadSessions();
+    } catch (e) { toast("归档失败：" + e.message, "error"); }
+  };
 
   // ---------------- 按住说话（录音 → 后端 ASR）----------------
   // 约束：getUserMedia 需要安全上下文（HTTPS 或 localhost）。HTTP + 内网 IP 下浏览器禁用麦克风。
