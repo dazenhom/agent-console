@@ -12,17 +12,17 @@ CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "tclaude")
 # 这个参数（"cannot be used with root/sudo privileges"），加了会导致每个回合启动失败。
 # 所以 root 部署务必保持 false，靠下面的 CLAUDE_ALLOWED_TOOLS 放行工具来免权限提示。
 CLAUDE_SKIP_PERMISSIONS = os.environ.get("CLAUDE_SKIP_PERMISSIONS", "false").lower() == "true"
-# 放行的工具列表（传给 --allowedTools，空格分隔）：只放行只读/安全工具，免权限提示直接跑；
-# 写类工具（Bash / Write / Edit / MultiEdit）不放行，遇到就触发 control_request，
-# 经 WS 推前端弹窗让用户逐次确认（见 CLAUDE_PERMISSION_PROMPT）。
+# 放行的工具列表（传给 --allowedTools，空格分隔）。这是 root 下绕开权限提示的正路：
+# headless -p 默认模式会静默拒绝工具调用（permission_denials），导致 Agent 干不了实事；
+# 显式 allowedTools 不受 root 限制，放行后零拒绝。默认放行全套常用工具。
 # 想精细控制可改成如 "Bash(git *) Read Write"；设为空字符串则不加该参数（回到默认拒绝）。
 CLAUDE_ALLOWED_TOOLS = os.environ.get(
     "CLAUDE_ALLOWED_TOOLS",
-    "Read Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit",
+    "Bash Read Write Edit Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit",
 )
-# 禁用的工具列表（传给 --disallowedTools，空格分隔）。AskUserQuestion 会让 CLI 弹交互式
-# 提问并阻塞等待终端输入，headless -p 模式下没有终端可回，会导致回合卡死。禁掉后 Agent
-# 改用普通文本提问，走前端选项卡片交互。设为空字符串则不加该参数。
+# 禁用工具列表（空格分隔）。AskUserQuestion 仅在非常驻模式（headless -p，无 stdin）下
+# 被禁用以防卡死；常驻模式（stream-json，有 stdin）会自动放行它并走前端选项卡片交互。
+# 见 claude_runner._build_cmd。设为空字符串则任何模式都不加 --disallowedTools 参数。
 CLAUDE_DISALLOWED_TOOLS = os.environ.get("CLAUDE_DISALLOWED_TOOLS", "AskUserQuestion")
 # 是否开启权限请求弹窗：未放行的工具触发 control_request 时，经 WS 推前端弹窗让用户确认，
 # 用户点允许/拒绝后回 control_response 给 CLI。仅在常驻模式（有 stdin 可回写）下生效。

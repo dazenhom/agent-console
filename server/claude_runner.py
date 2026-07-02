@@ -167,9 +167,14 @@ class ClaudeRunner:
             # root 下 skip-permissions 被拒，改用 allowedTools 放行工具免权限提示。
             # 空格分隔的工具名直接作为多个参数传给 --allowedTools。
             cmd += ["--allowedTools", *config.CLAUDE_ALLOWED_TOOLS.split()]
-        if config.CLAUDE_DISALLOWED_TOOLS.strip():
-            # 禁用 AskUserQuestion 等会阻塞等待终端输入的交互式工具（headless 下会卡死）。
-            cmd += ["--disallowedTools", *config.CLAUDE_DISALLOWED_TOOLS.split()]
+        disallowed = config.CLAUDE_DISALLOWED_TOOLS.split()
+        if stream_input:
+            # 常驻 stream-json 模式有 stdin 可回 control_response：AskUserQuestion 能经
+            # control_request → 前端选项卡片 → updatedInput.answers 正常交互，不禁用。
+            # 仅老的 headless -p 模式（无 stdin、无法回授权）才禁掉它，防回合卡死。
+            disallowed = [t for t in disallowed if t != "AskUserQuestion"]
+        if disallowed:
+            cmd += ["--disallowedTools", *disallowed]
         return cmd
 
     def _get_proc(self, session_id: str) -> asyncio.subprocess.Process | None:
