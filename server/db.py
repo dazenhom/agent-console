@@ -31,6 +31,11 @@ def init_db() -> None:
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
     _conn.row_factory = sqlite3.Row
+    # WAL：双进程（80/8800）共享同一库时并发读写更稳，写不再阻塞读；busy_timeout 让并发写
+    # 排队等锁而非立刻抛 "database is locked"。这些 PRAGMA 幂等，直接设即可。
+    _conn.execute("PRAGMA journal_mode=WAL;")
+    _conn.execute("PRAGMA busy_timeout=15000;")
+    _conn.execute("PRAGMA synchronous=NORMAL;")
     with _lock:
         _conn.executescript(
             """
@@ -44,7 +49,8 @@ def init_db() -> None:
                 summary TEXT DEFAULT '',      -- 行摘要：列表里"刚做了什么"一句话
                 title_auto INTEGER DEFAULT 1, -- 标题是否由 AI 自动维护（用户手动改名后置 0）
                 created_at REAL,
-                updated_at REAL
+                updated_at REAL,
+                archived INTEGER DEFAULT 0    -- 归档：从活跃列表隐藏，不物理删除
             );
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
@@ -132,6 +138,8 @@ def init_db() -> None:
             _add_col("sessions", "is_secretary INTEGER DEFAULT 0")
         if "title_auto" not in cols:
             _add_col("sessions", "title_auto INTEGER DEFAULT 1")
+        if "archived" not in cols:
+            _add_col("sessions", "archived INTEGER DEFAULT 0")
         # 看板进展摘要三列：正文 / 生成时间 / 生成时所依据的 jsonl mtime（用于缓存判断）
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")
@@ -181,10 +189,13 @@ def get_session(sid: str) -> dict | None:
     return dict(rows[0]) if rows else None
 
 
-def list_sessions() -> list[dict]:
-    rows = _query(
-        "SELECT * FROM sessions WHERE (is_secretary=0 OR is_secretary IS NULL) ORDER BY updated_at DESC"
-    )
+def list_sessions(include_archived: bool = False, archived_only: bool = False) -> list[dict]:
+    base = "SELECT * FROM sessions WHERE (is_secretary=0 OR is_secretary IS NULL)"
+    if archived_only:
+        base += " AND archived=1"
+    elif not include_archived:
+        base += " AND (archived=0 OR archived IS NULL)"
+    rows = _query(base + " ORDER BY updated_at DESC", ())
     return [dict(r) for r in rows]
 
 
@@ -201,6 +212,14 @@ def update_session(sid: str, **fields) -> None:
     fields["updated_at"] = _now()
     cols = ",".join(f"{k}=?" for k in fields)
     _exec(f"UPDATE sessions SET {cols} WHERE id=?", (*fields.values(), sid))
+
+
+def reconcile_stale_running() -> None:
+    """进程重启后对齐"僵尸 running"状态：上次进程被杀时，DB 里可能残留 status='running'
+    的会话与 tasks。它们的执行早已不在，重启后不会自愈，导致前端永久卡在"运行中"。
+    启动时把它们归位：会话置 idle，未结束的任务置 error。"""
+    _exec("UPDATE sessions SET status='idle' WHERE status='running'")
+    _exec("UPDATE tasks SET status='error', ended_at=? WHERE status='running'", (_now(),))
 
 
 # ---------- messages ----------

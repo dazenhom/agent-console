@@ -55,8 +55,8 @@ async def login(payload: dict):
 
 
 @app.get("/api/sessions", dependencies=[Depends(require_auth)])
-async def get_sessions():
-    return db.list_sessions()
+async def get_sessions(archived: int = Query(default=0)):
+    return db.list_sessions(archived_only=bool(archived))
 
 
 @app.post("/api/sessions", dependencies=[Depends(require_auth)])
@@ -94,9 +94,14 @@ async def set_session_workdir(sid: str, payload: dict):
     workdir = (payload.get("workdir") or "").strip()
     if not workdir:
         raise HTTPException(status_code=400, detail="workdir 不能为空")
-    if not db.get_session(sid):
+    old = db.get_session(sid)
+    if not old:
         raise HTTPException(status_code=404, detail="会话不存在")
-    db.update_session(sid, workdir=workdir)
+    if (old.get("workdir") or "").strip() != workdir:
+        db.update_session(sid, workdir=workdir, claude_session_id=None)
+        await runner.forget_session(sid)
+    else:
+        db.update_session(sid, workdir=workdir)
     return {"ok": True, "workdir": workdir}
 
 
@@ -104,6 +109,22 @@ async def set_session_workdir(sid: str, payload: dict):
 async def remove_session(sid: str):
     db.delete_session(sid)
     return {"ok": True}
+
+
+@app.post("/api/sessions/{sid}/archive", dependencies=[Depends(require_auth)])
+async def archive_session(sid: str):
+    if not db.get_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    db.update_session(sid, archived=1)
+    return {"ok": True, "archived": True}
+
+
+@app.post("/api/sessions/{sid}/unarchive", dependencies=[Depends(require_auth)])
+async def unarchive_session(sid: str):
+    if not db.get_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    db.update_session(sid, archived=0)
+    return {"ok": True, "archived": False}
 
 
 @app.post("/api/sessions/{sid}/resume", dependencies=[Depends(require_auth)])

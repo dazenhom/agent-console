@@ -45,7 +45,7 @@ def list_importable() -> list[dict]:
     d = _project_dir()
     if not d.exists():
         return []
-    imported = {s.get("claude_session_id") for s in db.list_sessions() if s.get("claude_session_id")}
+    imported = {s.get("claude_session_id") for s in db.list_sessions(include_archived=True) if s.get("claude_session_id")}
     out = []
     for f in sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
         sid = f.stem
@@ -70,7 +70,7 @@ def import_sessions(claude_session_ids: list[str]) -> dict:
     """把指定终端会话接续进 Console（建会话 + 绑 claude_session_id）。返回导入数 + 首个新会话 id。"""
     d = _project_dir()
     avail = {f.stem for f in d.glob("*.jsonl")} if d.exists() else set()
-    imported = {s.get("claude_session_id") for s in db.list_sessions() if s.get("claude_session_id")}
+    imported = {s.get("claude_session_id") for s in db.list_sessions(include_archived=True) if s.get("claude_session_id")}
     n = 0
     first_new = None
     for sid in claude_session_ids:
