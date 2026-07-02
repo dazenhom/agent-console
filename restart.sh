@@ -39,7 +39,7 @@ pkill -f "uvicorn server.main:app" 2>/dev/null
 sleep 2
 LEFT=$(ps aux | grep "uvicorn server.main" | grep -v grep | wc -l | tr -d ' ')
 echo "   旧进程剩余：$LEFT"
-python3 start_dual.py
+/opt/venv/bin/python3 start_dual.py || { echo "   ✗ start_dual.py 启动失败，已中止"; exit 1; }
 
 echo "▶ 4/4 验证双端口…"
 sleep 5

@@ -21,12 +21,17 @@ log() {
 }
 
 # ---- 单实例锁 ----
-if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
-  echo "watchdog already running (pid $(cat "$PID_FILE"))"
-  exit 0
+if [ -f "$PID_FILE" ]; then
+  OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
+  if kill -0 "$OLD_PID" 2>/dev/null && grep -q "watchdog" /proc/$OLD_PID/cmdline 2>/dev/null; then
+    echo "watchdog already running (pid $OLD_PID)"
+    exit 0
+  fi
 fi
+exec 9>"${PID_FILE}.lock"
+flock -n 9 || { echo "watchdog already running (flock)"; exit 0; }
 echo $$ > "$PID_FILE"
-trap 'rm -f "$PID_FILE"' EXIT
+trap 'rm -f "$PID_FILE" "${PID_FILE}.lock"' EXIT
 
 log "watchdog started (interval=${INTERVAL}s, threshold=${FAIL_THRESHOLD}, cooldown=${COOLDOWN}s)"
 
