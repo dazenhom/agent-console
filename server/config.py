@@ -18,7 +18,7 @@ CLAUDE_SKIP_PERMISSIONS = os.environ.get("CLAUDE_SKIP_PERMISSIONS", "false").low
 # 想精细控制可改成如 "Bash(git *) Read Write"；设为空字符串则不加该参数（回到默认拒绝）。
 CLAUDE_ALLOWED_TOOLS = os.environ.get(
     "CLAUDE_ALLOWED_TOOLS",
-    "Bash Read Write Edit Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit",
+    "Bash Read Write Edit Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit AskUserQuestion",
 )
 # 禁用工具列表（空格分隔）。AskUserQuestion 仅在非常驻模式（headless -p，无 stdin）下
 # 被禁用以防卡死；常驻模式（stream-json，有 stdin）会自动放行它并走前端选项卡片交互。
