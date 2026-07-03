@@ -938,6 +938,11 @@
       toast(`📋 ${data.title} 已生成`, "success", 5000);
       return;
     }
+    // 备忘录每日提醒
+    if (data.type === "memo_reminder") {
+      toast(`📝 ${data.title}`, "info", 6000);
+      return;
+    }
     if (data.type !== "session_update") return;
     const s = state.sessions.find((x) => x.id === data.session_id);
     if (s) {
@@ -1393,7 +1398,7 @@
   function openManage(kind) {
     manage.kind = kind;
     closeDrawer();
-    const titles = { memory: "记忆库", agent: "子智能体", snippets: "快捷指令", schedule: "定时任务", todos: "待办清单", reports: "日报记录" };
+    const titles = { memory: "记忆库", agent: "子智能体", snippets: "快捷指令", schedule: "定时任务", todos: "待办清单", memos: "备忘录", reports: "日报记录" };
     $("manage-title").textContent = titles[kind] || kind;
     $("app-view").classList.add("hidden");
     $("manage-view").classList.remove("hidden");
@@ -1407,6 +1412,7 @@
   $("open-snippets-btn").onclick = () => openManage("snippets");
   $("open-schedules-btn").onclick = () => openManage("schedule");
   $("open-todos-btn").onclick = () => openManage("todos");
+  $("open-memos-btn").onclick = () => openManage("memos");
   $("open-reports-btn").onclick = () => openManage("reports");
   $("secretary-trigger-btn").onclick = async () => {
     try {
@@ -1433,6 +1439,7 @@
     listEl.innerHTML = skeleton(4);
     if (manage.kind === "schedule") { return showScheduleList(); }
     if (manage.kind === "todos") { $("manage-new").classList.remove("hidden"); return showTodoList(); }
+    if (manage.kind === "memos") { $("manage-new").classList.remove("hidden"); return showMemoList(); }
     if (manage.kind === "reports") { $("manage-new").classList.add("hidden"); return showReportList(); }
     try {
       const items = await api(apiBase());
@@ -1610,6 +1617,7 @@
   async function showManageForm(name) {
     if (manage.kind === "schedule") { return showScheduleForm(name); }
     if (manage.kind === "todos") { return showTodoForm(); }
+    if (manage.kind === "memos") { return showMemoForm(name); }
     const form = $("manage-form");
     const listEl = $("manage-list");
     listEl.classList.add("hidden");
@@ -1804,6 +1812,106 @@
     cancelBtn.onclick = () => showTodoList();
 
     form.append(titleInput, descInput, priLabel, priSelect, saveBtn, cancelBtn);
+    listEl.appendChild(form);
+  }
+
+  // ---------------- 备忘录（自有渲染，复用 manage-list 容器）----------------
+  async function showMemoList() {
+    todoFormActive = false;
+    const listEl = $("manage-list");
+    listEl.innerHTML = '<div class="entity-loading">加载中…</div>';
+    try {
+      const items = await api("/api/memos");
+      listEl.innerHTML = "";
+      if (!items.length) {
+        listEl.innerHTML = '<div class="entity-empty"><div class="empty-emoji">📝</div><div>暂无备忘</div><div class="empty-sub">点右上角「+ 新建」记录要提醒的事情</div></div>';
+        return;
+      }
+      for (const it of items) {
+        const li = el("li");
+        const head = el("div", "e-head");
+        head.appendChild(el("span", "e-name", escapeHtml(it.content)));
+        head.appendChild(el("span", "e-tag", it.status === "done" ? "已完成" : "进行中"));
+        if (it.last_reminded_at) head.appendChild(el("span", "e-tag", "已提醒 " + fmtTs(it.last_reminded_at)));
+        if (!it.remind_enabled) head.appendChild(el("span", "e-tag", "不提醒"));
+        li.appendChild(head);
+        const actions = el("div", "e-actions");
+        if (it.status !== "done") {
+          const doneBtn = el("button", "btn-sm", "完成");
+          doneBtn.onclick = async () => {
+            try {
+              await api(`/api/memos/${it.id}`, { method: "PUT", body: JSON.stringify({ status: "done" }) });
+              showMemoList();
+            } catch (e) { toast("操作失败：" + e.message, "error"); }
+          };
+          actions.appendChild(doneBtn);
+        }
+        const editBtn = el("button", "btn-sm", "编辑");
+        editBtn.onclick = () => showMemoForm(it.id);
+        actions.appendChild(editBtn);
+        const delBtn = el("button", "btn-sm danger", "删除");
+        delBtn.onclick = async () => {
+          if (!confirm("确认删除这条备忘？")) return;
+          try {
+            await api(`/api/memos/${it.id}`, { method: "DELETE" });
+            showMemoList();
+          } catch (e) { toast("删除失败：" + e.message, "error"); }
+        };
+        actions.appendChild(delBtn);
+        li.appendChild(actions);
+        listEl.appendChild(li);
+      }
+    } catch (e) {
+      listEl.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function showMemoForm(id) {
+    todoFormActive = true;
+    const listEl = $("manage-list");
+    listEl.innerHTML = "";
+    let memo = { content: "", remind_enabled: 1, status: "active" };
+    if (id) {
+      try {
+        const items = await api("/api/memos");
+        memo = items.find((m) => m.id === id) || memo;
+      } catch (e) { toast("加载失败：" + e.message, "error"); }
+    }
+
+    const form = el("div", "entity-form");
+
+    const contentInput = el("textarea");
+    contentInput.placeholder = "记录要提醒的事情…";
+    contentInput.className = "form-input";
+    contentInput.rows = 4;
+    contentInput.value = memo.content || "";
+
+    const remindLabel = el("label", "");
+    const remindCheck = el("input");
+    remindCheck.type = "checkbox";
+    remindCheck.checked = !!memo.remind_enabled;
+    remindLabel.append(remindCheck, document.createTextNode(" 加入每日提醒（每天 09:30 推送）"));
+
+    const saveBtn = el("button", "btn-primary", "保存");
+    saveBtn.onclick = async () => {
+      const content = contentInput.value.trim();
+      if (!content) { toast("备忘内容不能为空", "error"); return; }
+      const remind_enabled = remindCheck.checked ? 1 : 0;
+      try {
+        if (id) {
+          await api(`/api/memos/${id}`, { method: "PUT", body: JSON.stringify({ content, remind_enabled }) });
+        } else {
+          await api("/api/memos", { method: "POST", body: JSON.stringify({ content, remind_enabled }) });
+        }
+        toast(id ? "已保存" : "备忘已添加", "success");
+        showMemoList();
+      } catch (e) { toast("保存失败：" + e.message, "error"); }
+    };
+
+    const cancelBtn = el("button", "btn-sm", "取消");
+    cancelBtn.onclick = () => showMemoList();
+
+    form.append(contentInput, remindLabel, saveBtn, cancelBtn);
     listEl.appendChild(form);
   }
 

@@ -144,6 +144,7 @@
               <button id="open-snippets-btn" class="manage-entry">⚡ 快捷指令</button>
               <button id="open-schedules-btn" class="manage-entry">⏰ 定时任务</button>
               <button id="open-todos-btn" class="manage-entry">✅ 待办清单</button>
+              <button id="open-memos-btn" class="manage-entry">📝 备忘录</button>
               <button id="open-reports-btn" class="manage-entry">📋 日报记录</button>
               <button id="secretary-trigger-btn" class="manage-entry">🤖 立即生成日报</button>
               <button id="notify-toggle" class="manage-entry">🔔 完成提醒：关</button>
@@ -240,7 +241,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=28"></script>
+  <script src="app.js?v=30"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
