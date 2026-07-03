@@ -1831,7 +1831,7 @@
         const li = el("li");
         const head = el("div", "e-head");
         head.appendChild(el("span", "e-name", escapeHtml(it.content)));
-        head.appendChild(el("span", "e-tag", it.status === "done" ? "已完成" : "进行中"));
+        head.appendChild(el("span", "e-tag", it.status === "done" ? "已完成" : "未完成"));
         if (it.last_reminded_at) head.appendChild(el("span", "e-tag", "已提醒 " + fmtTs(it.last_reminded_at)));
         if (!it.remind_enabled) head.appendChild(el("span", "e-tag", "不提醒"));
         li.appendChild(head);
