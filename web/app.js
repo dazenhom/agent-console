@@ -674,9 +674,15 @@
           <input id="nt-title" class="form-input" placeholder="输入任务名称…" />
         </label>
         <label>关联 Agent 会话
-          <div class="session-chips" id="nt-session-chips"></div>
-          <div class="session-add-row">
-            <select id="nt-session-picker" class="form-select"></select>
+          <div class="session-selector">
+            <div class="session-chips-row">
+              <div class="session-chips" id="nt-session-chips"></div>
+              <button type="button" class="session-add-btn" id="nt-session-add-btn">+ 添加</button>
+            </div>
+            <div class="session-picker-panel hidden" id="nt-session-panel">
+              <input type="text" class="session-search" id="nt-session-search" placeholder="搜索会话…">
+              <div class="session-picker-list" id="nt-session-list"></div>
+            </div>
           </div>
         </label>
         <label>初始状态
@@ -729,9 +735,15 @@
           <textarea id="et-desc" class="form-input" rows="3" placeholder="补充说明…">${escapeHtml(t.description || "")}</textarea>
         </label>
         <label>关联 Agent 会话
-          <div class="session-chips" id="et-session-chips"></div>
-          <div class="session-add-row">
-            <select id="et-session-picker" class="form-select"></select>
+          <div class="session-selector">
+            <div class="session-chips-row">
+              <div class="session-chips" id="et-session-chips"></div>
+              <button type="button" class="session-add-btn" id="et-session-add-btn">+ 添加</button>
+            </div>
+            <div class="session-picker-panel hidden" id="et-session-panel">
+              <input type="text" class="session-search" id="et-session-search" placeholder="搜索会话…">
+              <div class="session-picker-list" id="et-session-list"></div>
+            </div>
           </div>
         </label>
         <label>优先级
@@ -781,35 +793,78 @@
     };
   }
 
-  // 会话 chips 绑定：把 selectedSessions 渲染成 chips，picker 只列未选中会话
+  // 会话选择器绑定（GitHub label 风格）：chip 展示已选会话，[+ 添加] 展开浮层，
+  // 浮层内可搜索、点选/取消，点浮层外关闭。
   // prefix 为弹窗 id 前缀（"nt" / "et"）；selectedSessions 为调用方持有的数组，原地增删
   function bindSessionChips(card, prefix, selectedSessions) {
     const chipsBox = card.querySelector(`#${prefix}-session-chips`);
-    const picker = card.querySelector(`#${prefix}-session-picker`);
-    function render() {
+    const addBtn   = card.querySelector(`#${prefix}-session-add-btn`);
+    const panel    = card.querySelector(`#${prefix}-session-panel`);
+    const search   = card.querySelector(`#${prefix}-session-search`);
+    const list     = card.querySelector(`#${prefix}-session-list`);
+
+    function renderChips() {
       chipsBox.innerHTML = selectedSessions.map((sid) => {
         const s = state.sessions.find((x) => x.id === sid);
-        const name = s ? s.title : sid.slice(0, 8);
-        return `<span class="session-chip">${escapeHtml(name)}<button class="chip-remove" type="button" data-sid="${escapeAttr(sid)}">✕</button></span>`;
+        const name = s ? (s.title || sid.slice(0, 10)) : sid.slice(0, 10);
+        return `<span class="session-chip" title="${escapeAttr(name)}">${escapeHtml(name)}` +
+          `<button class="chip-remove" data-sid="${escapeAttr(sid)}" type="button">✕</button></span>`;
       }).join("");
-      const avail = state.sessions.filter((s) => !selectedSessions.includes(s.id));
-      picker.innerHTML = `<option value="">+ 选择会话添加…</option>` +
-        avail.map((s) => `<option value="${escapeAttr(s.id)}">${escapeHtml(s.title)}</option>`).join("");
-      picker.value = "";
       chipsBox.querySelectorAll(".chip-remove").forEach((btn) => {
-        btn.onclick = () => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
           const idx = selectedSessions.indexOf(btn.dataset.sid);
-          if (idx >= 0) selectedSessions.splice(idx, 1);
-          render();
+          if (idx > -1) selectedSessions.splice(idx, 1);
+          renderChips();
+          if (!panel.classList.contains("hidden")) renderList(search.value);
         };
       });
     }
-    picker.onchange = () => {
-      const sid = picker.value;
-      if (sid && !selectedSessions.includes(sid)) selectedSessions.push(sid);
-      render();
+
+    function renderList(q) {
+      const kw = (q || "").toLowerCase();
+      const filtered = state.sessions.filter((s) => !kw || (s.title || "").toLowerCase().includes(kw));
+      list.innerHTML = filtered.length ? filtered.map((s) => {
+        const selected = selectedSessions.includes(s.id);
+        const name = s.title || s.id.slice(0, 10);
+        return `<div class="sp-item${selected ? " selected" : ""}" data-sid="${escapeAttr(s.id)}">
+          <span class="sp-check">${selected ? "✓" : ""}</span>
+          <span class="sp-name" title="${escapeAttr(name)}">${escapeHtml(name)}</span>
+        </div>`;
+      }).join("") : `<div class="sp-empty">无匹配会话</div>`;
+      list.querySelectorAll(".sp-item").forEach((item) => {
+        item.onclick = () => {
+          const sid = item.dataset.sid;
+          const idx = selectedSessions.indexOf(sid);
+          if (idx > -1) selectedSessions.splice(idx, 1);
+          else selectedSessions.push(sid);
+          renderChips();
+          renderList(search.value);
+        };
+      });
+    }
+
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      panel.classList.toggle("hidden");
+      if (!panel.classList.contains("hidden")) {
+        search.value = "";
+        renderList("");
+        search.focus();
+      }
     };
-    render();
+
+    search.oninput = () => renderList(search.value);
+
+    // 点浮层外关闭
+    document.addEventListener("click", function closePanel(e) {
+      if (!panel.contains(e.target) && e.target !== addBtn) {
+        panel.classList.add("hidden");
+        document.removeEventListener("click", closePanel);
+      }
+    });
+
+    renderChips();
   }
 
   // 已读时间记录（localStorage）：用于未读标记
