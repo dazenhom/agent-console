@@ -95,6 +95,7 @@ async def run_reminder(force: bool = False) -> int:
         "title": title,
         "preview": body[:200],
         "count": len(memos),
+        "memos": [{"id": m["id"], "content": m["content"]} for m in memos],
     })
 
     # 企微推送（如果启用）
