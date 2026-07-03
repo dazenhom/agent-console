@@ -127,6 +127,17 @@ def init_db() -> None:
                 created_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_queue_session ON queue_items(session_id);
+            CREATE TABLE IF NOT EXISTS memos (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                remind_enabled INTEGER DEFAULT 1,
+                reminded_date TEXT DEFAULT '',
+                last_reminded_at REAL DEFAULT 0,
+                created_at REAL,
+                updated_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memos_status ON memos(status);
             """
         )
         # 兼容老库：缺列就补。双进程（80/8800）可能同时启动产生竞态——
@@ -573,4 +584,49 @@ def pop_next_queue_item(session_id: str):
     item = dict(rows[0])
     _exec("DELETE FROM queue_items WHERE id=?", (item["id"],))
     return item
+
+
+# ---------- memos（备忘录）----------
+def list_memos(status: str | None = None) -> list[dict]:
+    if status:
+        rows = _query(
+            "SELECT * FROM memos WHERE status=? ORDER BY status ASC, updated_at DESC",
+            (status,),
+        )
+    else:
+        rows = _query("SELECT * FROM memos ORDER BY status ASC, updated_at DESC")
+    return [dict(r) for r in rows]
+
+
+def create_memo(content: str, remind_enabled: int = 1) -> str:
+    mid = new_id()
+    now = _now()
+    _exec(
+        "INSERT INTO memos(id,content,status,remind_enabled,reminded_date,last_reminded_at,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?)",
+        (mid, content, "active", remind_enabled, "", 0, now, now),
+    )
+    return mid
+
+
+def update_memo(mid: str, **fields) -> bool:
+    allowed = {"content", "status", "remind_enabled", "reminded_date", "last_reminded_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    updates["updated_at"] = _now()
+    cols = ", ".join(f"{k}=?" for k in updates)
+    vals = list(updates.values()) + [mid]
+    cur = _exec(f"UPDATE memos SET {cols} WHERE id=?", vals)
+    return cur.rowcount > 0
+
+
+def delete_memo(mid: str) -> bool:
+    cur = _exec("DELETE FROM memos WHERE id=?", (mid,))
+    return cur.rowcount > 0
+
+
+def list_memos_to_remind() -> list[dict]:
+    rows = _query("SELECT * FROM memos WHERE status='active' AND remind_enabled=1")
+    return [dict(r) for r in rows]
 

@@ -18,7 +18,7 @@ CLAUDE_SKIP_PERMISSIONS = os.environ.get("CLAUDE_SKIP_PERMISSIONS", "false").low
 # 想精细控制可改成如 "Bash(git *) Read Write"；设为空字符串则不加该参数（回到默认拒绝）。
 CLAUDE_ALLOWED_TOOLS = os.environ.get(
     "CLAUDE_ALLOWED_TOOLS",
-    "Bash Read Write Edit Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit AskUserQuestion",
+    "Bash Read Write Edit Glob Grep WebFetch WebSearch Task TodoWrite NotebookEdit",
 )
 # 禁用工具列表（空格分隔）。AskUserQuestion 仅在非常驻模式（headless -p，无 stdin）下
 # 被禁用以防卡死；常驻模式（stream-json，有 stdin）会自动放行它并走前端选项卡片交互。
@@ -157,3 +157,8 @@ SECRETARY_ENABLED = os.environ.get("SECRETARY_ENABLED", "true").lower() == "true
 SECRETARY_EVENING_TIME = os.environ.get("SECRETARY_EVENING_TIME", "21:00")
 SECRETARY_MORNING_TIME = os.environ.get("SECRETARY_MORNING_TIME", "09:00")
 SECRETARY_MODEL = os.environ.get("SECRETARY_MODEL", "strong")
+
+# ---- 备忘录每日提醒 ----
+# 每天定点把开启提醒的备忘汇总推送一次（同一天只推一次）。时间用本地时区 HH:MM。
+MEMO_REMIND_ENABLED = os.environ.get("MEMO_REMIND_ENABLED", "true").lower() == "true"
+MEMO_REMIND_TIME = os.environ.get("MEMO_REMIND_TIME", "09:30")

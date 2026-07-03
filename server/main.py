@@ -516,6 +516,46 @@ async def kanban_refresh_all():
     return {"ok": True, "updated": updated, "total": len(rows)}
 
 
+# ---------------- 备忘录 ----------------
+@app.get("/api/memos", dependencies=[Depends(require_auth)])
+async def memos_list(status: str = None):
+    return db.list_memos(status)
+
+
+@app.post("/api/memos", dependencies=[Depends(require_auth)])
+async def memos_create(payload: dict):
+    content = (payload.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content 不能为空")
+    remind_enabled = int(payload.get("remind_enabled", 1))
+    mid = db.create_memo(content, remind_enabled)
+    memos = db.list_memos()
+    return next((m for m in memos if m["id"] == mid), {"id": mid})
+
+
+# 注意：/remind 必须放在 /{mid} 之前，否则 "remind" 会被当成 mid 匹配
+@app.post("/api/memos/remind", dependencies=[Depends(require_auth)])
+async def memos_remind(payload: dict = None):
+    from . import memo_reminder
+    count = await memo_reminder.run_reminder(force=(payload or {}).get("force", False))
+    return {"ok": True, "count": count}
+
+
+@app.put("/api/memos/{mid}", dependencies=[Depends(require_auth)])
+async def memos_update(mid: str, payload: dict):
+    fields = {k: payload[k] for k in ("content", "status", "remind_enabled") if k in payload}
+    if not db.update_memo(mid, **fields):
+        raise HTTPException(status_code=404, detail="备忘不存在")
+    return {"ok": True}
+
+
+@app.delete("/api/memos/{mid}", dependencies=[Depends(require_auth)])
+async def memos_delete(mid: str):
+    if not db.delete_memo(mid):
+        raise HTTPException(status_code=404, detail="备忘不存在")
+    return {"ok": True}
+
+
 # ---------------- 日报 ----------------
 @app.get("/api/reports", dependencies=[Depends(require_auth)])
 async def reports_list():

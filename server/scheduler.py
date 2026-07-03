@@ -73,6 +73,8 @@ async def _run_loop():
 _task = None
 _sec_last: dict = {}  # report_type -> last run date string
 _sec_task = None
+_memo_last: dict = {}  # date -> 已触发标记
+_memo_task = None
 
 
 async def _secretary_loop():
@@ -98,11 +100,32 @@ async def _secretary_loop():
         await asyncio.sleep(60)
 
 
+async def _memo_loop():
+    if not config.MEMO_REMIND_ENABLED:
+        return
+    from . import memo_reminder
+    while True:
+        try:
+            rh, rm = map(int, config.MEMO_REMIND_TIME.split(":"))
+            now_dt = datetime.now()
+            now_min = now_dt.hour * 60 + now_dt.minute
+            target_min = rh * 60 + rm
+            today_str = date.today().isoformat()
+            if now_min >= target_min and _memo_last.get("date") != today_str:
+                _memo_last["date"] = today_str
+                await memo_reminder.run_reminder()
+        except Exception as e:
+            print(f"[memo_loop] error: {e}")
+        await asyncio.sleep(30)
+
+
 def start():
     """在 FastAPI lifespan 里调用，挂起后台调度循环。"""
-    global _task, _sec_task
+    global _task, _sec_task, _memo_task
     if _task is None or _task.done():
         _task = asyncio.ensure_future(_run_loop())
     if _sec_task is None or _sec_task.done():
         _sec_task = asyncio.ensure_future(_secretary_loop())
+    if _memo_task is None or _memo_task.done():
+        _memo_task = asyncio.ensure_future(_memo_loop())
     return _task
