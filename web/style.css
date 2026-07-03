@@ -283,8 +283,7 @@ body.hub-resizing {
 }
 .tool .summary-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 子智能体（Agent 工具）折叠卡片：内部步骤归拢进 body，最终结果单独成区。
-   沿用 .tool 的结构与圆角，用紫色作为区别于普通工具的身份色（适配浅色主题变量）。 */
+/* 子智能体（Agent 工具）折叠卡片：默认只显示标题行，点标题展开内部步骤和结果。 */
 .subagent {
   margin-bottom: 10px; border: 1px solid #c7cbf5; border-radius: 13px; overflow: hidden;
   background: #f6f5ff; box-shadow: var(--shadow);
@@ -296,30 +295,14 @@ body.hub-resizing {
   gap: 8px;
   font-size: 13px;
   color: #5b53c7;
-  user-select: none;
-}
-.subagent-process {
-  border-top: 1px solid #dcd9f7;
-}
-.subagent-process-toggle {
-  list-style: none;
   cursor: pointer;
-  padding: 7px 13px;
-  font-size: 12px;
-  color: #6d5fd8;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  transition: background var(--ease);
   user-select: none;
   -webkit-user-select: none;
+  transition: background var(--ease);
 }
-.subagent-process-toggle:hover { background: #efeeff; }
-.subagent-process .sap-caret {
-  transition: transform var(--ease);
-  display: inline-block;
-}
-.subagent-process.open .sap-caret { transform: rotate(90deg); }
+.subagent-head:hover { background: #efeeff; }
+.subagent-head .sap-caret { transition: transform var(--ease); display: inline-block; font-size: 11px; }
+.subagent.open .subagent-head .sap-caret { transform: rotate(90deg); }
 .subagent-icon { font-size: 16px; }
 .subagent-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-status {
@@ -329,12 +312,9 @@ body.hub-resizing {
 .subagent-status.done { background: var(--green-soft); color: var(--green); }
 .subagent-body {
   padding: 4px 10px 6px; max-height: 600px; overflow-y: auto;
+  border-top: 1px solid #dcd9f7;
 }
 .subagent-result { padding: 10px 13px; border-top: 1px solid #dcd9f7; background: #fbfaff; }
-.subagent-result-label {
-  font-size: 10.5px; color: #6d5fd8; margin-bottom: 5px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: .4px;
-}
 .subagent-result-content { font-size: 13.5px; color: var(--text); line-height: 1.55; }
 
 /* 问答卡片（AskFollowupQuestions / AskUserQuestion） */
@@ -787,6 +767,11 @@ body.hub-resizing {
   transition: border-color var(--ease), box-shadow var(--ease);
 }
 .form-input:focus, .form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+/* 多选下拉：移动端别被压成单行高度 */
+select[multiple] { min-height: 80px; height: auto; }
+/* 看板卡关联会话数徽章 */
+.kanban-footer-right { display: inline-flex; align-items: center; gap: 6px; }
+.badge-sessions { font-size: 11px; color: var(--muted); white-space: nowrap; }
 
 /* 队列托盘 */
 .queue-tray { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 8px 16px;

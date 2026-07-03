@@ -462,10 +462,11 @@
         <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
       </div>`;
 
-    // 点击整行：跳转关联会话
+    // 点击整行：跳转关联会话（多会话取主会话，即列表第一个）
     row.onclick = () => {
-      if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
-      const sess = (state.sessions || []).find((s) => s.id === t.session_id);
+      const jumpId = (t.session_ids && t.session_ids[0]) || t.session_id;
+      if (!jumpId) { toast("暂无关联会话", "info", 1500); return; }
+      const sess = (state.sessions || []).find((s) => s.id === jumpId);
       if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
       else toast("会话不存在", "info", 1500);
     };
@@ -541,7 +542,9 @@
 
   // 单张看板卡（v3）：右上角操作按钮组（编辑/刷新/删除）+ 可点击主体（跳转会话）+ 底部时间/徽章，支持拖拽换列
   function renderKanbanCard(t, status) {
-    const sess = t.session_id ? state.sessions.find((s) => s.id === t.session_id) : null;
+    const primaryId = (t.session_ids && t.session_ids[0]) || t.session_id;
+    const sess = primaryId ? state.sessions.find((s) => s.id === primaryId) : null;
+    const sessCount = t.session_ids?.length || (t.session_id ? 1 : 0);
     const hasProgress = t.progress && t.progress.trim();
     const progressText = hasProgress ? t.progress : "暂无进展";
     const timeText = t.progress_at ? fmtRelTime(t.progress_at) : (t.updated_at ? fmtRelTime(t.updated_at) : "");
@@ -556,7 +559,7 @@
     card.innerHTML = `
       <div class="kanban-actions">
         <button class="kanban-act-btn btn-edit" title="编辑" data-act="edit">✎</button>
-        ${t.session_id ? `<button class="kanban-act-btn btn-refresh" title="刷新进展" data-act="refresh">↻</button>` : ""}
+        ${sessCount > 0 ? `<button class="kanban-act-btn btn-refresh" title="刷新进展" data-act="refresh">↻</button>` : ""}
         <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
       </div>
       <div class="kanban-card-main">
@@ -565,7 +568,10 @@
       </div>
       <div class="kanban-card-footer">
         <span class="kanban-card-time">${timeText ? "🕐 " + escapeHtml(timeText) : ""}</span>
-        <span class="kanban-badge kanban-badge--${badge.cls}">${badge.text}</span>
+        <span class="kanban-footer-right">
+          ${sessCount > 0 ? `<span class="badge-sessions" title="关联会话数">🔗${sessCount}</span>` : ""}
+          <span class="kanban-badge kanban-badge--${badge.cls}">${badge.text}</span>
+        </span>
       </div>`;
 
     const bodyEl = card.querySelector(".kanban-card-body");
@@ -579,9 +585,9 @@
     });
     card.addEventListener("dragend", () => card.classList.remove("kanban-card-dragging"));
 
-    // ---- 点击卡片：跳转关联会话并高亮 ----
+    // ---- 点击卡片：跳转关联会话并高亮（多会话取主会话）----
     function doJump() {
-      if (!t.session_id) { toast("暂无关联会话", "info", 1500); return; }
+      if (!primaryId) { toast("暂无关联会话", "info", 1500); return; }
       if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
       else toast("会话不存在", "info", 1500);
     }
@@ -668,8 +674,8 @@
         <label>任务标题
           <input id="nt-title" class="form-input" placeholder="输入任务名称…" />
         </label>
-        <label>关联 Agent 会话
-          <select id="nt-session" class="form-select"><option value="">不关联</option>${opts}</select>
+        <label>关联 Agent 会话（可多选）
+          <select id="nt-session" class="form-select" multiple size="4">${opts}</select>
         </label>
         <label>初始状态
           <select id="nt-status" class="form-select">
@@ -692,10 +698,11 @@
     card.querySelector(".modal-ok").onclick = async () => {
       const title = ($("nt-title").value || "").trim();
       if (!title) { toast("请输入任务标题", "info"); return; }
-      const session_id = $("nt-session").value || null;
+      const sessionSel = $("nt-session");
+      const session_ids = Array.from(sessionSel.selectedOptions).map((o) => o.value).filter(Boolean);
       const status = $("nt-status").value || "pending";
       try {
-        await api("/api/todos", { method: "POST", body: JSON.stringify({ title, session_id, status }) });
+        await api("/api/todos", { method: "POST", body: JSON.stringify({ title, session_ids, status }) });
         close();
         await renderKanban();
         toast("任务已创建", "success");
@@ -708,8 +715,9 @@
     const root = $("modal-root");
     root.innerHTML = "";
     const card = el("div", "modal-card");
+    const selectedIds = t.session_ids || (t.session_id ? [t.session_id] : []);
     const sessionOpts = state.sessions.map((s) =>
-      `<option value="${escapeAttr(s.id)}"${s.id === t.session_id ? " selected" : ""}>${escapeHtml(s.title)}</option>`
+      `<option value="${escapeAttr(s.id)}"${selectedIds.includes(s.id) ? " selected" : ""}>${escapeHtml(s.title)}</option>`
     ).join("");
     card.innerHTML = `
       <div class="modal-title">编辑任务</div>
@@ -720,9 +728,9 @@
         <label>任务描述
           <textarea id="et-desc" class="form-input" rows="3" placeholder="补充说明…">${escapeHtml(t.description || "")}</textarea>
         </label>
-        <label>关联 Agent 会话
-          <select id="et-session" class="form-select">
-            <option value=""${t.session_id ? "" : " selected"}>不关联</option>${sessionOpts}
+        <label>关联 Agent 会话（可多选）
+          <select id="et-session" class="form-select" multiple size="4">
+            ${sessionOpts}
           </select>
         </label>
         <label>优先级
@@ -756,12 +764,13 @@
       const description = $("et-desc").value || "";
       const priority = $("et-priority").value;
       const status = $("et-status").value;
-      const session_id = $("et-session").value || null;
+      const sessSel = $("et-session");
+      const session_ids = Array.from(sessSel.selectedOptions).map((o) => o.value).filter(Boolean);
       try {
         const res = await api(`/api/todos/${t.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title, description, priority: parseInt(priority), status, session_id })
+          body: JSON.stringify({ title, description, priority: parseInt(priority), status, session_ids })
         });
         close();
         await renderKanban();
