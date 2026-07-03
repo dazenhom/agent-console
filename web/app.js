@@ -181,6 +181,12 @@
         if (rbox) rbox.style.display = "none";
       }
     });
+    document.querySelectorAll("#chat .tool-group").forEach((g) => {
+      const body = g.querySelector(".tool-group-body");
+      g.classList.toggle("open", state.subagentExpanded);
+      if (body) body.style.display = state.subagentExpanded ? "" : "none";
+      updateToolGroupLabel(g);
+    });
     updateSubagentToggleBtn();
   }
   function updateSubagentToggleBtn() {
@@ -2342,8 +2348,56 @@
     const welcome = parentEl.querySelector(".chat-welcome");
     if (welcome) welcome.remove();
     node.classList.add("msg-enter");
-    parentEl.appendChild(node);
+    if (node.classList.contains("tool")) {
+      appendToToolGroup(parentEl, node);
+    } else {
+      parentEl.appendChild(node);
+    }
     requestAnimationFrame(() => node.classList.add("msg-in"));
+  }
+
+  const TOOL_GROUP_MIN = 3;
+
+  function trailingToolGroup(parentEl) {
+    let n = parentEl.lastElementChild;
+    if (n && state.typingEl && n === state.typingEl) n = n.previousElementSibling;
+    return (n && n.classList && n.classList.contains("tool-group")) ? n : null;
+  }
+
+  function updateToolGroupLabel(group) {
+    const count = group.querySelector(".tool-group-body").children.length;
+    const open = group.classList.contains("open");
+    group.querySelector(".tg-label").textContent =
+      (open ? "收起 " : "展开查看 ") + count + " 条工具调用";
+  }
+
+  function appendToToolGroup(parentEl, node) {
+    let group = trailingToolGroup(parentEl);
+    if (!group) {
+      group = el("div", "tool-group open");
+      group.innerHTML =
+        `<div class="tool-group-head"><span class="tg-caret">▸</span>` +
+        `<span class="tg-label"></span></div><div class="tool-group-body"></div>`;
+      group.querySelector(".tool-group-head").addEventListener("click", () => {
+        const open = group.classList.toggle("open");
+        group.querySelector(".tool-group-body").style.display = open ? "" : "none";
+        updateToolGroupLabel(group);
+      });
+      const typing = state.typingEl;
+      if (typing && typing.parentElement === parentEl) parentEl.insertBefore(group, typing);
+      else parentEl.appendChild(group);
+    }
+    const body = group.querySelector(".tool-group-body");
+    body.appendChild(node);
+    const count = body.children.length;
+    const head = group.querySelector(".tool-group-head");
+    if (count === TOOL_GROUP_MIN && !group.dataset.autofolded) {
+      group.dataset.autofolded = "1";
+      group.classList.remove("open");
+      body.style.display = "none";
+    }
+    head.style.display = count >= TOOL_GROUP_MIN ? "" : "none";
+    updateToolGroupLabel(group);
   }
 
   // 队列托盘：渲染排队待执行的指令，支持编辑/删除。

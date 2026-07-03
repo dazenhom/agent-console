@@ -283,6 +283,22 @@ body.hub-resizing {
 }
 .tool .summary-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 连续工具调用折叠组 */
+.tool-group { margin-bottom: 10px; }
+.tool-group-head {
+  display: none;
+  align-items: center; gap: 8px; padding: 8px 13px;
+  border: 1px dashed var(--line); border-radius: 11px; background: var(--bg-3);
+  font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none;
+  transition: background var(--ease);
+}
+.tool-group-head:hover { background: var(--bg-4); color: var(--text); }
+.tool-group-head .tg-caret { display: inline-block; font-size: 11px; transition: transform var(--ease); }
+.tool-group.open .tool-group-head .tg-caret { transform: rotate(90deg); }
+.tool-group-head .tg-label { flex: 1; }
+.tool-group-body { display: flex; flex-direction: column; }
+.tool-group.open .tool-group-head { margin-bottom: 8px; }
+
 /* 子智能体（Agent 工具）折叠卡片：默认只显示标题行，点标题展开内部步骤和结果。 */
 .subagent {
   margin-bottom: 10px; border: 1px solid #c7cbf5; border-radius: 13px; overflow: hidden;
