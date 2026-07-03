@@ -35,7 +35,7 @@
       <button class="tab-btn" data-tab="sessions"><span class="tab-ico">☷</span><span class="tab-label">Sessions</span></button>
       <button class="tab-btn" data-tab="new"><span class="tab-ico">＋</span><span class="tab-label">New</span></button>
       <button class="tab-btn" data-tab="review"><span class="tab-ico">▤</span><span class="tab-label">Review</span></button>
-      <button class="tab-btn" data-tab="experimental"><span class="tab-ico">⌬</span><span class="tab-label">Experimental</span></button>
+      <button class="tab-btn" data-tab="experimental"><span class="tab-ico">⌬</span><span class="tab-label">Experimental</span><span id="exp-tab-dot" class="tab-dot" style="display:none"></span></button>
       <span class="tabbar-spacer"></span>
       <select id="mode-select" class="mode-select" title="模型档位">
         <option value="fast">极速</option>
@@ -144,7 +144,7 @@
               <button id="open-snippets-btn" class="manage-entry">⚡ 快捷指令</button>
               <button id="open-schedules-btn" class="manage-entry">⏰ 定时任务</button>
               <button id="open-todos-btn" class="manage-entry">✅ 待办清单</button>
-              <button id="open-memos-btn" class="manage-entry">📝 备忘录</button>
+              <button id="open-memos-btn" class="manage-entry">📝 备忘录<span id="memo-badge" class="entry-badge" style="display:none"></span></button>
               <button id="open-reports-btn" class="manage-entry">📋 日报记录</button>
               <button id="secretary-trigger-btn" class="manage-entry">🤖 立即生成日报</button>
               <button id="notify-toggle" class="manage-entry">🔔 完成提醒：关</button>
@@ -238,10 +238,11 @@
   </div>
 
   <!-- 浮层容器：toast 通知 + 模态确认框 -->
+  <div id="memo-banner-root"></div>
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=30"></script>
+  <script src="app.js?v=31"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

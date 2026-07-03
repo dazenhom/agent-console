@@ -940,7 +940,8 @@
     }
     // 备忘录每日提醒
     if (data.type === "memo_reminder") {
-      toast(`📝 ${data.title}`, "info", 6000);
+      showMemoBanner(data);
+      setMemoBadge(data.count || 0);
       return;
     }
     if (data.type !== "session_update") return;
@@ -1833,6 +1834,7 @@
 
   async function showMemoList() {
     todoFormActive = false;
+    clearMemoBadge();
     const listEl = $("manage-list");
     listEl.innerHTML = '<div class="entity-loading">加载中…</div>';
     try {
@@ -1847,7 +1849,14 @@
         const head = el("div", "e-head");
         head.appendChild(el("span", "e-name", escapeHtml(it.content)));
         head.appendChild(el("span", "e-tag", it.status === "done" ? "已完成" : "未完成"));
-        if (it.last_reminded_at) head.appendChild(el("span", "e-tag", "已提醒 " + fmtTs(it.last_reminded_at)));
+        if (it.last_reminded_at) {
+          const todayStr = new Date().toISOString().slice(0, 10);
+          const isToday = it.reminded_date === todayStr;
+          const remindTag = document.createElement("span");
+          remindTag.className = "e-tag" + (isToday ? " tag-warn" : "");
+          remindTag.textContent = (isToday ? "🔔 今日已提醒 " : "已提醒 ") + fmtTs(it.last_reminded_at);
+          head.appendChild(remindTag);
+        }
         const modeTag = document.createElement("span");
         modeTag.className = "e-tag";
         modeTag.textContent = memoModeLabel(it);
@@ -3224,6 +3233,62 @@
       t.classList.remove("show");
       setTimeout(() => t.remove(), 250);
     }, ms);
+  }
+
+  // 备忘提醒横幅：顶部常驻，不自动消失，与短暂 toast 区分。点「查看」跳到备忘录管理页。
+  function showMemoBanner(data) {
+    const root = $("memo-banner-root");
+    if (!root) return;
+    // 已有 banner 则替换（避免堆叠）
+    const existing = root.querySelector(".memo-banner");
+    if (existing) existing.remove();
+
+    const banner = el("div", "memo-banner");
+
+    const icon = el("span", "memo-banner-icon", "📌");
+
+    const body = el("div", "memo-banner-body");
+    const titleEl = el("div", "memo-banner-title");
+    titleEl.textContent = data.title || "备忘提醒";
+    const previewEl = el("div", "memo-banner-preview");
+    previewEl.textContent = data.preview || "";
+    body.append(titleEl, previewEl);
+
+    const actions = el("div", "memo-banner-actions");
+
+    const viewBtn = el("button", "memo-banner-btn", "查看");
+    viewBtn.onclick = () => {
+      banner.remove();
+      clearMemoBadge();
+      switchTab("experimental");
+      openManage("memos");
+    };
+
+    const closeBtn = el("button", "memo-banner-btn", "✕");
+    closeBtn.onclick = () => banner.remove();
+
+    actions.append(viewBtn, closeBtn);
+    banner.append(icon, body, actions);
+    root.appendChild(banner);
+  }
+
+  // 备忘录入口角标 + Experimental tab 红点：count>0 显示，否则隐藏
+  function setMemoBadge(count) {
+    const badge = $("memo-badge");
+    const dot = $("exp-tab-dot");
+    if (badge) {
+      if (count > 0) {
+        badge.textContent = count;
+        badge.style.display = "";
+      } else {
+        badge.style.display = "none";
+      }
+    }
+    if (dot) dot.style.display = count > 0 ? "" : "none";
+  }
+
+  function clearMemoBadge() {
+    setMemoBadge(0);
   }
 
   // ---------------- 自定义确认框（替代原生 confirm）----------------
