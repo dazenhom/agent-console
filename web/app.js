@@ -709,11 +709,11 @@
     root.appendChild(card);
     root.classList.remove("hidden");
     requestAnimationFrame(() => root.classList.add("show"));
-    const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
+    const close = () => { destroyPicker(); root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
     card.querySelector(".modal-cancel").onclick = close;
     root.onclick = (e) => { if (e.target === root) close(); };
     let selectedSessions = [];
-    bindSessionChips(card, "nt", selectedSessions);
+    const destroyPicker = bindSessionChips(card, "nt", selectedSessions);
     setTimeout(() => { const t = $("nt-title"); if (t) t.focus(); }, 50);
     card.querySelector(".modal-ok").onclick = async () => {
       const title = ($("nt-title").value || "").trim();
@@ -778,11 +778,11 @@
     root.appendChild(card);
     root.classList.remove("hidden");
     requestAnimationFrame(() => root.classList.add("show"));
-    const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
+    const close = () => { destroyPicker(); root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
     card.querySelector(".modal-cancel").onclick = close;
     root.onclick = (e) => { if (e.target === root) close(); };
     let selectedSessions = [...selectedIds];
-    bindSessionChips(card, "et", selectedSessions);
+    const destroyPicker = bindSessionChips(card, "et", selectedSessions);
     setTimeout(() => { const el0 = $("et-title"); if (el0) el0.focus(); }, 50);
     card.querySelector(".modal-ok").onclick = async () => {
       const title = ($("et-title").value || "").trim();
@@ -901,6 +901,12 @@
     if (doneBtn) doneBtn.onclick = (e) => { e.stopPropagation(); closePanel(); };
 
     renderChips();
+
+    // 供调用方在关闭弹窗时解绑：弹窗直接销毁（root.innerHTML = ""）不走 closePanel，
+    // 需显式清理，否则 onOutsideClick 会残留在 document 上
+    return function destroy() {
+      document.removeEventListener("click", onOutsideClick);
+    };
   }
 
   // 已读时间记录（localStorage）：用于未读标记
