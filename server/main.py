@@ -527,7 +527,10 @@ async def memos_create(payload: dict):
     content = (payload.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content 不能为空")
-    remind_enabled = int(payload.get("remind_enabled", 1))
+    try:
+        remind_enabled = int(payload.get("remind_enabled", 1))
+    except (TypeError, ValueError):
+        remind_enabled = 1
     mid = db.create_memo(content, remind_enabled)
     memos = db.list_memos()
     return next((m for m in memos if m["id"] == mid), {"id": mid})
