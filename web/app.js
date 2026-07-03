@@ -664,7 +664,6 @@
 
   // 新建任务弹窗：标题 + 关联会话 + 初始状态
   function showAddTodoModal() {
-    const opts = state.sessions.map((s) => `<option value="${escapeAttr(s.id)}">${escapeHtml(s.title)}</option>`).join("");
     const root = $("modal-root");
     root.innerHTML = "";
     const card = el("div", "modal-card");
@@ -674,8 +673,11 @@
         <label>任务标题
           <input id="nt-title" class="form-input" placeholder="输入任务名称…" />
         </label>
-        <label>关联 Agent 会话（可多选）
-          <select id="nt-session" class="form-select" multiple size="4">${opts}</select>
+        <label>关联 Agent 会话
+          <div class="session-chips" id="nt-session-chips"></div>
+          <div class="session-add-row">
+            <select id="nt-session-picker" class="form-select"></select>
+          </div>
         </label>
         <label>初始状态
           <select id="nt-status" class="form-select">
@@ -694,12 +696,13 @@
     const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
     card.querySelector(".modal-cancel").onclick = close;
     root.onclick = (e) => { if (e.target === root) close(); };
+    let selectedSessions = [];
+    bindSessionChips(card, "nt", selectedSessions);
     setTimeout(() => { const t = $("nt-title"); if (t) t.focus(); }, 50);
     card.querySelector(".modal-ok").onclick = async () => {
       const title = ($("nt-title").value || "").trim();
       if (!title) { toast("请输入任务标题", "info"); return; }
-      const sessionSel = $("nt-session");
-      const session_ids = Array.from(sessionSel.selectedOptions).map((o) => o.value).filter(Boolean);
+      const session_ids = selectedSessions.slice();
       const status = $("nt-status").value || "pending";
       try {
         await api("/api/todos", { method: "POST", body: JSON.stringify({ title, session_ids, status }) });
@@ -716,9 +719,6 @@
     root.innerHTML = "";
     const card = el("div", "modal-card");
     const selectedIds = t.session_ids || (t.session_id ? [t.session_id] : []);
-    const sessionOpts = state.sessions.map((s) =>
-      `<option value="${escapeAttr(s.id)}"${selectedIds.includes(s.id) ? " selected" : ""}>${escapeHtml(s.title)}</option>`
-    ).join("");
     card.innerHTML = `
       <div class="modal-title">编辑任务</div>
       <div class="entity-form" style="gap:12px">
@@ -728,10 +728,11 @@
         <label>任务描述
           <textarea id="et-desc" class="form-input" rows="3" placeholder="补充说明…">${escapeHtml(t.description || "")}</textarea>
         </label>
-        <label>关联 Agent 会话（可多选）
-          <select id="et-session" class="form-select" multiple size="4">
-            ${sessionOpts}
-          </select>
+        <label>关联 Agent 会话
+          <div class="session-chips" id="et-session-chips"></div>
+          <div class="session-add-row">
+            <select id="et-session-picker" class="form-select"></select>
+          </div>
         </label>
         <label>优先级
           <select id="et-priority" class="form-select">
@@ -757,6 +758,8 @@
     const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
     card.querySelector(".modal-cancel").onclick = close;
     root.onclick = (e) => { if (e.target === root) close(); };
+    let selectedSessions = [...selectedIds];
+    bindSessionChips(card, "et", selectedSessions);
     setTimeout(() => { const el0 = $("et-title"); if (el0) el0.focus(); }, 50);
     card.querySelector(".modal-ok").onclick = async () => {
       const title = ($("et-title").value || "").trim();
@@ -764,8 +767,7 @@
       const description = $("et-desc").value || "";
       const priority = $("et-priority").value;
       const status = $("et-status").value;
-      const sessSel = $("et-session");
-      const session_ids = Array.from(sessSel.selectedOptions).map((o) => o.value).filter(Boolean);
+      const session_ids = selectedSessions.slice();
       try {
         const res = await api(`/api/todos/${t.id}`, {
           method: "PUT",
@@ -777,6 +779,37 @@
         toast("已保存", "success", 1500);
       } catch (e) { toast("保存失败：" + e.message, "error"); }
     };
+  }
+
+  // 会话 chips 绑定：把 selectedSessions 渲染成 chips，picker 只列未选中会话
+  // prefix 为弹窗 id 前缀（"nt" / "et"）；selectedSessions 为调用方持有的数组，原地增删
+  function bindSessionChips(card, prefix, selectedSessions) {
+    const chipsBox = card.querySelector(`#${prefix}-session-chips`);
+    const picker = card.querySelector(`#${prefix}-session-picker`);
+    function render() {
+      chipsBox.innerHTML = selectedSessions.map((sid) => {
+        const s = state.sessions.find((x) => x.id === sid);
+        const name = s ? s.title : sid.slice(0, 8);
+        return `<span class="session-chip">${escapeHtml(name)}<button class="chip-remove" type="button" data-sid="${escapeAttr(sid)}">✕</button></span>`;
+      }).join("");
+      const avail = state.sessions.filter((s) => !selectedSessions.includes(s.id));
+      picker.innerHTML = `<option value="">+ 选择会话添加…</option>` +
+        avail.map((s) => `<option value="${escapeAttr(s.id)}">${escapeHtml(s.title)}</option>`).join("");
+      picker.value = "";
+      chipsBox.querySelectorAll(".chip-remove").forEach((btn) => {
+        btn.onclick = () => {
+          const idx = selectedSessions.indexOf(btn.dataset.sid);
+          if (idx >= 0) selectedSessions.splice(idx, 1);
+          render();
+        };
+      });
+    }
+    picker.onchange = () => {
+      const sid = picker.value;
+      if (sid && !selectedSessions.includes(sid)) selectedSessions.push(sid);
+      render();
+    };
+    render();
   }
 
   // 已读时间记录（localStorage）：用于未读标记
