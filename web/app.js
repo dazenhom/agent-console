@@ -456,22 +456,25 @@
 
     const hasProgress = t.progress && t.progress.trim() && t.progress !== "暂无进展信息";
     const progress = hasProgress ? t.progress : "";
+    // 无关联会话时给一条轻量提示，引导用户去编辑里关联 Agent
+    const sessCount = (t.session_ids && t.session_ids.length) || (t.session_id ? 1 : 0);
 
     row.innerHTML = `
       <span class="kanban-dot ${dot.cls}">${dot.html}</span>
       <div class="kanban-row-main">
         <span class="kanban-row-title">${escapeHtml(t.title)}</span>
-        ${progress ? `<span class="kanban-row-progress">${escapeHtml(progress)}</span>` : ""}
+        ${progress ? `<span class="kanban-row-progress">${escapeHtml(progress)}</span>`
+          : (sessCount ? "" : `<span class="kanban-row-hint">＋ 点击关联 Agent</span>`)}
       </div>
       <div class="kanban-row-actions">
         <button class="kanban-act-btn btn-edit" title="编辑" data-act="edit">✎</button>
         <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
       </div>`;
 
-    // 点击整行：跳转关联会话（多会话取主会话，即列表第一个）
+    // 点击整行：跳转关联会话（多会话取主会话，即列表第一个）；未关联时直接打开编辑去关联
     row.onclick = () => {
       const jumpId = (t.session_ids && t.session_ids[0]) || t.session_id;
-      if (!jumpId) { toast("暂无关联会话", "info", 1500); return; }
+      if (!jumpId) { showEditTodoModal(t); return; }
       const sess = (state.sessions || []).find((s) => s.id === jumpId);
       if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
       else toast("会话不存在", "info", 1500);
@@ -688,6 +691,7 @@
             <div class="session-picker-panel hidden" id="nt-session-panel">
               <input type="text" class="session-search" id="nt-session-search" placeholder="搜索会话…">
               <div class="session-picker-list" id="nt-session-list"></div>
+              <button type="button" class="sp-done-btn" id="nt-session-done-btn">完成 ✓</button>
             </div>
           </div>
         </label>
@@ -749,6 +753,7 @@
             <div class="session-picker-panel hidden" id="et-session-panel">
               <input type="text" class="session-search" id="et-session-search" placeholder="搜索会话…">
               <div class="session-picker-list" id="et-session-list"></div>
+              <button type="button" class="sp-done-btn" id="et-session-done-btn">完成 ✓</button>
             </div>
           </div>
         </label>
@@ -808,12 +813,27 @@
     const panel    = card.querySelector(`#${prefix}-session-panel`);
     const search   = card.querySelector(`#${prefix}-session-search`);
     const list     = card.querySelector(`#${prefix}-session-list`);
+    const doneBtn  = card.querySelector(`#${prefix}-session-done-btn`);
+
+    // session 状态 → 小圆点 class（沿用看板 dotMap 的色系，见 renderKanbanRow）
+    function sessionDotCls(s) {
+      if (!s) return "dot-pending";
+      if (s.status === "running") return "dot-inprogress";
+      const key = deriveState(s).key;
+      if (key === "failed") return "dot-cancelled";
+      if (key === "review") return "dot-done";
+      return "dot-pending";
+    }
 
     function renderChips() {
-      chipsBox.innerHTML = selectedSessions.map((sid) => {
+      chipsBox.innerHTML = selectedSessions.map((sid, i) => {
         const s = state.sessions.find((x) => x.id === sid);
         const name = s ? (s.title || sid.slice(0, 10)) : sid.slice(0, 10);
-        return `<span class="session-chip" title="${escapeAttr(name)}"><span class="chip-name">${escapeHtml(name)}</span>` +
+        // 第一个为主会话（看板跳转/进展刷新都取它），加「主」标记与 primary-chip 样式
+        const primary = i === 0;
+        return `<span class="session-chip${primary ? " primary-chip" : ""}" title="${escapeAttr(name)}">` +
+          `${primary ? `<span class="chip-primary-tag">主</span>` : ""}` +
+          `<span class="chip-name">${escapeHtml(name)}</span>` +
           `<button class="chip-remove" data-sid="${escapeAttr(sid)}" type="button">✕</button></span>`;
       }).join("");
       chipsBox.querySelectorAll(".chip-remove").forEach((btn) => {
@@ -830,11 +850,14 @@
     function renderList(q) {
       const kw = (q || "").toLowerCase();
       const filtered = state.sessions.filter((s) => !kw || (s.title || "").toLowerCase().includes(kw));
+      // 已选置顶：便于确认与取消，其余保持原顺序
+      filtered.sort((a, b) => (selectedSessions.includes(b.id) ? 1 : 0) - (selectedSessions.includes(a.id) ? 1 : 0));
       list.innerHTML = filtered.length ? filtered.map((s) => {
         const selected = selectedSessions.includes(s.id);
         const name = s.title || s.id.slice(0, 10);
         return `<div class="sp-item${selected ? " selected" : ""}" data-sid="${escapeAttr(s.id)}">
           <span class="sp-check">${selected ? "✓" : ""}</span>
+          <span class="sp-dot ${sessionDotCls(s)}"></span>
           <span class="sp-name" title="${escapeAttr(name)}">${escapeHtml(name)}</span>
         </div>`;
       }).join("") : `<div class="sp-empty">无匹配会话</div>`;
@@ -850,25 +873,32 @@
       });
     }
 
+    // 点浮层外关闭：监听器只绑一次，关闭时一并解绑，避免每次开合都堆积监听器
+    function onOutsideClick(e) {
+      if (!panel.contains(e.target) && e.target !== addBtn) closePanel();
+    }
+    function closePanel() {
+      panel.classList.add("hidden");
+      document.removeEventListener("click", onOutsideClick);
+    }
+    function openPanel() {
+      search.value = "";
+      renderList("");
+      panel.classList.remove("hidden");
+      search.focus();
+      // 先解绑再绑，确保全局只有一个监听器
+      document.removeEventListener("click", onOutsideClick);
+      document.addEventListener("click", onOutsideClick);
+    }
+
     addBtn.onclick = (e) => {
       e.stopPropagation();
-      panel.classList.toggle("hidden");
-      if (!panel.classList.contains("hidden")) {
-        search.value = "";
-        renderList("");
-        search.focus();
-      }
+      if (panel.classList.contains("hidden")) openPanel();
+      else closePanel();
     };
 
     search.oninput = () => renderList(search.value);
-
-    // 点浮层外关闭
-    document.addEventListener("click", function closePanel(e) {
-      if (!panel.contains(e.target) && e.target !== addBtn) {
-        panel.classList.add("hidden");
-        document.removeEventListener("click", closePanel);
-      }
-    });
+    if (doneBtn) doneBtn.onclick = (e) => { e.stopPropagation(); closePanel(); };
 
     renderChips();
   }
