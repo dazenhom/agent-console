@@ -544,7 +544,7 @@
   function renderKanbanCard(t, status) {
     const primaryId = (t.session_ids && t.session_ids[0]) || t.session_id;
     const sess = primaryId ? state.sessions.find((s) => s.id === primaryId) : null;
-    const sessCount = t.session_ids?.length || (t.session_id ? 1 : 0);
+    const sessCount = t.session_ids ? t.session_ids.length : (t.session_id ? 1 : 0);
     const hasProgress = t.progress && t.progress.trim();
     const progressText = hasProgress ? t.progress : "暂无进展";
     const timeText = t.progress_at ? fmtRelTime(t.progress_at) : (t.updated_at ? fmtRelTime(t.updated_at) : "");
@@ -735,7 +735,7 @@
         </label>
         <label>优先级
           <select id="et-priority" class="form-select">
-            <option value="0"${t.priority == 1 ? "" : " selected"}>普通</option>
+            <option value="0"${t.priority ? "" : " selected"}>普通</option>
             <option value="1"${t.priority == 1 ? " selected" : ""}>⚡高优</option>
           </select>
         </label>
@@ -1948,7 +1948,7 @@
         node = el("div", "msg-ask");
         const inp = content.input || {};
         // 支持 AskFollowupQuestions / AskUserQuestion 的多种字段布局
-        const questions = inp.questions || (inp.question ? [inp.question] : []);
+        const questions = Array.isArray(inp.questions) ? inp.questions : (inp.question ? [inp.question] : []);
         const opts = inp.options || [];
         const optText = (o) => (o && typeof o === "object")
           ? (o.label ?? o.text ?? o.value ?? JSON.stringify(o))
@@ -3040,7 +3040,7 @@
   // 经 permission_response 的 updated_input.answers 回传 CLI（{问题文本: 选项label}）。
   function showAskQuestionDialog(req) {
     const inp = req.input || {};
-    const questions = inp.questions || (inp.question ? [inp.question] : []);
+    const questions = Array.isArray(inp.questions) ? inp.questions : (inp.question ? [inp.question] : []);
     const optText = (o) => (o && typeof o === "object")
       ? (o.label ?? o.text ?? o.value ?? JSON.stringify(o))
       : String(o);
