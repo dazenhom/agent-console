@@ -1823,7 +1823,7 @@
     switch (mode) {
       case "none": return "不提醒";
       case "weekly": return "每周" + (wd[parseInt(at, 10)] || "?");
-      case "monthly": return "每月" + at + "号";
+      case "monthly": return "每月" + parseInt(at, 10) + "号";
       case "once": return "单次 " + at;
       case "deadline":
         return "截止 " + at + (it.remind_days_before ? "（提前" + it.remind_days_before + "天）" : "");
@@ -1848,7 +1848,10 @@
         head.appendChild(el("span", "e-name", escapeHtml(it.content)));
         head.appendChild(el("span", "e-tag", it.status === "done" ? "已完成" : "未完成"));
         if (it.last_reminded_at) head.appendChild(el("span", "e-tag", "已提醒 " + fmtTs(it.last_reminded_at)));
-        head.appendChild(el("span", "e-tag", memoModeLabel(it)));
+        const modeTag = document.createElement("span");
+        modeTag.className = "e-tag";
+        modeTag.textContent = memoModeLabel(it);
+        head.appendChild(modeTag);
         li.appendChild(head);
         const actions = el("div", "e-actions");
         if (it.status !== "done") {
