@@ -443,21 +443,43 @@ async def todos_create(payload: dict):
     if not title:
         raise HTTPException(status_code=400, detail="title 不能为空")
     status = payload.get("status") if payload.get("status") in ("pending", "in_progress") else "pending"
-    return db.create_todo(
+    todo = db.create_todo(
         title,
         payload.get("description", ""),
         int(payload.get("priority", 0)),
         payload.get("session_id"),
         status,
     )
+    # 关联多个会话：显式传 session_ids 优先；否则用旧字段 session_id 兜底
+    session_ids = payload.get("session_ids") or []
+    if not session_ids and payload.get("session_id"):
+        session_ids = [payload["session_id"]]
+    if session_ids:
+        db.set_todo_sessions(todo["id"], session_ids)
+        todo["session_ids"] = session_ids
+    else:
+        todo["session_ids"] = []
+    return todo
 
 
 @app.put("/api/todos/{tid}", dependencies=[Depends(require_auth)])
 async def todos_update(tid: str, payload: dict):
     fields = {k: payload[k] for k in ("title", "description", "status", "priority", "session_id") if k in payload}
-    if not db.update_todo(tid, **fields):
+    if fields and not db.update_todo(tid, **fields):
         raise HTTPException(status_code=404, detail="待办不存在")
+    # 关联多个会话：显式传 session_ids（非 None）则覆盖式更新
+    if payload.get("session_ids") is not None:
+        db.set_todo_sessions(tid, payload["session_ids"])
     return {"ok": True}
+
+
+@app.put("/api/todos/{tid}/sessions", dependencies=[Depends(require_auth)])
+async def todos_set_sessions(tid: str, payload: dict):
+    session_ids = payload.get("session_ids", [])
+    if not any(t["id"] == tid for t in db.list_todos()):
+        raise HTTPException(status_code=404, detail="待办不存在")
+    db.set_todo_sessions(tid, session_ids)
+    return {"ok": True, "session_ids": session_ids}
 
 
 @app.delete("/api/todos/{tid}", dependencies=[Depends(require_auth)])

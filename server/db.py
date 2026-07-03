@@ -102,6 +102,14 @@ def init_db() -> None:
                 updated_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
+            CREATE TABLE IF NOT EXISTS todo_sessions (
+                todo_id TEXT,
+                session_id TEXT,
+                created_at REAL,
+                PRIMARY KEY (todo_id, session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_todosess_todo ON todo_sessions(todo_id);
+            CREATE INDEX IF NOT EXISTS idx_todosess_sess ON todo_sessions(session_id);
             CREATE TABLE IF NOT EXISTS reports (
                 id TEXT PRIMARY KEY,
                 report_date TEXT NOT NULL,
@@ -157,6 +165,15 @@ def init_db() -> None:
                     (s["id"], s["label"], s["text"], i),
                 )
         _conn.commit()
+        # 回填老数据：把 todos.session_id 迁进关联表（INSERT OR IGNORE 幂等，可重复执行）
+        _conn.execute(
+            """
+            INSERT OR IGNORE INTO todo_sessions (todo_id, session_id, created_at)
+            SELECT id, session_id, created_at FROM todos
+            WHERE session_id IS NOT NULL AND session_id != ''
+            """
+        )
+        _conn.commit()
 
 
 def _exec(sql: str, params: tuple = ()):  # 写操作
@@ -203,6 +220,7 @@ def delete_session(sid: str) -> None:
     _exec("DELETE FROM messages WHERE session_id=?", (sid,))
     _exec("DELETE FROM tasks WHERE session_id=?", (sid,))
     _exec("DELETE FROM queue_items WHERE session_id=?", (sid,))
+    _exec("DELETE FROM todo_sessions WHERE session_id=?", (sid,))
     _exec("DELETE FROM sessions WHERE id=?", (sid,))
 
 
@@ -358,7 +376,44 @@ def list_todos(status: str | None = None) -> list[dict]:
         rows = _query("SELECT * FROM todos WHERE status=? ORDER BY priority DESC, created_at ASC", (status,))
     else:
         rows = _query("SELECT * FROM todos ORDER BY priority DESC, created_at ASC")
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    # 批量补 session_ids（关联多个会话）：一次查关联表再映射回每行，避免 N+1
+    todo_ids = [d["id"] for d in result]
+    mapping: dict[str, list] = {}
+    if todo_ids:
+        placeholders = ",".join("?" * len(todo_ids))
+        sess_rows = _query(
+            f"SELECT todo_id, session_id FROM todo_sessions WHERE todo_id IN ({placeholders}) ORDER BY created_at",
+            tuple(todo_ids),
+        )
+        for sr in sess_rows:
+            mapping.setdefault(sr[0], []).append(sr[1])
+    for d in result:
+        d["session_ids"] = mapping.get(d["id"], [])
+    return result
+
+
+def list_todo_session_ids(todo_id: str) -> list:
+    rows = _query(
+        "SELECT session_id FROM todo_sessions WHERE todo_id=? ORDER BY created_at",
+        (todo_id,),
+    )
+    return [r[0] for r in rows]
+
+
+def set_todo_sessions(todo_id: str, session_ids: list) -> None:
+    """覆盖式设置任务关联会话；同步把主会话（列表第一个）写回 todos.session_id。"""
+    now = _now()
+    with _lock:
+        _conn.execute("DELETE FROM todo_sessions WHERE todo_id=?", (todo_id,))
+        for sid in session_ids:
+            _conn.execute(
+                "INSERT OR IGNORE INTO todo_sessions (todo_id, session_id, created_at) VALUES (?,?,?)",
+                (todo_id, sid, now),
+            )
+        primary = session_ids[0] if session_ids else None
+        _conn.execute("UPDATE todos SET session_id=? WHERE id=?", (primary, todo_id))
+        _conn.commit()
 
 
 def list_todos_by_session(session_id: str) -> list[dict]:
@@ -401,6 +456,7 @@ def set_todo_progress(tid: str, progress: str, src_mtime: float) -> None:
 
 
 def delete_todo(tid: str) -> bool:
+    _exec("DELETE FROM todo_sessions WHERE todo_id=?", (tid,))
     _exec("DELETE FROM todos WHERE id=?", (tid,))
     return True
 
