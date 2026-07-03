@@ -1816,6 +1816,21 @@
   }
 
   // ---------------- 备忘录（自有渲染，复用 manage-list 容器）----------------
+  function memoModeLabel(it) {
+    const wd = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    const mode = it.remind_mode || "daily";
+    const at = String(it.remind_at || "");
+    switch (mode) {
+      case "none": return "不提醒";
+      case "weekly": return "每周" + (wd[parseInt(at, 10)] || "?");
+      case "monthly": return "每月" + at + "号";
+      case "once": return "单次 " + at;
+      case "deadline":
+        return "截止 " + at + (it.remind_days_before ? "（提前" + it.remind_days_before + "天）" : "");
+      default: return "每日";
+    }
+  }
+
   async function showMemoList() {
     todoFormActive = false;
     const listEl = $("manage-list");
@@ -1833,7 +1848,7 @@
         head.appendChild(el("span", "e-name", escapeHtml(it.content)));
         head.appendChild(el("span", "e-tag", it.status === "done" ? "已完成" : "未完成"));
         if (it.last_reminded_at) head.appendChild(el("span", "e-tag", "已提醒 " + fmtTs(it.last_reminded_at)));
-        if (!it.remind_enabled) head.appendChild(el("span", "e-tag", "不提醒"));
+        head.appendChild(el("span", "e-tag", memoModeLabel(it)));
         li.appendChild(head);
         const actions = el("div", "e-actions");
         if (it.status !== "done") {
@@ -1870,7 +1885,8 @@
     todoFormActive = true;
     const listEl = $("manage-list");
     listEl.innerHTML = "";
-    let memo = { content: "", remind_enabled: 1, status: "active" };
+    let memo = { content: "", remind_enabled: 1, status: "active",
+                 remind_mode: "daily", remind_at: "", remind_days_before: 0 };
     if (id) {
       try {
         const items = await api("/api/memos");
@@ -1886,22 +1902,82 @@
     contentInput.rows = 4;
     contentInput.value = memo.content || "";
 
-    const remindLabel = el("label", "");
-    const remindCheck = el("input");
-    remindCheck.type = "checkbox";
-    remindCheck.checked = !!memo.remind_enabled;
-    remindLabel.append(remindCheck, document.createTextNode(" 加入每日提醒（每天 09:30 推送）"));
+    // 提醒模式 select
+    const modeLabel = el("div", "form-label", "提醒方式");
+    const modeSelect = document.createElement("select");
+    modeSelect.className = "form-input";
+    [["daily", "每天提醒"], ["weekly", "每周指定星期"], ["monthly", "每月指定日期"],
+     ["once", "指定日期单次提醒"], ["deadline", "截止日提醒"], ["none", "不提醒"]]
+      .forEach(([v, t]) => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = t;
+        modeSelect.appendChild(o);
+      });
+    modeSelect.value = memo.remind_mode || "daily";
+
+    // 动态参数区
+    const paramBox = document.createElement("div");
+    paramBox.className = "form-group";
+
+    const weekSelect = document.createElement("select");
+    weekSelect.className = "form-input";
+    ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].forEach((t, i) => {
+      const o = document.createElement("option");
+      o.value = String(i); o.textContent = t; weekSelect.appendChild(o);
+    });
+
+    const daySelect = document.createElement("select");
+    daySelect.className = "form-input";
+    for (let d = 1; d <= 31; d++) {
+      const o = document.createElement("option");
+      o.value = String(d); o.textContent = d + " 号"; daySelect.appendChild(o);
+    }
+
+    const dateInput = document.createElement("input");
+    dateInput.className = "form-input"; dateInput.type = "date";
+
+    const daysLabel = el("div", "form-label", "提前几天开始提醒");
+    const daysInput = document.createElement("input");
+    daysInput.className = "form-input"; daysInput.type = "number";
+    daysInput.min = "0"; daysInput.placeholder = "提前几天（默认0）";
+
+    // 回填已有值
+    if (memo.remind_mode === "weekly") weekSelect.value = String(memo.remind_at || "0");
+    if (memo.remind_mode === "monthly") daySelect.value = String(memo.remind_at || "1");
+    if (memo.remind_mode === "once" || memo.remind_mode === "deadline") dateInput.value = memo.remind_at || "";
+    daysInput.value = String(memo.remind_days_before || 0);
+
+    function renderParams() {
+      paramBox.innerHTML = "";
+      const m = modeSelect.value;
+      if (m === "weekly") paramBox.appendChild(weekSelect);
+      else if (m === "monthly") paramBox.appendChild(daySelect);
+      else if (m === "once") paramBox.appendChild(dateInput);
+      else if (m === "deadline") { paramBox.appendChild(dateInput); paramBox.appendChild(daysLabel); paramBox.appendChild(daysInput); }
+    }
+    modeSelect.onchange = renderParams;
+    renderParams();
 
     const saveBtn = el("button", "btn-primary", "保存");
     saveBtn.onclick = async () => {
       const content = contentInput.value.trim();
       if (!content) { toast("备忘内容不能为空", "error"); return; }
-      const remind_enabled = remindCheck.checked ? 1 : 0;
+      const remind_mode = modeSelect.value;
+      let remind_at = "";
+      if (remind_mode === "weekly") remind_at = weekSelect.value;
+      else if (remind_mode === "monthly") remind_at = daySelect.value;
+      else if (remind_mode === "once" || remind_mode === "deadline") remind_at = dateInput.value;
+      if ((remind_mode === "once" || remind_mode === "deadline") && !remind_at) {
+        toast("请选择日期", "error"); return;
+      }
+      const remind_days_before = remind_mode === "deadline" ? (parseInt(daysInput.value, 10) || 0) : 0;
+      const remind_enabled = remind_mode === "none" ? 0 : 1;
+      const payload = { content, remind_enabled, remind_mode, remind_at, remind_days_before };
       try {
         if (id) {
-          await api(`/api/memos/${id}`, { method: "PUT", body: JSON.stringify({ content, remind_enabled }) });
+          await api(`/api/memos/${id}`, { method: "PUT", body: JSON.stringify(payload) });
         } else {
-          await api("/api/memos", { method: "POST", body: JSON.stringify({ content, remind_enabled }) });
+          await api("/api/memos", { method: "POST", body: JSON.stringify(payload) });
         }
         toast(id ? "已保存" : "备忘已添加", "success");
         showMemoList();
@@ -1911,7 +1987,7 @@
     const cancelBtn = el("button", "btn-sm", "取消");
     cancelBtn.onclick = () => showMemoList();
 
-    form.append(contentInput, remindLabel, saveBtn, cancelBtn);
+    form.append(contentInput, modeLabel, modeSelect, paramBox, saveBtn, cancelBtn);
     listEl.appendChild(form);
   }
 

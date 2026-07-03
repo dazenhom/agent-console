@@ -135,7 +135,10 @@ def init_db() -> None:
                 reminded_date TEXT DEFAULT '',
                 last_reminded_at REAL DEFAULT 0,
                 created_at REAL,
-                updated_at REAL
+                updated_at REAL,
+                remind_mode TEXT DEFAULT 'daily',
+                remind_at TEXT DEFAULT '',
+                remind_days_before INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_memos_status ON memos(status);
             """
@@ -163,6 +166,9 @@ def init_db() -> None:
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")
         _add_col("todos", "progress_src_mtime REAL DEFAULT 0")
+        _add_col("memos", "remind_mode TEXT DEFAULT 'daily'")
+        _add_col("memos", "remind_at TEXT DEFAULT ''")
+        _add_col("memos", "remind_days_before INTEGER DEFAULT 0")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")
@@ -598,19 +604,23 @@ def list_memos(status: str | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def create_memo(content: str, remind_enabled: int = 1) -> str:
+def create_memo(content: str, remind_enabled: int = 1, remind_mode: str = "daily",
+                remind_at: str = "", remind_days_before: int = 0) -> str:
     mid = new_id()
     now = _now()
     _exec(
-        "INSERT INTO memos(id,content,status,remind_enabled,reminded_date,last_reminded_at,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,?,?)",
-        (mid, content, "active", remind_enabled, "", 0, now, now),
+        "INSERT INTO memos(id,content,status,remind_enabled,reminded_date,last_reminded_at,"
+        "remind_mode,remind_at,remind_days_before,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (mid, content, "active", remind_enabled, "", 0,
+         remind_mode, remind_at, remind_days_before, now, now),
     )
     return mid
 
 
 def update_memo(mid: str, **fields) -> bool:
-    allowed = {"content", "status", "remind_enabled", "reminded_date", "last_reminded_at"}
+    allowed = {"content", "status", "remind_enabled", "reminded_date", "last_reminded_at",
+               "remind_mode", "remind_at", "remind_days_before"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False
@@ -627,6 +637,6 @@ def delete_memo(mid: str) -> bool:
 
 
 def list_memos_to_remind() -> list[dict]:
-    rows = _query("SELECT * FROM memos WHERE status='active' AND remind_enabled=1")
+    rows = _query("SELECT * FROM memos WHERE status='active'")
     return [dict(r) for r in rows]
 

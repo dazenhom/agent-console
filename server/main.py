@@ -531,7 +531,13 @@ async def memos_create(payload: dict):
         remind_enabled = int(payload.get("remind_enabled", 1))
     except (TypeError, ValueError):
         remind_enabled = 1
-    mid = db.create_memo(content, remind_enabled)
+    remind_mode = str(payload.get("remind_mode") or "daily")
+    remind_at = str(payload.get("remind_at") or "")
+    try:
+        remind_days_before = int(payload.get("remind_days_before", 0))
+    except (TypeError, ValueError):
+        remind_days_before = 0
+    mid = db.create_memo(content, remind_enabled, remind_mode, remind_at, remind_days_before)
     memos = db.list_memos()
     return next((m for m in memos if m["id"] == mid), {"id": mid})
 
@@ -546,7 +552,9 @@ async def memos_remind(payload: dict = None):
 
 @app.put("/api/memos/{mid}", dependencies=[Depends(require_auth)])
 async def memos_update(mid: str, payload: dict):
-    fields = {k: payload[k] for k in ("content", "status", "remind_enabled") if k in payload}
+    fields = {k: payload[k] for k in
+              ("content", "status", "remind_enabled", "remind_mode", "remind_at", "remind_days_before")
+              if k in payload}
     if not db.update_memo(mid, **fields):
         raise HTTPException(status_code=404, detail="备忘不存在")
     return {"ok": True}
