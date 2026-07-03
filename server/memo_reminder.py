@@ -101,7 +101,7 @@ async def run_reminder(force: bool = False) -> int:
     try:
         from . import wecom_notify
         if getattr(config, "WECOM_ENABLED", False):
-            await wecom_notify.notify(title=title, user_text="", reply_text=body[:1200], status="success")
+            await wecom_notify.notify_memo(title=title, memos=memos)
     except Exception:
         pass
 

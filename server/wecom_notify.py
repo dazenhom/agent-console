@@ -97,3 +97,16 @@ async def notify(*, title: str, user_text: str, reply_text: str,
         return await asyncio.to_thread(_post_sync, content)
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
+
+
+async def notify_memo(*, title: str, memos: list) -> tuple[bool, str]:
+    """备忘提醒专用推送，用橙色警示格式，与 agent 任务完成通知视觉区分。永不抛异常。"""
+    if not config.WECOM_ENABLED or not config.WECOM_WEBHOOK_KEY:
+        return False, "disabled"
+    lines = [f"> **{i + 1}.** {m['content']}" for i, m in enumerate(memos)]
+    body = "\n".join(lines)
+    content = _clip(f'<font color="warning">📌 {title}</font>\n\n{body}', 4096)
+    try:
+        return await asyncio.to_thread(_post_sync, content)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
