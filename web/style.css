@@ -1333,3 +1333,71 @@ select[multiple] { min-height: 80px; height: auto; }
     padding: 28px 32px;
   }
 }
+
+/* ── 快速备忘浮层 ── */
+.memo-quick-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  z-index: 1200; display: flex; align-items: flex-end;
+  justify-content: center;
+}
+.memo-quick-card {
+  background: var(--bg-2); border-radius: 16px 16px 0 0;
+  padding: 20px 16px 32px; width: 100%; max-width: 560px;
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.2);
+}
+.memo-quick-title {
+  font-weight: 600; font-size: 1em; margin-bottom: 12px; color: var(--text);
+}
+.memo-quick-ta { min-height: 80px; resize: vertical; margin-bottom: 10px; }
+.memo-quick-chips {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.memo-quick-btns { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ── chip 通用样式（提醒模式选择、快捷日期）── */
+.memo-chip {
+  padding: 6px 14px; border-radius: 20px; border: 1px solid var(--line);
+  background: var(--bg-2); color: var(--muted);
+  font-size: 0.85em; cursor: pointer; min-height: 34px;
+  transition: all 0.15s;
+}
+.memo-chip.active, .memo-chip:hover {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.memo-chip-row {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.memo-date-quick {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px;
+}
+
+/* ── 备忘列表分组 ── */
+.memo-done-toggle {
+  padding: 10px 4px; font-size: 0.85em; color: var(--muted-2);
+  cursor: pointer; border-top: 1px solid var(--line); margin-top: 8px;
+  user-select: none;
+}
+.memo-done-toggle:hover { color: var(--muted); }
+.memo-done-body { opacity: 0.75; }
+
+/* ── 列表完成按钮 ── */
+.memo-done-btn {
+  background: var(--green); color: #fff;
+  border-color: var(--green);
+}
+.memo-done-btn:hover { opacity: 0.85; }
+
+/* ── banner 内 memo 列表 ── */
+.memo-banner-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.memo-banner-item {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(255,255,255,0.15); border-radius: 6px; padding: 4px 8px;
+}
+.memo-banner-item-text { flex: 1; font-size: 0.88em; }
+.memo-banner-check {
+  background: rgba(255,255,255,0.3); border: 1px solid rgba(255,255,255,0.6);
+  color: #fff; border-radius: 50%; width: 26px; height: 26px;
+  font-size: 0.85em; cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.memo-banner-check:hover { background: rgba(255,255,255,0.5); }

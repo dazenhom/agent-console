@@ -1843,59 +1843,98 @@
     clearMemoBadge();
     const listEl = $("manage-list");
     listEl.innerHTML = '<div class="entity-loading">加载中…</div>';
+    let items;
     try {
-      const items = await api("/api/memos");
-      listEl.innerHTML = "";
-      if (!items.length) {
-        listEl.innerHTML = '<div class="entity-empty"><div class="empty-emoji">📝</div><div>暂无备忘</div><div class="empty-sub">点右上角「+ 新建」记录要提醒的事情</div></div>';
-        return;
-      }
-      for (const it of items) {
-        const li = el("li");
-        const head = el("div", "e-head");
-        head.appendChild(el("span", "e-name", escapeHtml(it.content)));
-        head.appendChild(el("span", "e-tag", it.status === "done" ? "已完成" : "未完成"));
-        if (it.last_reminded_at) {
-          const todayStr = new Date().toISOString().slice(0, 10);
-          const isToday = it.reminded_date === todayStr;
-          const remindTag = document.createElement("span");
-          remindTag.className = "e-tag" + (isToday ? " tag-warn" : "");
-          remindTag.textContent = (isToday ? "🔔 今日已提醒 " : "已提醒 ") + fmtTs(it.last_reminded_at);
-          head.appendChild(remindTag);
-        }
-        const modeTag = document.createElement("span");
-        modeTag.className = "e-tag";
-        modeTag.textContent = memoModeLabel(it);
-        head.appendChild(modeTag);
-        li.appendChild(head);
-        const actions = el("div", "e-actions");
-        if (it.status !== "done") {
-          const doneBtn = el("button", "btn-sm", "完成");
-          doneBtn.onclick = async () => {
-            try {
-              await api(`/api/memos/${it.id}`, { method: "PUT", body: JSON.stringify({ status: "done" }) });
-              showMemoList();
-            } catch (e) { toast("操作失败：" + e.message, "error"); }
-          };
-          actions.appendChild(doneBtn);
-        }
-        const editBtn = el("button", "btn-sm", "编辑");
-        editBtn.onclick = () => showMemoForm(it.id);
-        actions.appendChild(editBtn);
-        const delBtn = el("button", "btn-sm danger", "删除");
-        delBtn.onclick = async () => {
-          if (!confirm("确认删除这条备忘？")) return;
-          try {
-            await api(`/api/memos/${it.id}`, { method: "DELETE" });
-            showMemoList();
-          } catch (e) { toast("删除失败：" + e.message, "error"); }
-        };
-        actions.appendChild(delBtn);
-        li.appendChild(actions);
-        listEl.appendChild(li);
-      }
+      items = await api("/api/memos");
     } catch (e) {
       listEl.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    listEl.innerHTML = "";
+
+    const active = items.filter(m => m.status !== "done");
+    const done = items.filter(m => m.status === "done");
+
+    if (!active.length && !done.length) {
+      listEl.innerHTML = '<div class="entity-empty"><div class="empty-emoji">📝</div><div>暂无备忘</div><div class="empty-sub">点右上角「+ 新建」记录要提醒的事情</div></div>';
+      return;
+    }
+
+    const today = new Date();
+    const todayStr = today.getFullYear() + "-" +
+      String(today.getMonth() + 1).padStart(2, "0") + "-" +
+      String(today.getDate()).padStart(2, "0");
+
+    function renderMemoItem(it, isDone) {
+      const li = el("li");
+      const head = el("div", "e-head");
+      head.appendChild(el("span", "e-name", escapeHtml(it.content)));
+
+      // 今日已提醒高亮
+      if (it.last_reminded_at) {
+        const isToday = it.reminded_date === todayStr;
+        const remindTag = document.createElement("span");
+        remindTag.className = "e-tag" + (isToday ? " tag-warn" : "");
+        remindTag.textContent = (isToday ? "🔔 今日已提醒 " : "已提醒 ") + fmtTs(it.last_reminded_at);
+        head.appendChild(remindTag);
+      }
+
+      const modeTag = document.createElement("span");
+      modeTag.className = "e-tag";
+      modeTag.textContent = memoModeLabel(it);
+      head.appendChild(modeTag);
+      li.appendChild(head);
+
+      const actions = el("div", "e-actions");
+      if (!isDone) {
+        const doneBtn = el("button", "btn-sm memo-done-btn", "✓ 完成");
+        doneBtn.onclick = async () => {
+          try {
+            await api(`/api/memos/${it.id}`, { method: "PUT", body: JSON.stringify({ status: "done" }) });
+            showMemoList();
+            refreshMemoBadge();
+          } catch (e) { toast("操作失败：" + e.message, "error"); }
+        };
+        const editBtn = el("button", "btn-sm", "编辑");
+        editBtn.onclick = () => showMemoForm(it.id);
+        actions.append(doneBtn, editBtn);
+      }
+      const delBtn = el("button", "btn-sm danger", "🗑");
+      delBtn.onclick = async () => {
+        if (!(await confirmDialog("确认删除这条备忘？", { okText: "删除", danger: true }))) return;
+        try {
+          await api(`/api/memos/${it.id}`, { method: "DELETE" });
+          showMemoList();
+          refreshMemoBadge();
+        } catch (e) { toast("删除失败：" + e.message, "error"); }
+      };
+      actions.appendChild(delBtn);
+      li.appendChild(actions);
+      return li;
+    }
+
+    // 渲染 active 组
+    active.forEach(it => listEl.appendChild(renderMemoItem(it, false)));
+
+    // 渲染 done 组（折叠）
+    if (done.length) {
+      const toggle = document.createElement("div");
+      toggle.className = "memo-done-toggle";
+      let expanded = false;
+      toggle.textContent = "已完成 " + done.length + " 条 ▾";
+
+      const doneBody = document.createElement("div");
+      doneBody.className = "memo-done-body";
+      doneBody.style.display = "none";
+      done.forEach(it => doneBody.appendChild(renderMemoItem(it, true)));
+
+      toggle.onclick = () => {
+        expanded = !expanded;
+        doneBody.style.display = expanded ? "" : "none";
+        toggle.textContent = "已完成 " + done.length + " 条 " + (expanded ? "▴" : "▾");
+      };
+
+      listEl.append(toggle, doneBody);
     }
   }
 
@@ -1914,24 +1953,42 @@
 
     const form = el("div", "entity-form");
 
+    // 内容输入
     const contentInput = el("textarea");
     contentInput.placeholder = "记录要提醒的事情…";
     contentInput.className = "form-input";
     contentInput.rows = 4;
     contentInput.value = memo.content || "";
 
-    // 提醒模式 select
-    const modeLabel = el("div", "form-label", "提醒方式");
-    const modeSelect = document.createElement("select");
-    modeSelect.className = "form-input";
-    [["daily", "每天提醒"], ["weekly", "每周指定星期"], ["monthly", "每月指定日期"],
-     ["once", "指定日期单次提醒"], ["deadline", "截止日提醒"], ["none", "不提醒"]]
-      .forEach(([v, t]) => {
-        const o = document.createElement("option");
-        o.value = v; o.textContent = t;
-        modeSelect.appendChild(o);
-      });
-    modeSelect.value = memo.remind_mode || "daily";
+    // 提醒模式 chip
+    const chipLabel = el("div", "form-label", "提醒方式");
+    const chipDefs = [
+      { label: "每天", value: "daily" },
+      { label: "每周", value: "weekly" },
+      { label: "每月", value: "monthly" },
+      { label: "单次", value: "once" },
+      { label: "截止日", value: "deadline" },
+      { label: "不提醒", value: "none" },
+    ];
+    let currentMode = memo.remind_mode || "daily";
+
+    const chipRow = document.createElement("div");
+    chipRow.className = "memo-chip-row";
+
+    const chipBtns = chipDefs.map(def => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "memo-chip" + (def.value === currentMode ? " active" : "");
+      btn.textContent = def.label;
+      btn.onclick = () => {
+        chipBtns.forEach(c => c.classList.remove("active"));
+        btn.classList.add("active");
+        currentMode = def.value;
+        renderParams();
+      };
+      chipRow.appendChild(btn);
+      return btn;
+    });
 
     // 动态参数区
     const paramBox = document.createElement("div");
@@ -1959,6 +2016,33 @@
     daysInput.className = "form-input"; daysInput.type = "number";
     daysInput.min = "0"; daysInput.placeholder = "提前几天（默认0）";
 
+    // 快捷日期按钮
+    function makeDateQuick() {
+      const row = document.createElement("div");
+      row.className = "memo-date-quick";
+      const now = new Date();
+      function localDate(d) {
+        return d.getFullYear() + "-" +
+          String(d.getMonth() + 1).padStart(2, "0") + "-" +
+          String(d.getDate()).padStart(2, "0");
+      }
+      const today = new Date(now);
+      const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+      const weekend = new Date(now);
+      const daysToSun = (7 - now.getDay()) % 7 || 7;
+      weekend.setDate(now.getDate() + daysToSun);
+
+      [["今天", localDate(today)], ["明天", localDate(tomorrow)], ["本周末", localDate(weekend)]].forEach(([label, val]) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "memo-chip";
+        btn.textContent = label;
+        btn.onclick = () => { dateInput.value = val; };
+        row.appendChild(btn);
+      });
+      return row;
+    }
+
     // 回填已有值
     if (memo.remind_mode === "weekly") weekSelect.value = String(memo.remind_at || "0");
     if (memo.remind_mode === "monthly") daySelect.value = String(memo.remind_at || "1");
@@ -1967,30 +2051,27 @@
 
     function renderParams() {
       paramBox.innerHTML = "";
-      const m = modeSelect.value;
-      if (m === "weekly") paramBox.appendChild(weekSelect);
-      else if (m === "monthly") paramBox.appendChild(daySelect);
-      else if (m === "once") paramBox.appendChild(dateInput);
-      else if (m === "deadline") { paramBox.appendChild(dateInput); paramBox.appendChild(daysLabel); paramBox.appendChild(daysInput); }
+      if (currentMode === "weekly") paramBox.appendChild(weekSelect);
+      else if (currentMode === "monthly") paramBox.appendChild(daySelect);
+      else if (currentMode === "once") { paramBox.appendChild(makeDateQuick()); paramBox.appendChild(dateInput); }
+      else if (currentMode === "deadline") { paramBox.appendChild(makeDateQuick()); paramBox.appendChild(dateInput); paramBox.appendChild(daysLabel); paramBox.appendChild(daysInput); }
     }
-    modeSelect.onchange = renderParams;
     renderParams();
 
     const saveBtn = el("button", "btn-primary", "保存");
     saveBtn.onclick = async () => {
       const content = contentInput.value.trim();
       if (!content) { toast("备忘内容不能为空", "error"); return; }
-      const remind_mode = modeSelect.value;
       let remind_at = "";
-      if (remind_mode === "weekly") remind_at = weekSelect.value;
-      else if (remind_mode === "monthly") remind_at = daySelect.value;
-      else if (remind_mode === "once" || remind_mode === "deadline") remind_at = dateInput.value;
-      if ((remind_mode === "once" || remind_mode === "deadline") && !remind_at) {
+      if (currentMode === "weekly") remind_at = weekSelect.value;
+      else if (currentMode === "monthly") remind_at = daySelect.value;
+      else if (currentMode === "once" || currentMode === "deadline") remind_at = dateInput.value;
+      if ((currentMode === "once" || currentMode === "deadline") && !remind_at) {
         toast("请选择日期", "error"); return;
       }
-      const remind_days_before = remind_mode === "deadline" ? (parseInt(daysInput.value, 10) || 0) : 0;
-      const remind_enabled = remind_mode === "none" ? 0 : 1;
-      const payload = { content, remind_enabled, remind_mode, remind_at, remind_days_before };
+      const remind_days_before = currentMode === "deadline" ? (parseInt(daysInput.value, 10) || 0) : 0;
+      const remind_enabled = currentMode === "none" ? 0 : 1;
+      const payload = { content, remind_enabled, remind_mode: currentMode, remind_at, remind_days_before };
       try {
         if (id) {
           await api(`/api/memos/${id}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -1999,14 +2080,16 @@
         }
         toast(id ? "已保存" : "备忘已添加", "success");
         showMemoList();
+        refreshMemoBadge();
       } catch (e) { toast("保存失败：" + e.message, "error"); }
     };
 
     const cancelBtn = el("button", "btn-sm", "取消");
     cancelBtn.onclick = () => showMemoList();
 
-    form.append(contentInput, modeLabel, modeSelect, paramBox, saveBtn, cancelBtn);
+    form.append(contentInput, chipLabel, chipRow, paramBox, saveBtn, cancelBtn);
     listEl.appendChild(form);
+    setTimeout(() => contentInput.focus(), 50);
   }
 
   // ---------------- 日报记录（自有渲染，复用 manage-list 容器）----------------
@@ -2356,7 +2439,7 @@
     requestAnimationFrame(() => node.classList.add("msg-in"));
   }
 
-  const TOOL_GROUP_MIN = 3;
+  const TOOL_GROUP_MIN = 2;
 
   function trailingToolGroup(parentEl) {
     let n = parentEl.lastElementChild;
@@ -2833,6 +2916,8 @@
   }
 
   $("send-btn").onclick = send;
+  const memoQuickBtn = $("memo-quick-btn");
+  if (memoQuickBtn) memoQuickBtn.onclick = openMemoQuickPanel;
   // 手机：回车换行；点发送按钮才发送。桌面：Enter 发送，Shift+Enter 换行
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) { e.preventDefault(); send(); }
@@ -3289,6 +3374,102 @@
     }, ms);
   }
 
+  // 快速备忘浮层：从输入区 📝 按钮唤起，底部弹出卡片，chip 选提醒周期，一键保存
+  function openMemoQuickPanel() {
+    // 遮罩
+    const overlay = document.createElement("div");
+    overlay.className = "memo-quick-overlay";
+
+    // 卡片
+    const card = document.createElement("div");
+    card.className = "memo-quick-card";
+
+    // 标题
+    const title = document.createElement("div");
+    title.className = "memo-quick-title";
+    title.textContent = "📝 快速备忘";
+
+    // textarea
+    const ta = document.createElement("textarea");
+    ta.className = "form-input memo-quick-ta";
+    ta.placeholder = "记录要提醒的事情...";
+    ta.rows = 3;
+
+    // chip 行
+    const chipRow = document.createElement("div");
+    chipRow.className = "memo-quick-chips";
+
+    const chipDefs = [
+      { label: "每天", mode: "daily", at: "" },
+      { label: "本周", mode: "weekly", at: String((new Date().getDay() + 6) % 7) },
+      { label: "本月", mode: "monthly", at: String(new Date().getDate()) },
+      { label: "不提醒", mode: "none", at: "" },
+    ];
+    let selectedChip = chipDefs[0];
+
+    const chips = chipDefs.map(def => {
+      const btn = document.createElement("button");
+      btn.className = "memo-chip" + (def === selectedChip ? " active" : "");
+      btn.textContent = def.label;
+      btn.type = "button";
+      btn.onclick = () => {
+        chips.forEach(c => c.classList.remove("active"));
+        btn.classList.add("active");
+        selectedChip = def;
+      };
+      chipRow.appendChild(btn);
+      return btn;
+    });
+
+    // 按钮行
+    const btnRow = document.createElement("div");
+    btnRow.className = "memo-quick-btns";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "btn-primary";
+    saveBtn.textContent = "保存";
+    saveBtn.type = "button";
+    saveBtn.onclick = async () => {
+      const content = ta.value.trim();
+      if (!content) { toast("备忘内容不能为空", "error"); return; }
+      const remind_enabled = selectedChip.mode === "none" ? 0 : 1;
+      try {
+        await api("/api/memos", {
+          method: "POST",
+          body: JSON.stringify({
+            content,
+            remind_mode: selectedChip.mode,
+            remind_at: selectedChip.at,
+            remind_days_before: 0,
+            remind_enabled,
+          }),
+        });
+        toast("已添加备忘", "success");
+        overlay.remove();
+        refreshMemoBadge();
+      } catch (e) {
+        toast("保存失败：" + e.message, "error");
+      }
+    };
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn-sm";
+    cancelBtn.textContent = "取消";
+    cancelBtn.type = "button";
+    cancelBtn.onclick = () => overlay.remove();
+
+    btnRow.append(saveBtn, cancelBtn);
+    card.append(title, ta, chipRow, btnRow);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    // 点遮罩关闭
+    overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+
+    // 自动 focus
+    setTimeout(() => ta.focus(), 50);
+  }
+
   // 备忘提醒横幅：顶部常驻，不自动消失，与短暂 toast 区分。点「查看」跳到备忘录管理页。
   function showMemoBanner(data) {
     const root = $("memo-banner-root");
@@ -3307,6 +3488,42 @@
     const previewEl = el("div", "memo-banner-preview");
     previewEl.textContent = data.preview || "";
     body.append(titleEl, previewEl);
+
+    if (data.memos && data.memos.length) {
+      const memoList = document.createElement("div");
+      memoList.className = "memo-banner-list";
+      data.memos.forEach(m => {
+        const item = document.createElement("div");
+        item.className = "memo-banner-item";
+
+        const txt = document.createElement("span");
+        txt.className = "memo-banner-item-text";
+        txt.textContent = m.content;
+
+        const doneBtn = document.createElement("button");
+        doneBtn.className = "memo-banner-check";
+        doneBtn.textContent = "✓";
+        doneBtn.title = "标记完成";
+        doneBtn.onclick = async () => {
+          try {
+            await api("/api/memos/" + m.id, {
+              method: "PUT",
+              body: JSON.stringify({ status: "done" }),
+            });
+            item.remove();
+            // 若无剩余 memo 则移除整个 banner
+            if (!memoList.children.length) banner.remove();
+            refreshMemoBadge();
+          } catch (e) {
+            toast("操作失败", "error");
+          }
+        };
+
+        item.append(txt, doneBtn);
+        memoList.appendChild(item);
+      });
+      body.appendChild(memoList);
+    }
 
     const actions = el("div", "memo-banner-actions");
 
@@ -3343,6 +3560,25 @@
 
   function clearMemoBadge() {
     setMemoBadge(0);
+  }
+
+  // 拉取备忘列表，算出「今日仍待提醒」条数刷新角标（进入 App 时初始化、增删改后同步）
+  async function refreshMemoBadge() {
+    try {
+      const today = new Date();
+      const todayStr = today.getFullYear() + "-" +
+        String(today.getMonth() + 1).padStart(2, "0") + "-" +
+        String(today.getDate()).padStart(2, "0");
+      const items = await api("/api/memos");
+      const count = items.filter(m =>
+        m.status === "active" &&
+        m.remind_enabled == 1 &&
+        m.reminded_date !== todayStr
+      ).length;
+      setMemoBadge(count);
+    } catch (e) {
+      // 静默失败
+    }
   }
 
   // ---------------- 自定义确认框（替代原生 confirm）----------------
@@ -3578,6 +3814,7 @@
     if (state.sessionId) await switchSession(state.sessionId);  // 含 loadHistory + 第一条 WS
     loadSnippets();         // 非关键，放最后
     connectMonitor();       // 监控 WS 最后连，错开与 switchSession 里那条 WS 的建连峰值
+    refreshMemoBadge();     // 初始化备忘角标（今日仍待提醒条数）
   }
 
   if (state.token) {

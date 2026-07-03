@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=28" />
+  <link rel="stylesheet" href="style.css?v=29" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -195,6 +195,7 @@
           <button id="img-btn" class="img-btn" aria-label="发图片" title="拍照/选图发给 Agent">&#128247;</button>
           <input id="img-input" type="file" accept="image/*" capture="environment" hidden />
           <button id="mic-btn" class="mic-btn" aria-label="语音输入" title="点击录音">&#127908;</button>
+          <button id="memo-quick-btn" class="mic-btn" title="快速备忘">📝</button>
           <div class="input-wrap">
             <textarea id="input" rows="1" placeholder="给 Agent 下达指令…"></textarea>
             <span id="char-count" class="char-count hidden"></span>
@@ -242,7 +243,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=32"></script>
+  <script src="app.js?v=34"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
