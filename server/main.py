@@ -487,7 +487,8 @@ async def todos_set_sessions(tid: str, payload: dict):
 
 @app.delete("/api/todos/{tid}", dependencies=[Depends(require_auth)])
 async def todos_delete(tid: str):
-    db.delete_todo(tid)
+    if not db.delete_todo(tid):
+        raise HTTPException(status_code=404, detail="待办不存在")
     return {"ok": True}
 
 

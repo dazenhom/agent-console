@@ -468,9 +468,9 @@ def delete_todo(tid: str) -> bool:
     # 级联删除放进单个事务：两条语句要么都提交，要么都不提交，避免进程崩溃留下孤儿关联行
     with _lock:
         _conn.execute("DELETE FROM todo_sessions WHERE todo_id=?", (tid,))
-        _conn.execute("DELETE FROM todos WHERE id=?", (tid,))
+        cur = _conn.execute("DELETE FROM todos WHERE id=?", (tid,))
         _conn.commit()
-    return True
+    return cur.rowcount > 0
 
 
 # ---------- reports（日报）----------
