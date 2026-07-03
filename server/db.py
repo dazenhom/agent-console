@@ -406,6 +406,15 @@ def set_todo_sessions(todo_id: str, session_ids: list) -> None:
     now = _now()
     with _lock:
         _conn.execute("DELETE FROM todo_sessions WHERE todo_id=?", (todo_id,))
+        # 过滤非法 session_id，避免把不存在的会话写进关联表产生悬空引用
+        if session_ids:
+            placeholders = ','.join('?' * len(session_ids))
+            valid = set(
+                r[0] for r in _conn.execute(
+                    f"SELECT id FROM sessions WHERE id IN ({placeholders})", session_ids
+                ).fetchall()
+            )
+            session_ids = [s for s in session_ids if s in valid]
         for sid in session_ids:
             _conn.execute(
                 "INSERT OR IGNORE INTO todo_sessions (todo_id, session_id, created_at) VALUES (?,?,?)",
@@ -456,8 +465,11 @@ def set_todo_progress(tid: str, progress: str, src_mtime: float) -> None:
 
 
 def delete_todo(tid: str) -> bool:
-    _exec("DELETE FROM todo_sessions WHERE todo_id=?", (tid,))
-    _exec("DELETE FROM todos WHERE id=?", (tid,))
+    # 级联删除放进单个事务：两条语句要么都提交，要么都不提交，避免进程崩溃留下孤儿关联行
+    with _lock:
+        _conn.execute("DELETE FROM todo_sessions WHERE todo_id=?", (tid,))
+        _conn.execute("DELETE FROM todos WHERE id=?", (tid,))
+        _conn.commit()
     return True
 
 

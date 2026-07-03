@@ -443,17 +443,18 @@ async def todos_create(payload: dict):
     if not title:
         raise HTTPException(status_code=400, detail="title 不能为空")
     status = payload.get("status") if payload.get("status") in ("pending", "in_progress") else "pending"
-    todo = db.create_todo(
-        title,
-        payload.get("description", ""),
-        int(payload.get("priority", 0)),
-        payload.get("session_id"),
-        status,
-    )
     # 关联多个会话：显式传 session_ids 优先；否则用旧字段 session_id 兜底
     session_ids = payload.get("session_ids") or []
     if not session_ids and payload.get("session_id"):
         session_ids = [payload["session_id"]]
+    # 有 session_ids 时主会话由 set_todo_sessions 统一写回，避免此处重复写 session_id
+    todo = db.create_todo(
+        title,
+        payload.get("description", ""),
+        int(payload.get("priority", 0)),
+        None if session_ids else payload.get("session_id"),
+        status,
+    )
     if session_ids:
         db.set_todo_sessions(todo["id"], session_ids)
         todo["session_ids"] = session_ids
@@ -464,9 +465,11 @@ async def todos_create(payload: dict):
 
 @app.put("/api/todos/{tid}", dependencies=[Depends(require_auth)])
 async def todos_update(tid: str, payload: dict):
-    fields = {k: payload[k] for k in ("title", "description", "status", "priority", "session_id") if k in payload}
-    if fields and not db.update_todo(tid, **fields):
+    if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
         raise HTTPException(status_code=404, detail="待办不存在")
+    fields = {k: payload[k] for k in ("title", "description", "status", "priority", "session_id") if k in payload}
+    if fields:
+        db.update_todo(tid, **fields)
     # 关联多个会话：显式传 session_ids（非 None）则覆盖式更新
     if payload.get("session_ids") is not None:
         db.set_todo_sessions(tid, payload["session_ids"])
@@ -476,7 +479,7 @@ async def todos_update(tid: str, payload: dict):
 @app.put("/api/todos/{tid}/sessions", dependencies=[Depends(require_auth)])
 async def todos_set_sessions(tid: str, payload: dict):
     session_ids = payload.get("session_ids", [])
-    if not any(t["id"] == tid for t in db.list_todos()):
+    if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
         raise HTTPException(status_code=404, detail="待办不存在")
     db.set_todo_sessions(tid, session_ids)
     return {"ok": True, "session_ids": session_ids}
