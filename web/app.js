@@ -2396,7 +2396,7 @@
       group.classList.remove("open");
       body.style.display = "none";
     }
-    head.style.display = count >= TOOL_GROUP_MIN ? "" : "none";
+    head.style.display = count >= TOOL_GROUP_MIN ? "flex" : "none";
     updateToolGroupLabel(group);
   }
 
