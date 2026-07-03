@@ -807,7 +807,7 @@
       chipsBox.innerHTML = selectedSessions.map((sid) => {
         const s = state.sessions.find((x) => x.id === sid);
         const name = s ? (s.title || sid.slice(0, 10)) : sid.slice(0, 10);
-        return `<span class="session-chip" title="${escapeAttr(name)}">${escapeHtml(name)}` +
+        return `<span class="session-chip" title="${escapeAttr(name)}"><span class="chip-name">${escapeHtml(name)}</span>` +
           `<button class="chip-remove" data-sid="${escapeAttr(sid)}" type="button">✕</button></span>`;
       }).join("");
       chipsBox.querySelectorAll(".chip-remove").forEach((btn) => {
