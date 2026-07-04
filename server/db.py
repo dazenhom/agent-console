@@ -422,6 +422,12 @@ def set_todo_sessions(todo_id: str, session_ids: list) -> None:
     """覆盖式设置任务关联会话；同步把主会话（列表第一个）写回 todos.session_id。"""
     now = _now()
     with _lock:
+        # 先取该 todo 当前已关联的所有 session_id（作为白名单，保留孤儿关联）
+        existing = set(
+            r[0] for r in _conn.execute(
+                "SELECT session_id FROM todo_sessions WHERE todo_id=?", (todo_id,)
+            ).fetchall()
+        )
         _conn.execute("DELETE FROM todo_sessions WHERE todo_id=?", (todo_id,))
         # 过滤非法 session_id，避免把不存在的会话写进关联表产生悬空引用
         if session_ids:
@@ -431,7 +437,8 @@ def set_todo_sessions(todo_id: str, session_ids: list) -> None:
                     f"SELECT id FROM sessions WHERE id IN ({placeholders})", session_ids
                 ).fetchall()
             )
-            session_ids = [s for s in session_ids if s in valid]
+            # 合法 = 在 sessions 表里 OR 本来就已关联（保留孤儿关联，不静默删）
+            session_ids = [s for s in session_ids if s in valid or s in existing]
         for sid in session_ids:
             _conn.execute(
                 "INSERT OR IGNORE INTO todo_sessions (todo_id, session_id, created_at) VALUES (?,?,?)",
