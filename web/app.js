@@ -734,7 +734,9 @@
     const root = $("modal-root");
     root.innerHTML = "";
     const card = el("div", "modal-card");
-    const selectedIds = t.session_ids || (t.session_id ? [t.session_id] : []);
+    const selectedIds = (t.session_ids && t.session_ids.length)
+      ? t.session_ids
+      : (t.session_id ? [t.session_id] : []);
     card.innerHTML = `
       <div class="modal-title">编辑任务</div>
       <div class="entity-form" style="gap:12px">
