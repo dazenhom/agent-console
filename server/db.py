@@ -166,6 +166,7 @@ def init_db() -> None:
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")
         _add_col("todos", "progress_src_mtime REAL DEFAULT 0")
+        _add_col("todos", "archived INTEGER DEFAULT 0")
         _add_col("memos", "remind_mode TEXT DEFAULT 'daily'")
         _add_col("memos", "remind_at TEXT DEFAULT ''")
         _add_col("memos", "remind_days_before INTEGER DEFAULT 0")
@@ -388,11 +389,18 @@ def due_schedules(now_ts: float) -> list[dict]:
 
 
 # ---------- todos（待办事项）----------
-def list_todos(status: str | None = None) -> list[dict]:
+def list_todos(status: str | None = None, include_archived: bool = False, archived_only: bool = False) -> list[dict]:
+    where = []
+    params: list = []
     if status:
-        rows = _query("SELECT * FROM todos WHERE status=? ORDER BY priority DESC, created_at ASC", (status,))
-    else:
-        rows = _query("SELECT * FROM todos ORDER BY priority DESC, created_at ASC")
+        where.append("status=?")
+        params.append(status)
+    if archived_only:
+        where.append("archived=1")
+    elif not include_archived:
+        where.append("(archived=0 OR archived IS NULL)")
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = _query(f"SELECT * FROM todos{clause} ORDER BY priority DESC, created_at ASC", tuple(params))
     result = [dict(r) for r in rows]
     # 批量补 session_ids（关联多个会话）：一次查关联表再映射回每行，避免 N+1
     todo_ids = [d["id"] for d in result]
@@ -469,7 +477,7 @@ def create_todo(title: str, description: str = "", priority: int = 0, session_id
 
 def update_todo(tid: str, **fields) -> bool:
     allowed = {"title", "description", "status", "priority", "session_id",
-               "progress", "progress_at", "progress_src_mtime"}
+               "progress", "progress_at", "progress_src_mtime", "archived"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False

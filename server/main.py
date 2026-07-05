@@ -433,8 +433,8 @@ async def schedules_delete(sid: str):
 
 # ---------------- 待办事项 ----------------
 @app.get("/api/todos", dependencies=[Depends(require_auth)])
-async def todos_list():
-    return db.list_todos()
+async def todos_list(archived: int = Query(default=0)):
+    return db.list_todos(archived_only=bool(archived))
 
 
 @app.post("/api/todos", dependencies=[Depends(require_auth)])
@@ -465,6 +465,7 @@ async def todos_create(payload: dict):
 
 @app.put("/api/todos/{tid}", dependencies=[Depends(require_auth)])
 async def todos_update(tid: str, payload: dict):
+    print(f"[DBG todos_update] tid={tid} payload={payload}", flush=True)  # TEMP: 排查多会话关联
     if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
         raise HTTPException(status_code=404, detail="待办不存在")
     fields = {k: payload[k] for k in ("title", "description", "status", "priority", "session_id") if k in payload}
@@ -492,6 +493,22 @@ async def todos_delete(tid: str):
     return {"ok": True}
 
 
+@app.post("/api/todos/{tid}/archive", dependencies=[Depends(require_auth)])
+async def todos_archive(tid: str):
+    if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
+        raise HTTPException(status_code=404, detail="待办不存在")
+    db.update_todo(tid, archived=1)
+    return {"ok": True, "archived": True}
+
+
+@app.post("/api/todos/{tid}/unarchive", dependencies=[Depends(require_auth)])
+async def todos_unarchive(tid: str):
+    if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
+        raise HTTPException(status_code=404, detail="待办不存在")
+    db.update_todo(tid, archived=0)
+    return {"ok": True, "archived": False}
+
+
 # ---------------- 智能任务看板：进展摘要 ----------------
 @app.post("/api/todos/{tid}/refresh_progress", dependencies=[Depends(require_auth)])
 async def todo_refresh_progress(tid: str, force: bool = False):
@@ -504,6 +521,7 @@ async def kanban_refresh_all():
     from .kanban import refresh_todo_progress
     rows = db._query(
         "SELECT id FROM todos WHERE status='in_progress' AND session_id IS NOT NULL AND session_id != ''"
+        " AND (archived=0 OR archived IS NULL)"
     )
     sem = asyncio.Semaphore(3)
 
