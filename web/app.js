@@ -493,14 +493,8 @@
              <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>`}
       </div>`;
 
-    // 点击整行：跳转关联会话（多会话取主会话，即列表第一个）；未关联时直接打开编辑去关联
-    row.onclick = () => {
-      const jumpId = (t.session_ids && t.session_ids[0]) || t.session_id;
-      if (!jumpId) { showEditTodoModal(t); return; }
-      const sess = (state.sessions || []).find((s) => s.id === jumpId);
-      if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
-      else toast("会话不存在", "info", 1500);
-    };
+    // 点击整行：跳转关联会话（策略见 KANBAN_JUMP_MODE）；未关联时打开编辑去关联
+    row.onclick = () => jumpToTodoSession(t, () => showEditTodoModal(t));
 
     // 编辑
     const editBtn = row.querySelector("[data-act='edit']");
@@ -568,6 +562,12 @@
   }
   const renderKanbanDebounced = debounce(() => renderKanban(), 2000);
 
+  // 看板卡片/行点击跳转策略：
+  //   "picker"  = 多会话时弹选择器让用户选（默认）
+  //   "primary" = 总是跳主会话（session_ids[0]），忽略其它关联
+  // 改此值即可切换整体行为，无需改下面的调用点。
+  const KANBAN_JUMP_MODE = "picker";
+
   // 优先级 → 竖色条颜色。数值 priority（DB 存 INTEGER，1=⚡高优）与未来的字符串级别都支持。
   const KANBAN_PRIORITY_COLORS = { high: "#ff4d4f", medium: "#faad14", low: "#52c41a", none: "#8c8c8c" };
   function kanbanPriorityLevel(p) {
@@ -584,10 +584,64 @@
     cancelled: { text: "已取消", cls: "cancelled" },
   };
 
+  // 统一处理看板任务的会话跳转。t 为 todo 对象。
+  // onNoSession 可选：无关联会话时的回调（行视图传打开编辑，卡片视图传 toast）。
+  // 跳转决策集中在此处 + KANBAN_JUMP_MODE，两处调用点只调本函数，换策略无需改调用点。
+  function jumpToTodoSession(t, onNoSession) {
+    const ids = (t.session_ids && t.session_ids.length) ? t.session_ids : (t.session_id ? [t.session_id] : []);
+    if (ids.length === 0) {
+      if (onNoSession) onNoSession();
+      return;
+    }
+    // 单会话，或开关设为 primary：直接跳第一个
+    if (ids.length === 1 || KANBAN_JUMP_MODE === "primary") {
+      doJumpToSession(ids[0]);
+      return;
+    }
+    // 多会话 + picker 模式：弹选择器
+    showSessionJumpPicker(ids);
+  }
+
+  // 实际执行跳转到某个会话（带存在性校验）
+  function doJumpToSession(sid) {
+    const sess = (state.sessions || []).find((s) => s.id === sid);
+    if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
+    else toast("会话不存在", "info", 1500);
+  }
+
+  // 多会话跳转选择器：列出候选会话，点击某个即跳转并关闭。复用 modal-root / sp-item 样式。
+  function showSessionJumpPicker(sessionIds) {
+    const root = $("modal-root");
+    root.innerHTML = "";
+    const card = el("div", "modal-card");
+    const items = sessionIds.map((sid, i) => {
+      const s = (state.sessions || []).find((x) => x.id === sid);
+      const name = s ? (s.title || sid.slice(0, 10)) : sid.slice(0, 10);
+      const primary = i === 0;  // 第一个为主会话
+      return `<div class="sp-item jump-item" data-sid="${escapeAttr(sid)}">
+        ${primary ? `<span class="chip-primary-tag">主</span>` : `<span class="sp-check"></span>`}
+        <span class="sp-name" title="${escapeAttr(name)}">${escapeHtml(name)}</span>
+      </div>`;
+    }).join("");
+    card.innerHTML = `
+      <div class="modal-title">跳转到会话</div>
+      <div class="jump-picker-list">${items}</div>
+      <div class="modal-actions">
+        <button class="modal-cancel" type="button">取消</button>
+      </div>`;
+    root.appendChild(card);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => root.classList.add("show"));
+    const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
+    card.querySelector(".modal-cancel").onclick = close;
+    root.onclick = (e) => { if (e.target === root) close(); };
+    card.querySelectorAll(".jump-item").forEach((item) => {
+      item.onclick = () => { close(); doJumpToSession(item.dataset.sid); };
+    });
+  }
+
   // 单张看板卡（v3）：右上角操作按钮组（编辑/刷新/删除）+ 可点击主体（跳转会话）+ 底部时间/徽章，支持拖拽换列
   function renderKanbanCard(t, status) {
-    const primaryId = (t.session_ids && t.session_ids[0]) || t.session_id;
-    const sess = primaryId ? state.sessions.find((s) => s.id === primaryId) : null;
     const sessCount = t.session_ids ? t.session_ids.length : (t.session_id ? 1 : 0);
     const hasProgress = t.progress && t.progress.trim();
     const progressText = hasProgress ? t.progress : "暂无进展";
@@ -629,13 +683,8 @@
     });
     card.addEventListener("dragend", () => card.classList.remove("kanban-card-dragging"));
 
-    // ---- 点击卡片：跳转关联会话并高亮（多会话取主会话）----
-    function doJump() {
-      if (!primaryId) { toast("暂无关联会话", "info", 1500); return; }
-      if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
-      else toast("会话不存在", "info", 1500);
-    }
-    card.onclick = doJump;
+    // ---- 点击卡片：跳转关联会话（策略见 KANBAN_JUMP_MODE）----
+    card.onclick = () => jumpToTodoSession(t, () => toast("暂无关联会话", "info", 1500));
 
     // ---- 操作按钮：编辑 ----
     const editBtn = card.querySelector('[data-act="edit"]');
@@ -899,7 +948,10 @@
         </div>`;
       }).join("") : `<div class="sp-empty">无匹配会话</div>`;
       list.querySelectorAll(".sp-item").forEach((item) => {
-        item.onclick = () => {
+        item.onclick = (e) => {
+          // 必须在 renderList 重建 DOM 前阻断冒泡：否则本节点被销毁后事件冒到 document，
+          // onOutsideClick 因 e.target 已脱离 panel 而误判为外部点击关闭浮层。
+          e.stopPropagation();
           const sid = item.dataset.sid;
           const idx = selectedSessions.indexOf(sid);
           if (idx > -1) selectedSessions.splice(idx, 1);
@@ -910,7 +962,9 @@
       });
     }
 
-    // 点浮层外关闭：监听器只绑一次，关闭时一并解绑，避免每次开合都堆积监听器
+    // 点浮层外关闭：监听器只绑一次，关闭时一并解绑，避免每次开合都堆积监听器。
+    // 注意：panel 内点击（尤其点列表项）会触发 renderList 重建 DOM，e.target 随即脱离 panel，
+    // 若仅靠 panel.contains(e.target) 判断会误判为"点在外面"而关闭。故在 panel 上拦截冒泡（见下方 panel.onclick）。
     function onOutsideClick(e) {
       if (!panel.contains(e.target) && e.target !== addBtn) closePanel();
     }
@@ -933,6 +987,10 @@
       if (panel.classList.contains("hidden")) openPanel();
       else closePanel();
     };
+
+    // 拦截 panel 内部点击的冒泡：列表项点击会 renderList 重建 DOM，若冒泡到 document，
+    // onOutsideClick 里 e.target 已脱离 panel 会被误判为外部点击而关闭浮层。用捕获阶段兜底。
+    panel.addEventListener("click", (e) => { e.stopPropagation(); });
 
     search.oninput = () => renderList(search.value);
     if (doneBtn) doneBtn.onclick = (e) => { e.stopPropagation(); closePanel(); };

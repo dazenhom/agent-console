@@ -1453,3 +1453,15 @@ select[multiple] { min-height: 80px; height: auto; }
   padding: 9px 12px;
 }
 .sp-done-btn:hover { background: var(--accent-soft, #eef3ff); }
+
+/* 多会话跳转选择器 */
+.jump-picker-list {
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 8px 0;
+}
+.jump-item {
+  cursor: pointer;
+  border-radius: 6px;
+}
+.jump-item:hover { background: var(--accent-soft, #e8f0fe); }
