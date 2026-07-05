@@ -885,6 +885,7 @@ select[multiple] { min-height: 80px; height: auto; }
 .btn-ghost:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .btn-ghost:disabled { opacity: .55; pointer-events: none; }
 .btn-ghost.btn-sm { padding: 3px 9px; font-size: 12px; }
+.btn-ghost.active { background: var(--accent); color: #fff; }
 
 .kanban {
   display: flex; gap: 10px; overflow-x: auto; margin-bottom: 22px;

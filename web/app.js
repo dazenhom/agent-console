@@ -16,6 +16,7 @@
     sessions: [],
     archivedSessions: [],
     sessionView: "active",  // Sessions Tab 当前视图：active / archived
+    kanbanView: "active",   // 智能任务看板当前视图：active / archived
     typingEl: null,
     streamEl: null,      // 当前流式气泡的 DOM 节点
     streamText: "",      // 已累积的流式文本
@@ -422,8 +423,9 @@
   async function renderKanban() {
     const list = $("kanban-list");
     if (!list) return;
+    const archived = state.kanbanView === "archived";
     let todos;
-    try { todos = await api("/api/todos"); }
+    try { todos = await api(archived ? "/api/todos?archived=1" : "/api/todos"); }
     catch (e) { return; }
 
     // 排序权重：in_progress 在前，pending 其次，done/cancelled 最后
@@ -432,14 +434,30 @@
 
     list.innerHTML = "";
     if (!sorted.length) {
-      list.innerHTML = '<div class="kanban-empty">暂无任务</div>';
+      list.innerHTML = `<div class="kanban-empty">${archived ? "暂无归档任务" : "暂无任务"}</div>`;
       return;
     }
-    for (const t of sorted) list.appendChild(renderKanbanRow(t));
+    for (const t of sorted) list.appendChild(renderKanbanRow(t, archived));
+  }
+
+  // 归档任务：从活跃看板隐藏（不物理删除），归档视图里可恢复
+  async function archiveTodo(id) {
+    try {
+      await api(`/api/todos/${id}/archive`, { method: "POST" });
+      toast("已归档", "success", 1500);
+      await renderKanban();
+    } catch (e) { toast("归档失败：" + e.message, "error"); }
+  }
+  async function unarchiveTodo(id) {
+    try {
+      await api(`/api/todos/${id}/unarchive`, { method: "POST" });
+      toast("已恢复", "success", 1500);
+      await renderKanban();
+    } catch (e) { toast("恢复失败：" + e.message, "error"); }
   }
 
   // 单行看板（列表模式）：左侧状态色点 + 标题 + 单行截断的进展摘要 + hover 操作按钮
-  function renderKanbanRow(t) {
+  function renderKanbanRow(t, isArchived = false) {
     const row = document.createElement("div");
     row.className = "kanban-row";
     row.dataset.id = t.id;
@@ -467,8 +485,12 @@
           : (sessCount ? "" : `<span class="kanban-row-hint">＋ 点击关联 Agent</span>`)}
       </div>
       <div class="kanban-row-actions">
-        <button class="kanban-act-btn btn-edit" title="编辑" data-act="edit">✎</button>
-        <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
+        ${isArchived
+          ? `<button class="kanban-act-btn btn-edit" title="恢复" data-act="unarchive">↩</button>
+             <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>`
+          : `<button class="kanban-act-btn btn-edit" title="编辑" data-act="edit">✎</button>
+             <button class="kanban-act-btn btn-edit" title="归档" data-act="archive">🗄</button>
+             <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>`}
       </div>`;
 
     // 点击整行：跳转关联会话（多会话取主会话，即列表第一个）；未关联时直接打开编辑去关联
@@ -481,9 +503,22 @@
     };
 
     // 编辑
-    row.querySelector("[data-act='edit']").onclick = (e) => {
+    const editBtn = row.querySelector("[data-act='edit']");
+    if (editBtn) editBtn.onclick = (e) => {
       e.stopPropagation();
       showEditTodoModal(t);
+    };
+
+    // 归档 / 恢复
+    const archiveBtn = row.querySelector("[data-act='archive']");
+    if (archiveBtn) archiveBtn.onclick = (e) => {
+      e.stopPropagation();
+      archiveTodo(t.id);
+    };
+    const unarchiveBtn = row.querySelector("[data-act='unarchive']");
+    if (unarchiveBtn) unarchiveBtn.onclick = (e) => {
+      e.stopPropagation();
+      unarchiveTodo(t.id);
     };
 
     // 删除（二次确认后就地移除）
@@ -1170,6 +1205,12 @@
   // 看板顶部按钮：批量刷新进展 / 新建任务
   $("kanban-refresh-btn").onclick = refreshKanbanAll;
   $("kanban-add-btn").onclick = showAddTodoModal;
+  $("kanban-archive-toggle").onclick = (e) => {
+    state.kanbanView = state.kanbanView === "archived" ? "active" : "archived";
+    e.currentTarget.classList.toggle("active", state.kanbanView === "archived");
+    e.currentTarget.textContent = state.kanbanView === "archived" ? "🗄 返回" : "🗄 归档";
+    renderKanban();
+  };
   { const b = $("kanban-col-refresh"); if (b) b.onclick = (e) => { e.stopPropagation(); refreshKanbanAll(); }; }
 
   // 接续电脑/终端聊过的会话：列出 → 单击某个即接续并切过去（带完整上下文）

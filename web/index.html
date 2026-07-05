@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=30" />
+  <link rel="stylesheet" href="style.css?v=31" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -63,6 +63,7 @@
               <span class="section-label">智能任务看板</span>
               <div class="kanban-actions">
                 <button id="kanban-refresh-btn" class="btn-ghost btn-sm">↻ 刷新进展</button>
+                <button id="kanban-archive-toggle" class="btn-ghost btn-sm" title="查看归档任务">🗄 归档</button>
                 <button id="kanban-add-btn" class="btn-ghost btn-sm" title="新建任务">＋</button>
               </div>
             </div>
@@ -243,7 +244,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=36"></script>
+  <script src="app.js?v=39"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
