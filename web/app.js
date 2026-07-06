@@ -2502,12 +2502,16 @@
   // 从文本里抽取图片路径（去重，最多 6 个），渲染成缩略图附在消息下方
   function attachArtifacts(node, text) {
     if (!text) return;
+    // 跳过已在气泡内联渲染的路径（避免重复：内联 img + artifact 缩略图）
+    const alreadyInline = new Set(
+      Array.from(node.querySelectorAll('img.msg-img')).map(i => i.alt).filter(Boolean)
+    );
     const re = /([~/\w.\-]+\.(?:png|jpe?g|gif|svg|webp|bmp))/gi;
     const seen = new Set();
     let m;
     while ((m = re.exec(text)) && seen.size < 6) {
       const p = m[1];
-      if (p.length < 5 || seen.has(p)) continue;  // 太短的忽略
+      if (p.length < 5 || seen.has(p) || alreadyInline.has(p)) continue;  // 太短的/已内联的忽略
       seen.add(p);
     }
     if (!seen.size) return;
@@ -3679,6 +3683,10 @@
     text = text.replace(/(^|\s)(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp)(?:\?[^\s)]*)?)(?=\s|$)/gi, (m, pre, url) => {
       const clean = url.replace(/&amp;/g, "&");
       return `${pre}<img class="msg-img" src="${escapeAttr(clean)}" alt="" loading="lazy" />`;
+    });
+    // 本地图片路径（绝对路径或 ~/ 开头），转成 API 地址内联渲染
+    text = text.replace(/(^|\s)([~/][^\s]*\.(?:png|jpe?g|gif|svg|webp|bmp))(?=\s|$)/gi, (m, pre, path) => {
+      return `${pre}<img class="msg-img" src="${escapeAttr(fileUrl(path))}" alt="${escapeAttr(path)}" loading="lazy" />`;
     });
     // 链接 [文字](url)：url 转义后 & 变 &amp;，先还原再校验，只放行 http/https
     text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
