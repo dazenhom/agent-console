@@ -627,6 +627,10 @@ body.hub-resizing {
 .markdown hr { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
 .markdown code { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 13px; background: var(--bg-4); padding: 1.5px 6px; border-radius: 5px; color: #b3261e; word-break: break-word; }
 
+/* 行内图片（模型返回图片链接时直接渲染） */
+.markdown .msg-img,
+.bubble .msg-img { display: block; max-width: 100%; height: auto; margin: 8px 0; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-3); cursor: zoom-in; }
+
 /* markdown 表格（设计图右栏评测表格） */
 .markdown table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 8px 11px; text-align: left; }

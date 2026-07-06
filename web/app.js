@@ -3380,7 +3380,9 @@
       e.preventDefault();
       chatEl.classList.add("drag-over");
     });
-    chatEl.addEventListener("dragleave", () => chatEl.classList.remove("drag-over"));
+    chatEl.addEventListener("dragleave", (e) => {
+      if (!chatEl.contains(e.relatedTarget)) chatEl.classList.remove("drag-over");
+    });
     chatEl.addEventListener("drop", async (e) => {
       e.preventDefault();
       chatEl.classList.remove("drag-over");
@@ -3392,7 +3394,7 @@
 
   async function uploadOneImage(file) {
     if (!file || !file.type.startsWith("image/")) { toast("只能发图片", "error"); return; }
-    if (file.size > 10 * 1024 * 1024) { toast("图片过大（上限 10MB）", "error"); return; }
+    if (file.size > 100 * 1024 * 1024) { toast("图片过大（上限 100MB）", "error"); return; }
     const tip = toast("上传中…", "info", 8000);
     try {
       const dataUrl = await new Promise((res, rej) => {
@@ -3417,7 +3419,7 @@
   async function uploadOneFile(file) {
     if (!file) return;
     if (!state.sessionId) { toast("请先选择会话", "info"); return; }
-    if (file.size > 10 * 1024 * 1024) { toast("文件过大（上限 10MB）", "error"); return; }
+    if (file.size > 100 * 1024 * 1024) { toast("文件过大（上限 100MB）", "error"); return; }
     const isImage = (file.type || "").startsWith("image/");
     const tip = toast("上传中…", "info", 8000);
     try {
@@ -3666,6 +3668,17 @@
     text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
     text = text.replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>");
+    // 行内图片 ![alt](url) 与裸图片链接：& 已被转义成 &amp;，先还原再校验，只放行 http/https
+    text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
+      const clean = url.replace(/&amp;/g, "&");
+      return /^https?:\/\//.test(clean)
+        ? `<img class="msg-img" src="${escapeAttr(clean)}" alt="${escapeAttr(alt)}" loading="lazy" />`
+        : m;
+    });
+    text = text.replace(/(^|\s)(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp)(?:\?[^\s)]*)?)(?=\s|$)/gi, (m, pre, url) => {
+      const clean = url.replace(/&amp;/g, "&");
+      return `${pre}<img class="msg-img" src="${escapeAttr(clean)}" alt="" loading="lazy" />`;
+    });
     // 链接 [文字](url)：url 转义后 & 变 &amp;，先还原再校验，只放行 http/https
     text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
       const clean = url.replace(/&amp;/g, "&");
@@ -3766,6 +3779,8 @@
 
   // 代码块复制按钮：事件委托（markdown 里动态生成的 [data-copy]）
   document.addEventListener("click", (e) => {
+    const img = e.target.closest("img.msg-img");
+    if (img) { openImageViewer(img.src, img.getAttribute("alt") || img.src); return; }
     const btn = e.target.closest("[data-copy]");
     if (!btn) return;
     const block = btn.closest(".code-block");
