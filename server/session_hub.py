@@ -228,8 +228,13 @@ class SessionHub:
         if sess and db.count_messages(sid) == 0:
             cur_title = sess.get("title", "") or ""
             if not cur_title or cur_title.startswith("新会话"):
-                clean = re.sub(r"\s+", " ", user_text).strip()
-                new_title = clean[:24] + ("…" if len(clean) > 24 else "")
+                # skill 前言（编排指令）很长，直接截会得到乱码标题；剥掉前言只取附加需求。
+                seed = user_text
+                if len(user_text) >= config.TITLE_SKIP_PREFIX_CHARS:
+                    rest = user_text.split("\n\n", 1)[1] if "\n\n" in user_text else ""
+                    seed = rest.strip() if rest.strip() else ""
+                clean = re.sub(r"\s+", " ", seed).strip()
+                new_title = (clean[:24] + ("…" if len(clean) > 24 else "")) if clean else "新任务"
                 if new_title:
                     db.update_session(sid, title=new_title, title_auto=1)
         db.add_message(sid, "user", {"text": user_text})
@@ -461,12 +466,21 @@ class SessionHub:
         msgs = db.list_messages(sid)
         users = [m for m in msgs if m["role"] == "user"]
         parts = []
+        seed = ""
         if users:
-            first_text = str((users[0].get("content") or {}).get("text", ""))[:120]
-            if first_text.strip():
-                parts.append("用户：" + first_text)
+            raw_first = str((users[0].get("content") or {}).get("text", ""))
+            # skill 前言（编排指令）很长且固定，会污染标题；超阈值则剥掉前言只取附加需求。
+            if len(raw_first) >= config.TITLE_SKIP_PREFIX_CHARS:
+                rest = raw_first.split("\n\n", 1)[1] if "\n\n" in raw_first else ""
+                if rest.strip():
+                    seed = rest.strip()[:120]
+                # 纯 skill 无附加需求则跳过首条，交给后续 recent 覆盖
+            else:
+                seed = raw_first[:120]
+            if seed.strip():
+                parts.append("用户：" + seed)
         recent = [m for m in msgs if m["role"] in ("user", "assistant")][-6:]
-        seen = {str((users[0].get("content") or {}).get("text", ""))[:120]} if users else set()
+        seen = {seed} if seed else set()
         for m in recent:
             who = "用户" if m["role"] == "user" else "助手"
             txt = str((m.get("content") or {}).get("text", ""))[:120 if who == "用户" else 200]

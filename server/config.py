@@ -73,6 +73,9 @@ SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "60"))
 TITLE_REFRESH_ENABLED = os.environ.get("TITLE_REFRESH_ENABLED", "true").lower() == "true"
 TITLE_EARLY_TURNS = int(os.environ.get("TITLE_EARLY_TURNS", "3"))
 TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "5"))
+# 首条 user 消息超过该字数则视为 skill 固定前言（编排指令），起标题时跳过前言只取附加需求。
+# 正常手输极少这么长；skill 前言（SKILL.md）动辄上千字。
+TITLE_SKIP_PREFIX_CHARS = int(os.environ.get("TITLE_SKIP_PREFIX_CHARS", "400"))
 
 # ---- 图片上传（手机拍照/截图发给 Agent）----
 # 存到会话 workdir 下的子目录，tclaude 用 Read 工具读图。
