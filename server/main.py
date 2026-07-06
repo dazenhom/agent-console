@@ -120,6 +120,8 @@ async def set_session_workdir(sid: str, payload: dict):
 
 @app.delete("/api/sessions/{sid}", dependencies=[Depends(require_auth)])
 async def remove_session(sid: str):
+    if not db.get_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
     linked = db.todos_linked_to_session(sid)
     if linked:
         raise HTTPException(

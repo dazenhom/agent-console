@@ -238,8 +238,10 @@ def list_sessions(include_archived: bool = False, archived_only: bool = False) -
     if sids:
         placeholders = ",".join("?" * len(sids))
         link_rows = _query(
-            f"SELECT session_id, COUNT(*) AS c FROM todo_sessions"
-            f" WHERE session_id IN ({placeholders}) GROUP BY session_id",
+            f"SELECT ts.session_id, COUNT(*) AS c FROM todo_sessions ts"
+            f" JOIN todos t ON t.id = ts.todo_id"
+            f" WHERE ts.session_id IN ({placeholders}) AND (t.archived = 0 OR t.archived IS NULL)"
+            f" GROUP BY ts.session_id",
             tuple(sids),
         )
         for lr in link_rows:
@@ -250,10 +252,10 @@ def list_sessions(include_archived: bool = False, archived_only: bool = False) -
 
 
 def todos_linked_to_session(session_id: str) -> list[str]:
-    """返回关联了该会话的看板任务标题列表（用于删除保护提示）。"""
+    """返回关联了该会话的【未归档】看板任务标题列表（归档任务不锁定会话，避免死锁）。"""
     rows = _query(
         "SELECT t.title FROM todo_sessions ts JOIN todos t ON t.id = ts.todo_id"
-        " WHERE ts.session_id = ?",
+        " WHERE ts.session_id = ? AND (t.archived = 0 OR t.archived IS NULL)",
         (session_id,),
     )
     return [r[0] for r in rows]
