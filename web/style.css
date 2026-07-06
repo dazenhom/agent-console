@@ -1505,4 +1505,5 @@ select[multiple] { min-height: 80px; height: auto; }
 .s-del.s-del-locked {
   opacity: 0.35;
   cursor: not-allowed;
+  pointer-events: none;
 }

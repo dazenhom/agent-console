@@ -1514,7 +1514,11 @@
       await loadSessions();
       if (state.sessionView === "archived") await loadArchivedSessions();
       if (state.sessionId) await switchSession(state.sessionId);
-    } catch (e) { toast("删除失败：" + e.message, "error"); }
+    } catch (e) {
+      // 409（会话被看板任务关联）后端 detail 已含完整说明，直接原样提示，比“删除失败：”前缀更清晰
+      if (e.message && e.message.includes("无法删除")) toast(e.message, "info", 2500);
+      else toast("删除失败：" + e.message, "error");
+    }
   }
 
   // 恢复归档会话：回到活跃列表
