@@ -36,6 +36,8 @@
     _histGroups: {},     // 历史渲染专用的 Agent id -> body 映射，跨批次共享以关联加载更早的卡片/结果
     subStreams: {},      // Agent id -> { bubble, text } 子智能体正在流式的气泡（各卡片独立打字机）
     subagentExpanded: false, // 全局开关：是否展开所有子智能体的思考/执行过程
+    searchContentSids: null, // 会话内容搜索命中的 session_id 集合（Set），null 表示未启用/未搜索
+    searchDebounce: null,    // 会话内容搜索的防抖定时器
   };
 
   // ---------------- API ----------------
@@ -261,14 +263,49 @@
     });
   }
 
-  // 会话搜索：按标题实时过滤 Sessions Tab 列表
-  $("session-search").addEventListener("input", (e) => {
-    const q = e.target.value.trim().toLowerCase();
-    document.querySelectorAll("#session-list-all li").forEach((li) => {
-      const t = (li.querySelector(".s-title") || {}).textContent || "";
-      li.style.display = (!q || t.toLowerCase().includes(q)) ? "" : "none";
+  // 会话搜索：标题/进展即时过滤 + 会话内容异步搜索（防抖）
+  const sessionSearchEl = $("session-search");
+  if (sessionSearchEl) {
+    sessionSearchEl.addEventListener("input", () => {
+      const q = (sessionSearchEl.value || "").trim().toLowerCase();
+      // 标题/进展即时过滤
+      applySessionSearch();
+      // 内容搜索防抖 300ms，至少 2 字
+      clearTimeout(state.searchDebounce);
+      state.searchDebounce = setTimeout(async () => {
+        const contentCheck = $("search-in-content");
+        if (!contentCheck || !contentCheck.checked || q.length < 2) {
+          state.searchContentSids = null;
+          applySessionSearch();
+          return;
+        }
+        try {
+          const r = await api("/api/sessions/search?q=" + encodeURIComponent(q) + "&scope=content");
+          state.searchContentSids = new Set(r.session_ids || []);
+        } catch (e) {
+          state.searchContentSids = null;
+        }
+        applySessionSearch();
+      }, 300);
     });
-  });
+  }
+
+  const searchClearBtn = $("session-search-clear");
+  if (searchClearBtn) {
+    searchClearBtn.onclick = () => {
+      if ($("session-search")) $("session-search").value = "";
+      state.searchContentSids = null;
+      applySessionSearch();
+      if ($("session-search")) $("session-search").focus();
+    };
+  }
+
+  const contentToggle = $("search-in-content");
+  if (contentToggle) {
+    contentToggle.onchange = () => {
+      if ($("session-search")) $("session-search").dispatchEvent(new Event("input"));
+    };
+  }
 
   // Sessions Tab 视图切换：活跃 / 归档
   document.querySelectorAll(".sv-btn").forEach((b) => {
@@ -307,8 +344,7 @@
       sub.textContent = `${state.sessions.length} 个会话 · ${active} 个进行中`;
     }
     // 重新应用 Sessions Tab 的搜索过滤
-    const sq = ($("session-search").value || "").trim().toLowerCase();
-    if (sq) $("session-search").dispatchEvent(new Event("input"));
+    applySessionSearch();
   }
 
   function fillList(ul, sessions, isArchived = false) {
@@ -331,8 +367,70 @@
 
   function renderArchivedSessionList() {
     fillList($("session-list-all"), state.archivedSessions, true);
-    const sq = ($("session-search").value || "").trim().toLowerCase();
-    if (sq) $("session-search").dispatchEvent(new Event("input"));
+    applySessionSearch();
+  }
+
+  // 在文本中高亮首个匹配的查询串（返回转义后的 HTML）
+  function markText(text, q) {
+    if (!q || !text) return escapeHtml(text || "");
+    const lower = text.toLowerCase();
+    const qi = lower.indexOf(q);
+    if (qi < 0) return escapeHtml(text);
+    return escapeHtml(text.slice(0, qi)) +
+           "<mark>" + escapeHtml(text.slice(qi, qi + q.length)) + "</mark>" +
+           escapeHtml(text.slice(qi + q.length));
+  }
+
+  // 高亮某个会话行的标题与摘要（首次调用会缓存原文到 dataset.raw）
+  function highlightRow(li, q) {
+    const t = li.querySelector(".s-title");
+    const sub = li.querySelector(".s-sub");
+    [t, sub].forEach((node) => {
+      if (!node) return;
+      if (node.dataset.raw == null) node.dataset.raw = node.textContent;
+      node.innerHTML = q ? markText(node.dataset.raw, q) : escapeHtml(node.dataset.raw);
+    });
+  }
+
+  // 无匹配时在列表末尾显示/移除空状态提示
+  function toggleNoResult(ul, show) {
+    let tip = ul.querySelector(".search-empty");
+    if (show && !tip) {
+      tip = document.createElement("div");
+      tip.className = "search-empty entity-empty";
+      tip.innerHTML = '<div class="empty-emoji">🔍</div><div>没有匹配的会话</div>';
+      ul.appendChild(tip);
+    } else if (!show && tip) {
+      tip.remove();
+    }
+  }
+
+  // 判断某会话是否命中查询：标题 / 进展(summary+activity) / 会话内容
+  function sessionMatchesQuery(s, q) {
+    if (!q) return true;
+    const inTitle = (s.title || "").toLowerCase().includes(q);
+    const prog = ((s.summary || "") + " " + (s.activity || "")).toLowerCase();
+    const inProg = prog.includes(q);
+    const inContent = state.searchContentSids ? state.searchContentSids.has(s.id) : false;
+    return inTitle || inProg || inContent;
+  }
+
+  // 应用 Sessions Tab 的搜索过滤 + 高亮 + 空状态
+  function applySessionSearch() {
+    const q = (($("session-search") && $("session-search").value) || "").trim().toLowerCase();
+    const clearBtn = $("session-search-clear");
+    if (clearBtn) clearBtn.classList.toggle("hidden", !q);
+    const src = state.sessionView === "archived" ? (state.archivedSessions || []) : (state.sessions || []);
+    const ul = $("session-list-all");
+    if (!ul) return;
+    let visible = 0;
+    ul.querySelectorAll("li").forEach((li) => {
+      const s = src.find((x) => x.id === li.dataset.sid);
+      const hit = s ? sessionMatchesQuery(s, q) : !q;
+      li.style.display = hit ? "" : "none";
+      if (hit) { visible++; highlightRow(li, q); }
+    });
+    toggleNoResult(ul, !!q && visible === 0);
   }
 
   // 单个 Agent 行：状态徽章 + 标题 + 行摘要 + meta（时间 / workdir / 档位）
@@ -766,7 +864,8 @@
         <label>任务标题
           <input id="nt-title" class="form-input" placeholder="输入任务名称…" />
         </label>
-        <label>关联 Agent 会话
+        <div class="form-field">
+          <span class="field-label">关联 Agent 会话</span>
           <div class="session-selector">
             <div class="session-chips-row">
               <div class="session-chips" id="nt-session-chips"></div>
@@ -778,7 +877,7 @@
               <button type="button" class="sp-done-btn" id="nt-session-done-btn">完成 ✓</button>
             </div>
           </div>
-        </label>
+        </div>
         <label>初始状态
           <select id="nt-status" class="form-select">
             <option value="pending">待开始</option>
@@ -830,7 +929,8 @@
         <label>任务描述
           <textarea id="et-desc" class="form-input" rows="3" placeholder="补充说明…">${escapeHtml(t.description || "")}</textarea>
         </label>
-        <label>关联 Agent 会话
+        <div class="form-field">
+          <span class="field-label">关联 Agent 会话</span>
           <div class="session-selector">
             <div class="session-chips-row">
               <div class="session-chips" id="et-session-chips"></div>
@@ -842,7 +942,7 @@
               <button type="button" class="sp-done-btn" id="et-session-done-btn">完成 ✓</button>
             </div>
           </div>
-        </label>
+        </div>
         <label>优先级
           <select id="et-priority" class="form-select">
             <option value="0"${t.priority ? "" : " selected"}>普通</option>

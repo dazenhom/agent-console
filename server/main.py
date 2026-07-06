@@ -63,6 +63,15 @@ async def get_sessions(archived: int = Query(default=0)):
     return db.list_sessions(archived_only=bool(archived))
 
 
+@app.get("/api/sessions/search", dependencies=[Depends(require_auth)])
+async def search_sessions(q: str = Query(...), scope: str = Query(default="content")):
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"session_ids": []}
+    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return {"session_ids": db.search_message_sessions(esc)}
+
+
 @app.post("/api/sessions", dependencies=[Depends(require_auth)])
 async def create_session(payload: dict):
     title = payload.get("title", "新会话")
@@ -465,7 +474,6 @@ async def todos_create(payload: dict):
 
 @app.put("/api/todos/{tid}", dependencies=[Depends(require_auth)])
 async def todos_update(tid: str, payload: dict):
-    print(f"[DBG todos_update] tid={tid} payload={payload}", flush=True)  # TEMP: 排查多会话关联
     if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
         raise HTTPException(status_code=404, detail="待办不存在")
     fields = {k: payload[k] for k in ("title", "description", "status", "priority", "session_id") if k in payload}

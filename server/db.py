@@ -290,6 +290,18 @@ def list_messages(session_id: str) -> list[dict]:
     return out
 
 
+def search_message_sessions(q: str, limit: int = 200) -> list:
+    """按内容子串匹配 messages.content，返回去重后的 session_id 列表。"""
+    like = f"%{q}%"
+    rows = _query(
+        "SELECT DISTINCT session_id FROM messages "
+        "WHERE content LIKE ? ESCAPE '\\' "
+        "ORDER BY created_at DESC LIMIT ?",
+        (like, limit),
+    )
+    return [r[0] for r in rows if r[0]]
+
+
 # ---------- tasks ----------
 def start_task(session_id: str, summary: str) -> str:
     tid = new_id()
@@ -428,6 +440,7 @@ def list_todo_session_ids(todo_id: str) -> list:
 
 def set_todo_sessions(todo_id: str, session_ids: list) -> None:
     """覆盖式设置任务关联会话；同步把主会话（列表第一个）写回 todos.session_id。"""
+    print(f"[DBG set_todo_sessions] todo={todo_id} incoming session_ids={session_ids!r}", flush=True)  # TEMP 排查
     now = _now()
     with _lock:
         # 先取该 todo 当前已关联的所有 session_id（作为白名单，保留孤儿关联）
@@ -447,6 +460,7 @@ def set_todo_sessions(todo_id: str, session_ids: list) -> None:
             )
             # 合法 = 在 sessions 表里 OR 本来就已关联（保留孤儿关联，不静默删）
             session_ids = [s for s in session_ids if s in valid or s in existing]
+        print(f"[DBG set_todo_sessions] after filter -> will write {session_ids!r}", flush=True)  # TEMP 排查
         for sid in session_ids:
             _conn.execute(
                 "INSERT OR IGNORE INTO todo_sessions (todo_id, session_id, created_at) VALUES (?,?,?)",

@@ -461,6 +461,24 @@ body.hub-resizing {
   border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font-size: 15px;
 }
 .list-pane .session-search::placeholder { color: var(--muted-2); }
+.search-box { position: relative; display: flex; align-items: center; }
+.search-box .session-search { flex: 1; }
+.search-clear {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  border: none; background: transparent; color: var(--muted-2, #aaa);
+  font-size: 18px; cursor: pointer; line-height: 1; padding: 0 4px;
+}
+.search-clear.hidden { display: none; }
+.search-scope {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted, #888); margin: 4px 0 12px;
+  cursor: pointer; user-select: none;
+}
+.s-title mark, .s-sub mark {
+  background: rgba(255, 200, 0, 0.25); color: inherit;
+  padding: 0 1px; border-radius: 2px;
+}
+.search-empty { padding: 32px 16px; text-align: center; color: var(--muted, #888); }
 .session-view-toggle { display: flex; gap: 6px; margin-bottom: 12px; }
 .sv-btn {
   flex: 1; padding: 7px 0; border: 1px solid var(--line); border-radius: 10px;
@@ -555,6 +573,9 @@ body.hub-resizing {
 /* 表单 */
 .entity-form { display: flex; flex-direction: column; gap: 14px; max-width: 720px; }
 .entity-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+/* 会话选择器容器：与 label 同样的竖排布局，但不是 <label>，避免点击被劫持到内部输入框 */
+.entity-form .form-field { display: flex; flex-direction: column; gap: 6px; }
+.entity-form .form-field > .field-label { font-size: 13px; color: var(--muted); }
 .entity-form input, .entity-form textarea, .entity-form select {
   padding: 12px 13px; border-radius: 11px; border: 1px solid var(--line);
   background: var(--bg-2); color: var(--text); font-size: 15px; font-family: inherit; width: 100%;
