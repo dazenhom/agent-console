@@ -467,7 +467,12 @@ body.hub-resizing {
   position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
   border: none; background: transparent; color: var(--muted-2, #aaa);
   font-size: 18px; cursor: pointer; line-height: 1; padding: 0 4px;
+  border-radius: 6px;
 }
+.search-clear:hover { color: var(--muted, #888); }
+/* 去掉聚焦时浏览器默认的蓝色方框轮廓，改用柔和的背景高亮 */
+.search-clear:focus { outline: none; }
+.search-clear:focus-visible { outline: none; background: var(--accent-soft, #e8f0fe); }
 .search-clear.hidden { display: none; }
 .search-scope {
   display: flex; align-items: center; gap: 6px;
@@ -1495,3 +1500,9 @@ select[multiple] { min-height: 80px; height: auto; }
   border-radius: 6px;
 }
 .jump-item:hover { background: var(--accent-soft, #e8f0fe); }
+
+/* 被看板任务关联、无法删除的会话：删除按钮弱化为锁定态 */
+.s-del.s-del-locked {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

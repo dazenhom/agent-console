@@ -535,13 +535,16 @@
       // 归档视图：恢复 + 彻底删除（不提供速览，避免误切到已归档会话）
       const restore = el("button", "s-peek", "↩"); restore.title = "恢复到活跃列表";
       restore.onclick = (e) => { e.stopPropagation(); unarchiveSession(s.id); };
-      const del = el("button", "s-del", "×"); del.title = "彻底删除";
+      const del = el("button", "s-del", "×");
+      if (s.linked_todo_count > 0) { del.classList.add("s-del-locked"); del.title = "已被看板任务关联，无法删除"; }
+      else { del.title = "彻底删除"; }
       del.onclick = async (e) => { e.stopPropagation(); await deleteSession(s.id); };
       actions.append(restore, del);
     } else {
       const peek = el("button", "s-peek", "👁"); peek.title = "速览 / 不切会话回复";
       peek.onclick = (e) => { e.stopPropagation(); openPeek(s.id); };
       const del = el("button", "s-del", "×");
+      if (s.linked_todo_count > 0) { del.classList.add("s-del-locked"); del.title = "已被看板任务关联，无法删除"; }
       del.onclick = async (e) => { e.stopPropagation(); await deleteSession(s.id); };
       actions.append(peek, del);
     }
@@ -778,7 +781,8 @@
 
   // 实际执行跳转到某个会话（带存在性校验）
   function doJumpToSession(sid) {
-    const sess = (state.sessions || []).find((s) => s.id === sid);
+    const sess = (state.sessions || []).find((s) => s.id === sid)
+              || (state.archivedSessions || []).find((s) => s.id === sid);
     if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
     else toast("会话不存在", "info", 1500);
   }
@@ -789,7 +793,8 @@
     root.innerHTML = "";
     const card = el("div", "modal-card");
     const items = sessionIds.map((sid, i) => {
-      const s = (state.sessions || []).find((x) => x.id === sid);
+      const s = (state.sessions || []).find((x) => x.id === sid)
+             || (state.archivedSessions || []).find((x) => x.id === sid);
       const name = s ? (s.title || sid.slice(0, 10)) : sid.slice(0, 10);
       const primary = i === 0;  // 第一个为主会话
       return `<div class="sp-item jump-item" data-sid="${escapeAttr(sid)}">
@@ -1495,6 +1500,10 @@
   async function deleteSession(id) {
     const s = state.sessions.find((x) => x.id === id)
            || state.archivedSessions.find((x) => x.id === id);
+    if (s && s.linked_todo_count > 0) {
+      toast("该会话已被智能看板任务关联，无法删除。请先在看板中解除关联。", "info", 2500);
+      return;
+    }
     const yes = await confirmDialog(`确定删除会话「${s ? s.title : id}」？历史记录将一并清除。`, { okText: "删除", danger: true });
     if (!yes) return;
     try {
