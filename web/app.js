@@ -313,7 +313,7 @@
       state.sessionView = b.dataset.view;
       document.querySelectorAll(".sv-btn").forEach((x) => x.classList.toggle("active", x === b));
       if (state.sessionView === "archived") loadArchivedSessions();
-      else fillList($("session-list-all"), state.sessions);
+      else { fillList($("session-list-all"), state.sessions); applySessionSearch(); }
     };
   });
 
