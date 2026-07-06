@@ -2528,9 +2528,10 @@
     const root = $("modal-root");
     root.innerHTML = "";
     const box = el("div", "img-viewer");
+    const dlUrl = src.includes('?') ? src + '&download=1' : src + '?download=1';
     box.innerHTML = `<img src="${escapeAttr(src)}" alt="" />
       <div class="img-cap">${escapeHtml(caption || "")}</div>
-      <a class="img-dl" href="${escapeAttr(src + "&download=1")}" download>下载</a>`;
+      <a class="img-dl" href="${escapeAttr(dlUrl)}" download>下载</a>`;
     root.appendChild(box);
     root.classList.remove("hidden");
     requestAnimationFrame(() => root.classList.add("show"));
@@ -3672,7 +3673,7 @@
     text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
       const clean = url.replace(/&amp;/g, "&");
       return /^https?:\/\//.test(clean)
-        ? `<img class="msg-img" src="${escapeAttr(clean)}" alt="${escapeAttr(alt)}" loading="lazy" />`
+        ? `<img class="msg-img" src="${escapeAttr(clean)}" alt="${alt}" loading="lazy" />`
         : m;
     });
     text = text.replace(/(^|\s)(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp)(?:\?[^\s)]*)?)(?=\s|$)/gi, (m, pre, url) => {
