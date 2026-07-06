@@ -405,6 +405,7 @@
       const t = document.createTextNode(m.textContent);
       m.parentNode.replaceChild(t, m);
     });
+    chat.normalize();
   }
 
   // 在单个元素的文本节点里包裹命中片段，返回其中第一个 <mark>（供滚动定位）
@@ -1626,7 +1627,7 @@
       // 若带着待高亮词进入，扩大首屏窗口以覆盖首个命中，避免命中落在未渲染的更早区间
       if (q) {
         const mi = firstMatchIdx(msgs, q);
-        if (mi >= 0) shown = Math.max(shown, msgs.length - mi);
+        if (mi >= 0) shown = Math.min(msgs.length, Math.max(shown, msgs.length - mi + 20));
       }
       state.histShown = shown;
       const start = msgs.length - state.histShown;
@@ -1644,6 +1645,7 @@
         scrollBottom(true);
       }
     } catch (e) {
+      state.pendingHighlight = null;
       chat.innerHTML = "";
       toast("加载历史失败：" + e.message, "error");
     }
