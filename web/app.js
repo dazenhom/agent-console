@@ -23,7 +23,7 @@
     wasDisconnected: false,
     monitorWs: null,     // 监控通道 WS（会话列表实时状态）
     monitorTimer: null,
-    pendingImages: [],   // 待发送的图片，每项为 { path: 绝对路径, dataUrl: base64预览 }
+    pendingImages: [],   // 待发送的附件，每项为 { path, dataUrl, kind: "image"|"file", name }
     tab: "overview",     // 当前激活的顶部 Tab
     taskBySession: {},   // session_id -> 最近一条 task（用于派生状态徽章/看板计数）
     toolIdMap: {},       // tool_use_id -> tool_name（用于 tool_result 反查工具名）
@@ -3240,10 +3240,14 @@
       const ok = await waitWsOpen(3000);
       if (!ok) { renderMessage("error", { message: "连接断开，请稍后重试" }); return; }
     }
-    // 有待发图片：把路径拼进消息（tclaude 用 Read 读这些图）
+    // 有待发附件：把路径拼进消息（tclaude 用 Read 读这些文件）
     if (imgs.length) {
-      const lines = imgs.map((im) => `图片：${im.path}`).join("\n");
-      text = text ? `${lines}\n${text}` : `${lines}\n请查看上面的图片。`;
+      const lines = imgs.map((im) =>
+        im.kind === "image" || im.dataUrl
+          ? `图片：${im.path}`
+          : `文件：${im.name}（${im.path}）`
+      ).join("\n");
+      text = text ? `${lines}\n${text}` : `${lines}\n请查看上面的附件。`;
     }
     // 运行中发送 → 服务端入队，不本地渲染气泡也不切运行态；靠 queue_update 广播刷新托盘。
     const queued = state.running;
@@ -3355,6 +3359,35 @@
       inp.value = "";  // 允许连续选同一张
       for (const f of files) await uploadOneImage(f);
     };
+    // 附件按钮：支持任意文件（图片缩略图预览，其他显示图标+文件名）
+    const fileBtn = $("file-btn");
+    const fileInp = $("file-input");
+    if (fileBtn && fileInp) {
+      fileBtn.onclick = () => { if (!state.sessionId) { toast("请先选择会话", "info"); return; } fileInp.click(); };
+      fileInp.onchange = async () => {
+        const files = Array.from(fileInp.files || []);
+        fileInp.value = "";  // 允许连续选同一文件
+        for (const f of files) await uploadOneFile(f);
+      };
+    }
+  }
+
+  // 聊天区拖拽上传：拖入文件即上传为待发附件
+  function initDrop() {
+    const chatEl = $("chat") || $("app-view");
+    if (!chatEl) return;
+    chatEl.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      chatEl.classList.add("drag-over");
+    });
+    chatEl.addEventListener("dragleave", () => chatEl.classList.remove("drag-over"));
+    chatEl.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      chatEl.classList.remove("drag-over");
+      if (!state.sessionId) { toast("请先选择会话", "info"); return; }
+      const files = Array.from(e.dataTransfer && e.dataTransfer.files || []);
+      for (const f of files) await uploadOneFile(f);
+    });
   }
 
   async function uploadOneImage(file) {
@@ -3372,9 +3405,46 @@
         method: "POST",
         body: JSON.stringify({ session_id: state.sessionId, image: dataUrl, mime: file.type, name: file.name }),
       });
-      state.pendingImages.push({ path: r.abs || r.path, dataUrl });
+      state.pendingImages.push({ path: r.abs || r.path, dataUrl, kind: "image", name: r.name || file.name });
       renderImageTray();
       toast("图片已就绪，可加文字一起发送", "success", 1800);
+    } catch (e) {
+      toast("上传失败：" + (e.message || e), "error", 3000);
+    }
+  }
+
+  // 上传任意文件（含图片）：图片存 dataUrl 做缩略图，其他文件只记路径+文件名
+  async function uploadOneFile(file) {
+    if (!file) return;
+    if (!state.sessionId) { toast("请先选择会话", "info"); return; }
+    if (file.size > 10 * 1024 * 1024) { toast("文件过大（上限 10MB）", "error"); return; }
+    const isImage = (file.type || "").startsWith("image/");
+    const tip = toast("上传中…", "info", 8000);
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(fr.result);
+        fr.onerror = () => rej(fr.error);
+        fr.readAsDataURL(file);
+      });
+      const b64 = String(dataUrl).split(",")[1] || "";
+      const r = await api("/api/upload", {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: state.sessionId,
+          file: b64,
+          mime: file.type || "application/octet-stream",
+          name: file.name,
+        }),
+      });
+      state.pendingImages.push({
+        path: r.abs || r.path,
+        dataUrl: isImage ? dataUrl : null,
+        kind: isImage ? "image" : "file",
+        name: r.name || file.name,
+      });
+      renderImageTray();
+      toast("文件已就绪，可加文字一起发送", "success", 1800);
     } catch (e) {
       toast("上传失败：" + (e.message || e), "error", 3000);
     }
@@ -3387,13 +3457,26 @@
     tray.innerHTML = "";
     if (!state.pendingImages.length) { tray.classList.add("hidden"); return; }
     state.pendingImages.forEach((im, idx) => {
-      const chip = el("div", "img-chip");
-      const image = document.createElement("img");
-      image.src = im.dataUrl;
-      const x = el("button", "img-chip-del", "×");
-      x.onclick = () => { state.pendingImages.splice(idx, 1); renderImageTray(); };
-      chip.append(image, x);
-      tray.appendChild(chip);
+      const del = () => { state.pendingImages.splice(idx, 1); renderImageTray(); };
+      if (im.kind === "image" || im.dataUrl) {
+        const chip = el("div", "img-chip");
+        const image = document.createElement("img");
+        image.src = im.dataUrl;
+        const x = el("button", "img-chip-del", "×");
+        x.onclick = del;
+        chip.append(image, x);
+        tray.appendChild(chip);
+      } else {
+        const chip = el("div", "file-chip");
+        const icon = el("span", null, "📄");
+        const nameEl = el("span", "file-chip-name");
+        nameEl.textContent = im.name || "文件";
+        nameEl.title = im.name || "";
+        const x = el("button", "img-chip-del", "×");
+        x.onclick = del;
+        chip.append(icon, nameEl, x);
+        tray.appendChild(chip);
+      }
     });
     tray.classList.remove("hidden");
   }
@@ -4151,6 +4234,7 @@
     updateVoiceSendBtn();
     initMic();
     initImage();
+    initDrop();
     switchTab("overview", true);  // 只切 UI，数据由下面串行加载，不重复请求
     initHubResizer();
     await loadTasks();      // 先建 taskBySession 映射，再 loadSessions 才能算对徽章/看板
