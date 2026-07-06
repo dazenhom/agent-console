@@ -478,6 +478,15 @@ body.hub-resizing {
   background: rgba(255, 200, 0, 0.25); color: inherit;
   padding: 0 1px; border-radius: 2px;
 }
+.chat mark.chat-hit {
+  background: rgba(255, 200, 0, 0.35);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+.chat mark.chat-hit:first-of-type {
+  box-shadow: 0 0 0 2px rgba(255, 180, 0, 0.5);
+}
 .search-empty { padding: 32px 16px; text-align: center; color: var(--muted, #888); }
 .session-view-toggle { display: flex; gap: 6px; margin-bottom: 12px; }
 .sv-btn {

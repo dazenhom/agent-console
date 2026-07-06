@@ -38,6 +38,7 @@
     subagentExpanded: false, // 全局开关：是否展开所有子智能体的思考/执行过程
     searchContentSids: null, // 会话内容搜索命中的 session_id 集合（Set），null 表示未启用/未搜索
     searchDebounce: null,    // 会话内容搜索的防抖定时器
+    pendingHighlight: null,  // 从搜索结果切入会话后，待在消息内高亮/跳转的查询词，用后即清
   };
 
   // ---------------- API ----------------
@@ -381,6 +382,75 @@
            escapeHtml(text.slice(qi + q.length));
   }
 
+  // 取一条消息用于内容搜索的可比对文本（仅 user/assistant 的正文参与命中）
+  function msgSearchText(m) {
+    if (m.role === "user" || m.role === "assistant") return (m.content && m.content.text) || "";
+    return "";
+  }
+
+  // 在消息数组里找到首个命中 q 的下标，未命中返回 -1
+  function firstMatchIdx(msgs, q) {
+    for (let i = 0; i < msgs.length; i++) {
+      const t = msgSearchText(msgs[i]).toLowerCase();
+      if (t && t.includes(q)) return i;
+    }
+    return -1;
+  }
+
+  // 清除聊天区里之前注入的高亮 <mark>，把文本还原（避免重复渲染叠加）
+  function clearChatHighlights() {
+    const chat = $("chat");
+    if (!chat) return;
+    chat.querySelectorAll("mark.chat-hit").forEach((m) => {
+      const t = document.createTextNode(m.textContent);
+      m.parentNode.replaceChild(t, m);
+    });
+  }
+
+  // 在单个元素的文本节点里包裹命中片段，返回其中第一个 <mark>（供滚动定位）
+  function highlightTextInEl(root, q) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    const targets = [];
+    let n;
+    while ((n = walker.nextNode())) {
+      if (n.parentElement && n.parentElement.closest("mark.chat-hit")) continue;
+      if (n.nodeValue.toLowerCase().includes(q)) targets.push(n);
+    }
+    let firstMark = null;
+    for (const textNode of targets) {
+      const text = textNode.nodeValue;
+      const lower = text.toLowerCase();
+      const frag = document.createDocumentFragment();
+      let idx = 0, hit;
+      while ((hit = lower.indexOf(q, idx)) >= 0) {
+        if (hit > idx) frag.appendChild(document.createTextNode(text.slice(idx, hit)));
+        const mark = document.createElement("mark");
+        mark.className = "chat-hit";
+        mark.textContent = text.slice(hit, hit + q.length);
+        frag.appendChild(mark);
+        if (!firstMark) firstMark = mark;
+        idx = hit + q.length;
+      }
+      if (idx < text.length) frag.appendChild(document.createTextNode(text.slice(idx)));
+      textNode.parentNode.replaceChild(frag, textNode);
+    }
+    return firstMark;
+  }
+
+  // 高亮聊天区里所有 user/assistant 气泡内的命中，返回首个 <mark>
+  function highlightChat(q) {
+    clearChatHighlights();
+    const chat = $("chat");
+    if (!chat) return null;
+    const bubbles = chat.querySelectorAll(".msg.user .bubble, .msg.assistant .bubble");
+    let first = null;
+    bubbles.forEach((b) => {
+      const m = highlightTextInEl(b, q);
+      if (!first && m) first = m;
+    });
+    return first;
+  }
+
   // 高亮某个会话行的标题与摘要（首次调用会缓存原文到 dataset.raw）
   function highlightRow(li, q) {
     const t = li.querySelector(".s-title");
@@ -452,7 +522,12 @@
     if (s.workdir) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, shortDir(s.workdir))); }
     if (s.mode) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, modeLabel(s.mode))); }
     main.append(row1, sub, meta);
-    main.onclick = () => { switchSession(s.id); openDetail(); };
+    main.onclick = () => {
+      const q = (($("session-search") && $("session-search").value) || "").trim().toLowerCase();
+      state.pendingHighlight = (q.length >= 2 && sessionMatchesQuery(s, q)) ? q : null;
+      switchSession(s.id);
+      openDetail();
+    };
 
     const actions = el("div", "s-actions");
     if (isArchived) {
@@ -1546,11 +1621,28 @@
       }
       // 暂存全量，先渲染末尾窗口；更早的通过顶部按钮按需补渲染
       state.histMsgs = msgs;
-      state.histShown = Math.min(HISTORY_WINDOW, msgs.length);
+      const q = state.pendingHighlight;
+      let shown = Math.min(HISTORY_WINDOW, msgs.length);
+      // 若带着待高亮词进入，扩大首屏窗口以覆盖首个命中，避免命中落在未渲染的更早区间
+      if (q) {
+        const mi = firstMatchIdx(msgs, q);
+        if (mi >= 0) shown = Math.max(shown, msgs.length - mi);
+      }
+      state.histShown = shown;
       const start = msgs.length - state.histShown;
       if (start > 0) renderLoadEarlierBtn(start);
       for (let i = start; i < msgs.length; i++) appendMessageGrouped(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
-      scrollBottom(true);
+      if (q) {
+        const firstMark = highlightChat(q);
+        state.pendingHighlight = null;
+        if (firstMark) {
+          requestAnimationFrame(() => firstMark.scrollIntoView({ block: "center", behavior: "smooth" }));
+        } else {
+          scrollBottom(true);
+        }
+      } else {
+        scrollBottom(true);
+      }
     } catch (e) {
       chat.innerHTML = "";
       toast("加载历史失败：" + e.message, "error");
