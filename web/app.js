@@ -3686,7 +3686,8 @@
     });
     // 本地图片路径（绝对路径或 ~/ 开头），转成 API 地址内联渲染
     text = text.replace(/(^|\s)([~/][^\s]*\.(?:png|jpe?g|gif|svg|webp|bmp))(?=\s|$)/gi, (m, pre, path) => {
-      return `${pre}<img class="msg-img" src="${escapeAttr(fileUrl(path))}" alt="${escapeAttr(path)}" loading="lazy" />`;
+      const cleanPath = path.replace(/&amp;/g, '&');
+      return `${pre}<img class="msg-img" src="${escapeAttr(fileUrl(cleanPath))}" alt="${escapeAttr(cleanPath)}" loading="lazy" />`;
     });
     // 链接 [文字](url)：url 转义后 & 变 &amp;，先还原再校验，只放行 http/https
     text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
