@@ -229,10 +229,15 @@ class SessionHub:
             cur_title = sess.get("title", "") or ""
             if not cur_title or cur_title.startswith("新会话"):
                 # skill 前言（编排指令）很长，直接截会得到乱码标题；剥掉前言只取附加需求。
+                # 附加需求由 skill_store.expand() 拼在最后一个 \n\n 之后，故从末尾切；
+                # 且前半段自身要够长才算 skill body，否则整条都是 body（无附加需求）。
                 seed = user_text
                 if len(user_text) >= config.TITLE_SKIP_PREFIX_CHARS:
-                    rest = user_text.split("\n\n", 1)[1] if "\n\n" in user_text else ""
-                    seed = rest.strip() if rest.strip() else ""
+                    parts = user_text.rsplit("\n\n", 1)
+                    if len(parts) == 2 and len(parts[0]) >= config.TITLE_SKIP_PREFIX_CHARS:
+                        seed = parts[1].strip()
+                    else:
+                        seed = ""
                 clean = re.sub(r"\s+", " ", seed).strip()
                 new_title = (clean[:24] + ("…" if len(clean) > 24 else "")) if clean else "新任务"
                 if new_title:
@@ -470,17 +475,22 @@ class SessionHub:
         if users:
             raw_first = str((users[0].get("content") or {}).get("text", ""))
             # skill 前言（编排指令）很长且固定，会污染标题；超阈值则剥掉前言只取附加需求。
+            # 附加需求拼在最后一个 \n\n 之后，故从末尾切；前半段够长才算 skill body。
             if len(raw_first) >= config.TITLE_SKIP_PREFIX_CHARS:
-                rest = raw_first.split("\n\n", 1)[1] if "\n\n" in raw_first else ""
-                if rest.strip():
-                    seed = rest.strip()[:120]
-                # 纯 skill 无附加需求则跳过首条，交给后续 recent 覆盖
+                parts_split = raw_first.rsplit("\n\n", 1)
+                if len(parts_split) == 2 and len(parts_split[0]) >= config.TITLE_SKIP_PREFIX_CHARS:
+                    seed = parts_split[1].strip()[:120]
+                # 纯 skill 无附加需求则 seed 为空，跳过首条，交给后续 recent 覆盖
             else:
                 seed = raw_first[:120]
             if seed.strip():
                 parts.append("用户：" + seed)
         recent = [m for m in msgs if m["role"] in ("user", "assistant")][-6:]
-        seen = {seed} if seed else set()
+        seen = set()
+        if users:
+            if seed:
+                seen.add(seed)
+            seen.add(raw_first[:120])  # 始终阻止原始首条经 recent 重新混入
         for m in recent:
             who = "用户" if m["role"] == "user" else "助手"
             txt = str((m.get("content") or {}).get("text", ""))[:120 if who == "用户" else 200]
