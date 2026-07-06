@@ -720,6 +720,7 @@ async def upload_image(payload: dict):
     用 JSON+base64 而非 multipart，与 /api/asr 一致，绕过反向代理的 body 限制。
     tclaude 之后用 Read 工具读这个路径的图。
     """
+    import os
     import time as _t
     from pathlib import Path as _P
     from .fs_util import safe_path_under
@@ -729,9 +730,10 @@ async def upload_image(payload: dict):
     if not sess:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    b64 = payload.get("image", "")
+    # 兼容新旧字段：file（任意文件）优先，image（旧图片上传）兜底
+    b64 = payload.get("file") or payload.get("image", "")
     if not b64:
-        raise HTTPException(status_code=400, detail="缺少 image 字段")
+        raise HTTPException(status_code=400, detail="缺少 file 字段")
     mime = payload.get("mime", "")
     if b64.startswith("data:"):
         head, _, b64 = b64.partition(",")
@@ -740,24 +742,23 @@ async def upload_image(payload: dict):
     try:
         raw = base64.b64decode(b64)
     except Exception:
-        raise HTTPException(status_code=400, detail="image 不是合法 base64")
+        raise HTTPException(status_code=400, detail="file 不是合法 base64")
     if not raw:
-        raise HTTPException(status_code=400, detail="空图片")
+        raise HTTPException(status_code=400, detail="空文件")
     if len(raw) > config.UPLOAD_MAX_BYTES:
-        raise HTTPException(status_code=413, detail=f"图片过大（上限 {config.UPLOAD_MAX_BYTES // 1024 // 1024}MB）")
+        raise HTTPException(status_code=413, detail=f"文件过大（上限 {config.UPLOAD_MAX_BYTES // 1024 // 1024}MB）")
 
-    ext = _IMG_MIME_TO_EXT.get(mime.lower(), "")
+    # 扩展名：优先取原名后缀并做安全清洗，其次按 mime 映射，最后兜底
+    orig_name = payload.get("name") or "upload"
+    _, ext = os.path.splitext(orig_name)
+    ext = "".join(c for c in ext if c.isalnum() or c == ".")[:10]
+    if not ext or ext == ".":
+        ext = _IMG_MIME_TO_EXT.get(mime.lower(), "")
     if not ext:
-        # 从原名兜底取扩展名
-        orig = (payload.get("name") or "").lower()
-        for e in _IMG_UPLOAD_EXTS:
-            if orig.endswith(e):
-                ext = e
-                break
-    if not ext:
-        ext = ".png"
+        ext = ".bin"
 
     base = config.UPLOAD_DIR
+    # 落盘丢弃原名（防路径穿越/冲突），仅在返回值里带原名供前端显示
     fname = f"{int(_t.time())}_{db.new_id()}{ext}"
     try:
         target = safe_path_under(base, fname)
@@ -768,7 +769,7 @@ async def upload_image(payload: dict):
         target.write_bytes(raw)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入失败：{e}")
-    return {"path": str(target), "abs": str(target), "bytes": len(raw)}
+    return {"path": str(target), "abs": str(target), "bytes": len(raw), "name": orig_name}
 
 
 # ---------------- 语音识别 ----------------
