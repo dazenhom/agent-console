@@ -231,7 +231,32 @@ def list_sessions(include_archived: bool = False, archived_only: bool = False) -
     elif not include_archived:
         base += " AND (archived=0 OR archived IS NULL)"
     rows = _query(base + " ORDER BY updated_at DESC", ())
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    # 批量补 linked_todo_count（被多少个看板任务关联），供前端置灰删除按钮，避免 N+1
+    sids = [d["id"] for d in result]
+    link_map = {}
+    if sids:
+        placeholders = ",".join("?" * len(sids))
+        link_rows = _query(
+            f"SELECT session_id, COUNT(*) AS c FROM todo_sessions"
+            f" WHERE session_id IN ({placeholders}) GROUP BY session_id",
+            tuple(sids),
+        )
+        for lr in link_rows:
+            link_map[lr[0]] = lr[1]
+    for d in result:
+        d["linked_todo_count"] = link_map.get(d["id"], 0)
+    return result
+
+
+def todos_linked_to_session(session_id: str) -> list[str]:
+    """返回关联了该会话的看板任务标题列表（用于删除保护提示）。"""
+    rows = _query(
+        "SELECT t.title FROM todo_sessions ts JOIN todos t ON t.id = ts.todo_id"
+        " WHERE ts.session_id = ?",
+        (session_id,),
+    )
+    return [r[0] for r in rows]
 
 
 def delete_session(sid: str) -> None:
@@ -239,6 +264,15 @@ def delete_session(sid: str) -> None:
     _exec("DELETE FROM tasks WHERE session_id=?", (sid,))
     _exec("DELETE FROM queue_items WHERE session_id=?", (sid,))
     _exec("DELETE FROM todo_sessions WHERE session_id=?", (sid,))
+    # 主会话字段晋升：关联表已清完该会话，把仍以它为主会话的任务改指向剩余关联的下一个
+    # （无剩余则置 NULL）。否则 todos.session_id 会留悬空引用，导致进展刷新永久失效、徽章虚高。
+    _exec(
+        "UPDATE todos SET session_id = ("
+        "  SELECT session_id FROM todo_sessions WHERE todo_id = todos.id"
+        "  ORDER BY created_at LIMIT 1"
+        ") WHERE session_id = ?",
+        (sid,),
+    )
     _exec("DELETE FROM sessions WHERE id=?", (sid,))
 
 
@@ -440,7 +474,6 @@ def list_todo_session_ids(todo_id: str) -> list:
 
 def set_todo_sessions(todo_id: str, session_ids: list) -> None:
     """覆盖式设置任务关联会话；同步把主会话（列表第一个）写回 todos.session_id。"""
-    print(f"[DBG set_todo_sessions] todo={todo_id} incoming session_ids={session_ids!r}", flush=True)  # TEMP 排查
     now = _now()
     with _lock:
         # 先取该 todo 当前已关联的所有 session_id（作为白名单，保留孤儿关联）
@@ -460,7 +493,6 @@ def set_todo_sessions(todo_id: str, session_ids: list) -> None:
             )
             # 合法 = 在 sessions 表里 OR 本来就已关联（保留孤儿关联，不静默删）
             session_ids = [s for s in session_ids if s in valid or s in existing]
-        print(f"[DBG set_todo_sessions] after filter -> will write {session_ids!r}", flush=True)  # TEMP 排查
         for sid in session_ids:
             _conn.execute(
                 "INSERT OR IGNORE INTO todo_sessions (todo_id, session_id, created_at) VALUES (?,?,?)",

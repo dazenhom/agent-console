@@ -120,6 +120,12 @@ async def set_session_workdir(sid: str, payload: dict):
 
 @app.delete("/api/sessions/{sid}", dependencies=[Depends(require_auth)])
 async def remove_session(sid: str):
+    linked = db.todos_linked_to_session(sid)
+    if linked:
+        raise HTTPException(
+            status_code=409,
+            detail="该会话已被智能看板任务关联，无法删除。请先在看板中解除关联：" + "、".join(linked[:5]),
+        )
     db.delete_session(sid)
     return {"ok": True}
 
