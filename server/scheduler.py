@@ -11,6 +11,7 @@
 时间用本地时区（服务器时间）。next_run 存 epoch 秒。
 """
 import asyncio
+import os
 import time
 from datetime import datetime, timedelta, date
 
@@ -121,6 +122,9 @@ async def _memo_loop():
 
 def start():
     """在 FastAPI lifespan 里调用，挂起后台调度循环。"""
+    # 只有显式设置 RUN_SCHEDULER 的进程才真正跑调度，避免双进程重复调度。
+    if not os.environ.get("RUN_SCHEDULER"):
+        return
     global _task, _sec_task, _memo_task
     if _task is None or _task.done():
         _task = asyncio.ensure_future(_run_loop())

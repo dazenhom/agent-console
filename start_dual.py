@@ -58,5 +58,5 @@ def launch(port, https, logfile, extra_env=None):
 print('启动 Agent Console 双端口：')
 launch(8800, True, 'console.log')       # HTTPS 语音
 # 只让 80 端口进程在启动时对齐僵尸 running 状态，双进程不重复做。
-launch(80, False, 'console_http.log', {'RECONCILE_ON_START': '1'})   # HTTP 日常
+launch(80, False, 'console_http.log', {'RECONCILE_ON_START': '1', 'RUN_SCHEDULER': '1'})   # HTTP 日常
 print('完成。HTTPS: https://<IP>:8800  |  HTTP: http://<IP>:80')
