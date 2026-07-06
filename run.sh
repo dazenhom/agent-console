@@ -110,4 +110,7 @@ if [ ! -x "$CLAUDE_BIN" ]; then
   echo "  [警告] CLAUDE_BIN 不存在或不可执行：$CLAUDE_BIN" >&2
 fi
 
+# 单进程模式默认启用调度器（多进程部署时由外部显式关掉）；用户可 RUN_SCHEDULER=0 禁用
+export RUN_SCHEDULER="${RUN_SCHEDULER:-1}"
+
 exec uvicorn server.main:app --host "$HOST" --port "$PORT" "${_SSL_ARGS[@]}"
