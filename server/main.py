@@ -50,6 +50,22 @@ def require_auth(authorization: str | None = Header(default=None)):
     return True
 
 
+def require_auth_query(
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+):
+    """鉴权：优先 Authorization header，其次 query 参数 token。
+    用于 <img src> 等浏览器直接发起、无法携带 header 的 GET 请求。"""
+    tok = None
+    if authorization and authorization.startswith("Bearer "):
+        tok = authorization[7:]
+    if tok is None:
+        tok = token
+    if not check_token(tok):
+        raise HTTPException(status_code=401, detail="未授权")
+    return True
+
+
 # ---------------- REST ----------------
 @app.post("/api/login")
 async def login(payload: dict):
@@ -642,7 +658,7 @@ _IMG_MIME = {
 }
 
 
-@app.get("/api/file", dependencies=[Depends(require_auth)])
+@app.get("/api/file", dependencies=[Depends(require_auth_query)])
 async def get_file(session_id: str = Query(...), path: str = Query(...), download: int = Query(default=0)):
     """读取会话 workdir 内的文件。图片返回二进制，文本返回内容（JSON）。严格防越界。"""
     from pathlib import Path as _P

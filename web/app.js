@@ -2497,7 +2497,8 @@
   // ---------------- 产物预览 ----------------
   function fileUrl(path, download) {
     return `${BASE}/api/file?session_id=${encodeURIComponent(state.sessionId)}&path=${encodeURIComponent(path)}` +
-      (download ? "&download=1" : "");
+      (download ? "&download=1" : "") +
+      (state.token ? `&token=${encodeURIComponent(state.token)}` : "");
   }
   // 从文本里抽取图片路径（去重，最多 6 个），渲染成缩略图附在消息下方
   function attachArtifacts(node, text) {
