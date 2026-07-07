@@ -1415,7 +1415,21 @@
   function syncModeSelect() {
     const cur = state.sessions.find((s) => s.id === state.sessionId);
     const sel = $("mode-select");
-    if (sel && cur && cur.mode) sel.value = cur.mode;
+    if (!sel || !cur) return;
+    // 旧档位迁移映射（与后端 session_hub 的 _LEGACY_MAP 保持一致）
+    const legacyMap = {
+      fast: "claude-haiku-4-5",
+      strong: "claude-sonnet-4-6",
+      super: "claude-opus-4-8[1m]",
+    };
+    let mode = cur.mode;
+    if (legacyMap[mode]) {
+      // DB 存量旧会话：这些值不是任何 <option>，自动迁移到对应新模型 ID
+      mode = legacyMap[mode];
+      api(`/api/sessions/${cur.id}/mode`, { method: "PATCH", body: JSON.stringify({ mode }) }).catch(() => {});
+      cur.mode = mode;
+    }
+    if (mode) sel.value = mode;
   }
   // 切换档位：持久化到会话（后端 PATCH），下一回合即生效
   $("mode-select").onchange = async (e) => {
