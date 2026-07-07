@@ -3191,10 +3191,6 @@
   function setRunning(running) {
     state.running = running;
     $("cancel-btn").classList.toggle("hidden", !running);
-    $("img-btn").classList.toggle("hidden", running);
-    $("file-btn").classList.toggle("hidden", running);
-    $("mic-btn").classList.toggle("hidden", running);
-    $("memo-quick-btn").classList.toggle("hidden", running);
     const inp = $("input");
     // 运行中不再锁输入：继续输入会排队执行。
     inp.disabled = false;
@@ -3360,15 +3356,6 @@
 
   // ---------------- 图片输入（拍照/选图 → 上传 workdir → 注入路径）----------------
   function initImage() {
-    const btn = $("img-btn");
-    const inp = $("img-input");
-    if (!btn || !inp) return;
-    btn.onclick = () => { if (!state.sessionId) { toast("请先选择会话", "info"); return; } inp.click(); };
-    inp.onchange = async () => {
-      const files = Array.from(inp.files || []);
-      inp.value = "";  // 允许连续选同一张
-      for (const f of files) await uploadOneImage(f);
-    };
     // 附件按钮：支持任意文件（图片缩略图预览，其他显示图标+文件名）
     const fileBtn = $("file-btn");
     const fileInp = $("file-input");
