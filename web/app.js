@@ -3191,6 +3191,10 @@
   function setRunning(running) {
     state.running = running;
     $("cancel-btn").classList.toggle("hidden", !running);
+    $("img-btn").classList.toggle("hidden", running);
+    $("file-btn").classList.toggle("hidden", running);
+    $("mic-btn").classList.toggle("hidden", running);
+    $("memo-quick-btn").classList.toggle("hidden", running);
     const inp = $("input");
     // 运行中不再锁输入：继续输入会排队执行。
     inp.disabled = false;
