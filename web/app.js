@@ -29,6 +29,8 @@
     toolIdMap: {},       // tool_use_id -> tool_name（用于 tool_result 反查工具名）
     histMsgs: [],        // 当前会话全量历史消息（窗口渲染用）
     histShown: 0,        // 已渲染的末尾消息条数
+    histRounds: [],      // groupIntoRounds 的结果（按轮次分组的历史）
+    roundsShown: 0,      // 当前已渲染的轮次数（从末尾往前）
     heartbeatTimer: null, // WS 应用层心跳定时器
     queue: [],           // 当前会话排队待执行的指令
     drafts: {},          // sessionId -> { text: string, images: [{path, dataUrl}] }（草稿按会话隔离）
@@ -1617,13 +1619,65 @@
   };
 
   // ---------------- 历史 ----------------
-  // 只渲染最近 HISTORY_WINDOW 条，顶部按需「加载更早」。长会话（数百上千条 tool 输出）
+  // 历史区按「轮次」分组折叠：一个 round = 从一条 user 消息到下一条 user 消息前的所有消息。
+  // 默认只展开最近一轮，其余折叠；顶部按需「加载更早 N 轮」。长会话（数百上千条 tool 输出）
   // 一次性全量同步渲染会卡死主线程数秒，这是"点进会话卡半天"的根因。
   const HISTORY_WINDOW = 80;
+  const ROUND_WINDOW = 20;  // 「加载更早」每次多渲染的轮次数
+
+  // 把扁平消息数组按「轮次」分组：一个 round 从一条 user 消息起，到下一条 user 消息前为止。
+  // 前导的非 user 消息（老会话偶有）归入一个 userMsg 为 null 的头 round，不丢消息。
+  function groupIntoRounds(msgs) {
+    const rounds = [];
+    let current = null;
+    for (const msg of msgs) {
+      if (msg.role === "user") {
+        if (current) rounds.push(current);
+        current = { userMsg: msg, msgs: [msg], toolCount: 0, ts: msg.created_at };
+      } else {
+        if (!current) current = { userMsg: null, msgs: [], toolCount: 0, ts: msg.created_at };
+        current.msgs.push(msg);
+        if (msg.role === "tool_use") current.toolCount++;
+      }
+    }
+    if (current) rounds.push(current);
+    return rounds;
+  }
+
+  // 单张轮次卡片：head 显示提问首行 + 工具徽章 + 时间，body 里用独立 groups 渲染该轮所有消息。
+  // isOpen 决定初始展开态（默认只最近一轮展开）。点击 head 切换展开/折叠。
+  function renderRoundCard(round, isOpen) {
+    const card = el("div", "round-card");
+    if (isOpen) card.classList.add("open");
+
+    const head = el("div", "round-head");
+    const caret = el("span", "rc-caret", "▸");
+    const firstLine = round.userMsg
+      ? (((round.userMsg.content && round.userMsg.content.text) || "").split("\n")[0] || "(空消息)")
+      : "(前置消息)";
+    const title = el("span", "rc-title", escapeHtml(firstLine.slice(0, 60)));
+    title.title = firstLine;
+    head.append(caret, title);
+    if (round.toolCount > 0) head.appendChild(el("span", "rc-badge", "🔧 " + round.toolCount));
+    head.appendChild(el("span", "rc-time", escapeHtml(fmtClock(round.ts || nowTs()))));
+
+    const body = el("div", "round-body");
+    // 每张卡片用独立的 groups 映射：一轮的 Agent 卡片与其结果都在同一轮内闭合，不跨轮串号
+    const groups = {};
+    for (const m of round.msgs) appendMessageGrouped(body, groups, m.role, m.content, m.created_at);
+
+    head.addEventListener("click", () => {
+      card.classList.toggle("open");
+    });
+
+    card.append(head, body);
+    return card;
+  }
+
   async function loadHistory() {
     const chat = $("chat");
     chat.innerHTML = `<div class="chat-skel">${skeleton(3)}</div>`;
-    state._histGroups = {};  // 重置历史归拢映射，跨批次（首屏 + 加载更早）共享以关联卡片与结果
+    state._histGroups = {};  // 保留：peek 等其它入口仍可能用到；轮次卡片各自持有独立 groups
     try {
       const msgs = await api(`/api/sessions/${state.sessionId}/messages`);
       chat.innerHTML = "";
@@ -1633,19 +1687,30 @@
           `<div class="cw-sub">输入指令，或点下方快捷指令快速开始</div></div>`;
         return;
       }
-      // 暂存全量，先渲染末尾窗口；更早的通过顶部按钮按需补渲染
+      // 暂存全量 + 分轮：先渲染末尾若干轮，更早的通过顶部按钮按需补渲染
       state.histMsgs = msgs;
+      const rounds = groupIntoRounds(msgs);
+      state.histRounds = rounds;
       const q = state.pendingHighlight;
-      let shown = Math.min(HISTORY_WINDOW, msgs.length);
-      // 若带着待高亮词进入，扩大首屏窗口以覆盖首个命中，避免命中落在未渲染的更早区间
+      let shown = Math.min(ROUND_WINDOW, rounds.length);
+      // 若带着待高亮词进入，扩大首屏窗口以覆盖命中所在轮，避免命中落在未渲染的更早轮次
+      let hitRoundIdx = -1;
       if (q) {
         const mi = firstMatchIdx(msgs, q);
-        if (mi >= 0) shown = Math.min(msgs.length, Math.max(shown, msgs.length - mi + 20));
+        if (mi >= 0) {
+          const hitMsg = msgs[mi];
+          hitRoundIdx = rounds.findIndex((r) => r.msgs.includes(hitMsg));
+          if (hitRoundIdx >= 0) shown = Math.max(shown, rounds.length - hitRoundIdx);
+        }
       }
-      state.histShown = shown;
-      const start = msgs.length - state.histShown;
-      if (start > 0) renderLoadEarlierBtn(start);
-      for (let i = start; i < msgs.length; i++) appendMessageGrouped(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+      state.roundsShown = shown;
+      const start = rounds.length - state.roundsShown;
+      if (start > 0) renderLoadEarlierBtn();
+      for (let i = start; i < rounds.length; i++) {
+        // 默认只最近一轮展开；命中轮必须展开以便高亮定位
+        const isOpen = i === rounds.length - 1 || i === hitRoundIdx;
+        chat.appendChild(renderRoundCard(rounds[i], isOpen));
+      }
       if (q) {
         const firstMark = highlightChat(q);
         state.pendingHighlight = null;
@@ -1664,29 +1729,33 @@
     }
   }
 
-  // 顶部「加载更早 N 条」按钮：点一次再往前渲染一个窗口，保持滚动位置不跳。
-  function renderLoadEarlierBtn(remaining) {
+  // 顶部「加载更早 N 轮」按钮：点一次再往前渲染 ROUND_WINDOW 轮，保持滚动位置不跳。
+  function renderLoadEarlierBtn() {
     const chat = $("chat");
+    const rounds = state.histRounds || [];
+    const remaining = rounds.length - state.roundsShown;
+    if (remaining <= 0) {
+      const old = chat.querySelector(".load-earlier");
+      if (old) old.remove();
+      return;
+    }
     let btn = chat.querySelector(".load-earlier");
     if (!btn) {
       btn = el("button", "load-earlier");
       chat.prepend(btn);
     }
-    btn.textContent = `↑ 加载更早消息（剩 ${remaining} 条）`;
+    btn.textContent = `↑ 加载更早（剩 ${remaining} 轮）`;
     btn.onclick = () => {
-      const msgs = state.histMsgs || [];
-      const curStart = msgs.length - state.histShown;
-      const newStart = Math.max(0, curStart - HISTORY_WINDOW);
+      const curStart = rounds.length - state.roundsShown;
+      const newStart = Math.max(0, curStart - ROUND_WINDOW);
       // 记录加载前的滚动高度，渲染后补偿，避免视图跳动
       const prevH = chat.scrollHeight, prevTop = chat.scrollTop;
       const frag = document.createDocumentFragment();
-      // 复用 state._histGroups（跨批次共享），关联更早批次里的 Agent tool_use 与本批 tool_result
-      for (let i = newStart; i < curStart; i++) {
-        appendMessageGrouped(frag, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
-      }
+      // 补渲染的更早轮次默认折叠
+      for (let i = newStart; i < curStart; i++) frag.appendChild(renderRoundCard(rounds[i], false));
       btn.after(frag);
-      state.histShown = msgs.length - newStart;
-      if (newStart > 0) { btn.textContent = `↑ 加载更早消息（剩 ${newStart} 条）`; }
+      state.roundsShown = rounds.length - newStart;
+      if (newStart > 0) { btn.textContent = `↑ 加载更早（剩 ${newStart} 轮）`; }
       else { btn.remove(); }
       chat.scrollTop = prevTop + (chat.scrollHeight - prevH);
     };
