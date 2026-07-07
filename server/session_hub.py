@@ -260,7 +260,7 @@ class SessionHub:
                 await self.broadcast(sid, {"type": "error", "message": err})
                 return f"error:{err}"
             user_text = expanded
-        if mode in ("fast", "strong", "super"):
+        if mode in config.CLAUDE_MODELS or mode in ("fast", "strong", "super"):
             db.update_session(sid, mode=mode)
         await self.start_turn(sid, user_text)
         return "started"
@@ -339,12 +339,13 @@ class SessionHub:
             sess = db.get_session(sid)
             # 模型档位 → 模型名
             sess_mode = (sess or {}).get("mode") or config.CLAUDE_DEFAULT_MODE
-            if sess_mode == "super":
-                model_name = model or config.CLAUDE_MODEL_SUPER
-            elif sess_mode == "strong":
-                model_name = model or config.CLAUDE_MODEL_STRONG
-            else:
-                model_name = model or config.CLAUDE_MODEL_FAST
+            # 旧档位值映射到具体模型；新会话的 mode 本身就是模型 ID，直接用。
+            _LEGACY_MAP = {
+                "fast": config.CLAUDE_MODEL_FAST,
+                "strong": config.CLAUDE_MODEL_STRONG,
+                "super": config.CLAUDE_MODEL_SUPER,
+            }
+            model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
             _turn_fn = runner.send_turn if config.CLAUDE_PERSISTENT else runner.run_turn
             ret = await _turn_fn(
                 session_id=sid,

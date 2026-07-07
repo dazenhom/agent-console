@@ -15,6 +15,9 @@ from .session_hub import hub, Subscriber
 
 _uploads_cleanup_task = None
 
+# 合法 mode：完整模型列表 + 兼容存量的旧档位值。
+_VALID_MODES = set(config.CLAUDE_MODELS) | {"fast", "strong", "super"}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -92,15 +95,15 @@ async def search_sessions(q: str = Query(...), scope: str = Query(default="conte
 async def create_session(payload: dict):
     title = payload.get("title", "新会话")
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
-    mode = payload.get("mode") if payload.get("mode") in ("fast", "strong", "super") else None
+    mode = payload.get("mode") if payload.get("mode") in _VALID_MODES else None
     return db.create_session(title, workdir, mode)
 
 
 @app.patch("/api/sessions/{sid}/mode", dependencies=[Depends(require_auth)])
 async def set_session_mode(sid: str, payload: dict):
     mode = payload.get("mode")
-    if mode not in ("fast", "strong", "super"):
-        raise HTTPException(status_code=400, detail="mode 仅支持 fast / strong / super")
+    if mode not in _VALID_MODES:
+        raise HTTPException(status_code=400, detail="mode 需为合法模型 ID，支持：" + ", ".join(config.CLAUDE_MODELS))
     if not db.get_session(sid):
         raise HTTPException(status_code=404, detail="会话不存在")
     db.update_session(sid, mode=mode)
@@ -904,7 +907,7 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default=""), sess
             return
 
         # 在跑则入队、空闲则直接开跑；skill 展开与档位持久化都下沉到 hub。
-        mode_hint = data.get("mode") if data.get("mode") in ("fast", "strong", "super") else None
+        mode_hint = data.get("mode") if data.get("mode") in _VALID_MODES else None
         await hub.submit_user_message(session_id, user_text, mode_hint)
 
     try:

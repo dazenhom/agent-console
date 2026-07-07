@@ -63,7 +63,7 @@ export ASR2_TIMEOUT="${ASR2_TIMEOUT:-30}"
 export CLAUDE_MODEL_FAST="${CLAUDE_MODEL_FAST:-claude-haiku-4-5}"
 export CLAUDE_MODEL_STRONG="${CLAUDE_MODEL_STRONG:-claude-sonnet-4-6}"
 export CLAUDE_MODEL_SUPER="${CLAUDE_MODEL_SUPER:-claude-opus-4-8[1m]}"
-export CLAUDE_DEFAULT_MODE="${CLAUDE_DEFAULT_MODE:-fast}"
+export CLAUDE_DEFAULT_MODE="${CLAUDE_DEFAULT_MODE:-claude-glm-5.2}"
 
 # Agent 默认工作目录
 export AGENT_WORKDIR="${AGENT_WORKDIR:-$(cd .. && pwd)}"

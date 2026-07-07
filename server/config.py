@@ -51,8 +51,17 @@ CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
 CLAUDE_MODEL_KANBAN = os.environ.get("CLAUDE_MODEL_KANBAN", "claude-hy3-preview")
 CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-4-6")
 CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-4-8[1m]")
-# 新会话默认档位：fast / strong / super。默认 strong（sonnet）——速度与智能平衡，要最强顶栏切 super。
-CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "strong")
+# 前端可选的完整模型列表（mode 直接存模型 ID）。GLM 5.2 放首位作为默认。
+CLAUDE_MODELS = [
+    "claude-glm-5.2", "claude-glm-5.2[1m]",
+    "claude-sonnet-4-6", "claude-sonnet-4-6[1m]",
+    "claude-opus-4-8", "claude-opus-4-8[1m]",
+    "claude-opus-4-7", "claude-opus-4-7[1m]",
+    "claude-opus-4-6", "claude-opus-4-6[1m]",
+    "claude-haiku-4-5", "claude-hy3-preview", "opusplan",
+]
+# 新会话默认模型：GLM 5.2。（旧档位 fast/strong/super 仍兼容，见 session_hub 的 _LEGACY_MAP。）
+CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "claude-glm-5.2")
 # 思考深度（low/medium/high/xhigh/max）。medium 平衡速度与质量；要更深手动调。
 CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "medium")
 # 常驻进程模式：每会话维持一个长生命周期 tclaude 进程（--input-format stream-json），
@@ -81,7 +90,7 @@ TITLE_SKIP_PREFIX_CHARS = int(os.environ.get("TITLE_SKIP_PREFIX_CHARS", "400"))
 # 存到会话 workdir 下的子目录，tclaude 用 Read 工具读图。
 UPLOAD_DIR_NAME = os.environ.get("UPLOAD_DIR_NAME", ".console_uploads")
 UPLOAD_DIR = BASE_DIR / UPLOAD_DIR_NAME
-UPLOAD_MAX_BYTES = int(os.environ.get("UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
+UPLOAD_MAX_BYTES = int(os.environ.get("UPLOAD_MAX_BYTES", str(100 * 1024 * 1024)))
 UPLOAD_TTL_DAYS = int(os.environ.get("UPLOAD_TTL_DAYS", "7"))
 UPLOAD_CLEAN_INTERVAL_HOURS = int(os.environ.get("UPLOAD_CLEAN_INTERVAL_HOURS", "6"))
 
