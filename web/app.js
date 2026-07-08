@@ -1750,15 +1750,6 @@
             mline.textContent = '实际模型：' + t.resolved_model;
             li.appendChild(mline);
           }
-          if (t.remote_session_url) {
-            const a = document.createElement('a');
-            a.className = 't-remote-link';
-            a.textContent = '云端会话 →';
-            a.href = t.remote_session_url;
-            a.target = '_blank';
-            a.rel = 'noopener noreferrer';
-            li.appendChild(a);
-          }
           ul.appendChild(li);
         }
       }

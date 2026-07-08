@@ -184,7 +184,6 @@ def init_db() -> None:
         _add_col("memos", "remind_mode TEXT DEFAULT 'daily'")
         _add_col("memos", "remind_at TEXT DEFAULT ''")
         _add_col("memos", "remind_days_before INTEGER DEFAULT 0")
-        _add_col("tasks", "remote_session_url TEXT")
         _add_col("tasks", "resolved_model TEXT")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
@@ -377,7 +376,7 @@ def list_tasks(limit: int = 30) -> list[dict]:
 
 
 def update_task(tid: str, **fields) -> bool:
-    allowed = {"remote_session_url", "resolved_model", "summary", "status"}
+    allowed = {"resolved_model", "summary", "status"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False

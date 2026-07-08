@@ -541,14 +541,6 @@ body.hub-resizing {
 .task-list li.error { border-left-color: var(--red); }
 .task-list li.running { border-left-color: var(--accent); }
 .task-list .t-meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
-.t-remote-link {
-  display: inline-block;
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--accent, #4a9eff);
-  text-decoration: none;
-}
-.t-remote-link:hover { text-decoration: underline; }
 
 /* ---------- peek 速览面板 ---------- */
 .peek-card { width: min(92vw, 460px); max-height: 80vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; }

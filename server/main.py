@@ -230,27 +230,6 @@ async def get_tasks():
     return db.list_tasks()
 
 
-@app.patch("/api/tasks/{tid}", dependencies=[Depends(require_auth)])
-async def patch_task(tid: str, payload: dict):
-    fields = {}
-    if "remote_session_url" in payload:
-        val = payload.get("remote_session_url")
-        if isinstance(val, str) and val.strip():
-            if not re.match(r'^https?://', val.strip(), re.IGNORECASE):
-                raise HTTPException(status_code=400, detail="remote_session_url 须以 http/https 开头")
-            fields["remote_session_url"] = val.strip()
-        else:
-            fields["remote_session_url"] = None
-    if "resolved_model" in payload:
-        val = payload.get("resolved_model")
-        fields["resolved_model"] = val.strip() if isinstance(val, str) and val.strip() else None
-    if not fields:
-        raise HTTPException(status_code=400, detail="无可更新字段")
-    if not db.update_task(tid, **fields):
-        raise HTTPException(status_code=404, detail="任务不存在")
-    return {"ok": True}
-
-
 @app.get("/api/artifacts", dependencies=[Depends(require_auth)])
 async def get_artifacts(session_id: str = Query(default=None)):
     return db.list_artifacts(session_id)
