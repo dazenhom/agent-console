@@ -1845,8 +1845,7 @@
     if (manage.kind === "artifacts") {
       const newBtn = document.getElementById('manage-new');
       if (newBtn) newBtn.classList.add('hidden');
-      showArtifactList();
-      return;
+      return showArtifactList();
     }
     try {
       const items = await api(apiBase());
@@ -2525,7 +2524,13 @@
     const list = document.getElementById('manage-list');
     if (!list) return;
     list.innerHTML = '<div class="loading">加载中…</div>';
-    const items = await api('/api/artifacts');
+    let items;
+    try {
+      items = await api('/api/artifacts');
+    } catch (e) {
+      list.innerHTML = '<div class="empty-hint">加载失败，请重试</div>';
+      return;
+    }
     if (!items || !items.length) {
       list.innerHTML = '<div class="empty-hint">暂无产出物</div>';
       return;
