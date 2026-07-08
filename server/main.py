@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -234,7 +235,12 @@ async def patch_task(tid: str, payload: dict):
     fields = {}
     if "remote_session_url" in payload:
         val = payload.get("remote_session_url")
-        fields["remote_session_url"] = val.strip() if isinstance(val, str) and val.strip() else None
+        if isinstance(val, str) and val.strip():
+            if not re.match(r'^https?://', val.strip(), re.IGNORECASE):
+                raise HTTPException(status_code=400, detail="remote_session_url 须以 http/https 开头")
+            fields["remote_session_url"] = val.strip()
+        else:
+            fields["remote_session_url"] = None
     if "resolved_model" in payload:
         val = payload.get("resolved_model")
         fields["resolved_model"] = val.strip() if isinstance(val, str) and val.strip() else None
@@ -255,6 +261,8 @@ async def post_artifact(payload: dict):
     url = (payload.get("url") or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="url 不能为空")
+    if not re.match(r'^https?://', url, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="url 须以 http/https 开头")
     pub = payload.get("published_at")
     try:
         pub = float(pub) if pub is not None else None
