@@ -68,7 +68,9 @@ def init_db() -> None:
                 cost_usd REAL,
                 num_turns INTEGER,
                 started_at REAL,
-                ended_at REAL
+                ended_at REAL,
+                remote_session_url TEXT,
+                resolved_model TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_task_session ON tasks(session_id);
@@ -141,6 +143,18 @@ def init_db() -> None:
                 remind_days_before INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_memos_status ON memos(status);
+            CREATE TABLE IF NOT EXISTS artifacts (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                url TEXT NOT NULL,
+                title TEXT DEFAULT '',
+                favicon TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                label TEXT DEFAULT '',
+                published_at REAL,
+                created_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
             """
         )
         # 兼容老库：缺列就补。双进程（80/8800）可能同时启动产生竞态——
@@ -170,6 +184,8 @@ def init_db() -> None:
         _add_col("memos", "remind_mode TEXT DEFAULT 'daily'")
         _add_col("memos", "remind_at TEXT DEFAULT ''")
         _add_col("memos", "remind_days_before INTEGER DEFAULT 0")
+        _add_col("tasks", "remote_session_url TEXT")
+        _add_col("tasks", "resolved_model TEXT")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")
@@ -358,6 +374,16 @@ def finish_task(tid: str, status: str, duration_ms=None, cost_usd=None, num_turn
 def list_tasks(limit: int = 30) -> list[dict]:
     rows = _query("SELECT * FROM tasks ORDER BY started_at DESC LIMIT ?", (limit,))
     return [dict(r) for r in rows]
+
+
+def update_task(tid: str, **fields) -> bool:
+    allowed = {"remote_session_url", "resolved_model", "summary", "status"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    cols = ", ".join(f"{k}=?" for k in updates)
+    cur = _exec(f"UPDATE tasks SET {cols} WHERE id=?", (*updates.values(), tid))
+    return cur.rowcount > 0
 
 
 # ---------- snippets ----------
@@ -701,5 +727,32 @@ def delete_memo(mid: str) -> bool:
 
 def list_memos_to_remind() -> list[dict]:
     rows = _query("SELECT * FROM memos WHERE status='active'")
+    return [dict(r) for r in rows]
+
+
+# ---------- artifacts（产出物）----------
+def create_artifact(session_id, url, title="", favicon="", description="", label="", published_at=None) -> dict:
+    aid = new_id()
+    now = _now()
+    _exec(
+        "INSERT INTO artifacts(id,session_id,url,title,favicon,description,label,published_at,created_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?)",
+        (aid, session_id, url, title, favicon, description, label, published_at, now),
+    )
+    rows = _query("SELECT * FROM artifacts WHERE id=?", (aid,))
+    return dict(rows[0])
+
+
+def list_artifacts(session_id=None, limit=100) -> list:
+    if session_id:
+        rows = _query(
+            "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+            (session_id, limit),
+        )
+    else:
+        rows = _query(
+            "SELECT * FROM artifacts ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
     return [dict(r) for r in rows]
 

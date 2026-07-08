@@ -229,6 +229,48 @@ async def get_tasks():
     return db.list_tasks()
 
 
+@app.patch("/api/tasks/{tid}", dependencies=[Depends(require_auth)])
+async def patch_task(tid: str, payload: dict):
+    fields = {}
+    if "remote_session_url" in payload:
+        val = payload.get("remote_session_url")
+        fields["remote_session_url"] = val.strip() if isinstance(val, str) and val.strip() else None
+    if "resolved_model" in payload:
+        val = payload.get("resolved_model")
+        fields["resolved_model"] = val.strip() if isinstance(val, str) and val.strip() else None
+    if not fields:
+        raise HTTPException(status_code=400, detail="无可更新字段")
+    if not db.update_task(tid, **fields):
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {"ok": True}
+
+
+@app.get("/api/artifacts", dependencies=[Depends(require_auth)])
+async def get_artifacts(session_id: str = Query(default=None)):
+    return db.list_artifacts(session_id)
+
+
+@app.post("/api/artifacts", dependencies=[Depends(require_auth)])
+async def post_artifact(payload: dict):
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url 不能为空")
+    pub = payload.get("published_at")
+    try:
+        pub = float(pub) if pub is not None else None
+    except (TypeError, ValueError):
+        pub = None
+    return db.create_artifact(
+        payload.get("session_id"),
+        url,
+        payload.get("title", ""),
+        payload.get("favicon", ""),
+        payload.get("description", ""),
+        payload.get("label", ""),
+        pub,
+    )
+
+
 # ---------------- Memory 管理 ----------------
 @app.get("/api/memory", dependencies=[Depends(require_auth)])
 async def memory_list():
@@ -663,18 +705,27 @@ _IMG_MIME = {
 
 @app.get("/api/file", dependencies=[Depends(require_auth_query)])
 async def get_file(session_id: str = Query(...), path: str = Query(...), download: int = Query(default=0)):
-    """读取会话 workdir 内的文件。图片返回二进制，文本返回内容（JSON）。严格防越界。"""
+    """读取文件。图片允许任意绝对路径（模型可输出工作目录外的图片路径）；文本仍限 workdir 内。"""
     from pathlib import Path as _P
     from .fs_util import safe_path_under
 
     sess = db.get_session(session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="会话不存在")
-    base = _P(sess.get("workdir") or config.DEFAULT_WORKDIR)
-    try:
-        target = safe_path_under(base, path)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+
+    p = _P(path)
+    ext = p.suffix.lower()
+    is_img = ext in _IMG_EXTS
+
+    if is_img and p.is_absolute():
+        # 图片：允许任意绝对路径，不限于 workdir
+        target = p.resolve()
+    else:
+        base = _P(sess.get("workdir") or config.DEFAULT_WORKDIR)
+        try:
+            target = safe_path_under(base, path)
+        except ValueError as e:
+            raise HTTPException(status_code=403, detail=str(e))
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
     size = target.stat().st_size

@@ -346,6 +346,7 @@ class SessionHub:
                 "super": config.CLAUDE_MODEL_SUPER,
             }
             model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
+            db.update_task(task_id, resolved_model=model_name)
             _turn_fn = runner.send_turn if config.CLAUDE_PERSISTENT else runner.run_turn
             ret = await _turn_fn(
                 session_id=sid,
