@@ -1744,6 +1744,21 @@
           const cost = t.cost_usd != null ? " · $" + t.cost_usd.toFixed(4) : "";
           li.innerHTML = `<div>${escapeHtml(t.summary || "")}</div>
             <div class="t-meta">${t.status} · ${dur}${cost} · ${fmtTime(t.started_at)}</div>`;
+          if (t.resolved_model) {
+            const mline = document.createElement('div');
+            mline.className = 't-meta';
+            mline.textContent = '实际模型：' + t.resolved_model;
+            li.appendChild(mline);
+          }
+          if (t.remote_session_url) {
+            const a = document.createElement('a');
+            a.className = 't-remote-link';
+            a.textContent = '云端会话 →';
+            a.href = t.remote_session_url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            li.appendChild(a);
+          }
           ul.appendChild(li);
         }
       }
@@ -1782,7 +1797,7 @@
   function openManage(kind) {
     manage.kind = kind;
     closeDrawer();
-    const titles = { memory: "记忆库", agent: "子智能体", snippets: "快捷指令", schedule: "定时任务", todos: "待办清单", memos: "备忘录", reports: "日报记录" };
+    const titles = { memory: "记忆库", agent: "子智能体", snippets: "快捷指令", schedule: "定时任务", todos: "待办清单", memos: "备忘录", reports: "日报记录", artifacts: "产出物" };
     $("manage-title").textContent = titles[kind] || kind;
     $("app-view").classList.add("hidden");
     $("manage-view").classList.remove("hidden");
@@ -1798,6 +1813,8 @@
   $("open-todos-btn").onclick = () => openManage("todos");
   $("open-memos-btn").onclick = () => openManage("memos");
   $("open-reports-btn").onclick = () => openManage("reports");
+  const openArtifactsBtn = document.getElementById('open-artifacts-btn');
+  if (openArtifactsBtn) openArtifactsBtn.onclick = () => openManage('artifacts');
   $("secretary-trigger-btn").onclick = async () => {
     try {
       await api("/api/secretary/trigger", { method: "POST", body: JSON.stringify({ type: "evening" }) });
@@ -1825,6 +1842,12 @@
     if (manage.kind === "todos") { $("manage-new").classList.remove("hidden"); return showTodoList(); }
     if (manage.kind === "memos") { $("manage-new").classList.remove("hidden"); return showMemoList(); }
     if (manage.kind === "reports") { $("manage-new").classList.add("hidden"); return showReportList(); }
+    if (manage.kind === "artifacts") {
+      const newBtn = document.getElementById('manage-new');
+      if (newBtn) newBtn.classList.add('hidden');
+      showArtifactList();
+      return;
+    }
     try {
       const items = await api(apiBase());
       listEl.innerHTML = "";
@@ -2498,6 +2521,39 @@
     }
   }
 
+  async function showArtifactList() {
+    const list = document.getElementById('manage-list');
+    if (!list) return;
+    list.innerHTML = '<div class="loading">加载中…</div>';
+    const items = await api('/api/artifacts');
+    if (!items || !items.length) {
+      list.innerHTML = '<div class="empty-hint">暂无产出物</div>';
+      return;
+    }
+    list.innerHTML = '';
+    items.forEach(it => {
+      const card = document.createElement('div');
+      card.className = 'entity-card';
+      card.style.cursor = 'pointer';
+      const title = document.createElement('div');
+      title.className = 'e-name';
+      if (it.favicon) title.textContent = it.favicon + ' ' + (it.title || it.url);
+      else title.textContent = it.title || it.url;
+      const desc = document.createElement('div');
+      desc.className = 'e-desc';
+      desc.textContent = it.description || '';
+      const meta = document.createElement('div');
+      meta.className = 'e-meta';
+      const ts = it.published_at || it.created_at;
+      meta.textContent = ts ? new Date(ts * 1000).toLocaleString('zh-CN') : '';
+      card.appendChild(title);
+      if (it.description) card.appendChild(desc);
+      card.appendChild(meta);
+      card.onclick = () => window.open(it.url, '_blank', 'noopener,noreferrer');
+      list.appendChild(card);
+    });
+  }
+
   function showReportDetail(report) {
     const typeLabel = report.report_type === "evening" ? "晚报" : "早报";
     const root = $("modal-root");
@@ -2533,7 +2589,7 @@
       (download ? "&download=1" : "") +
       (state.token ? `&token=${encodeURIComponent(state.token)}` : "");
   }
-  // 从文本里抽取图片路径（去重，最多 6 个），渲染成缩略图附在消息下方
+  // 从文本里抽取图片路径，插到提及该图片的段落/标题后面；找不到锚点则 append 到末尾
   function attachArtifacts(node, text) {
     if (!text) return;
     // 跳过已在气泡内联渲染的路径（避免重复：内联 img + artifact 缩略图）
@@ -2541,25 +2597,39 @@
       Array.from(node.querySelectorAll('img.msg-img')).map(i => i.alt).filter(Boolean)
     );
     const re = /([~/\w.\-]+\.(?:png|jpe?g|gif|svg|webp|bmp))/gi;
+    const paths = [];
     const seen = new Set();
     let m;
     while ((m = re.exec(text)) && seen.size < 6) {
       const p = m[1];
-      if (p.length < 5 || seen.has(p) || alreadyInline.has(p)) continue;  // 太短的/已内联的忽略
+      if (p.length < 5 || seen.has(p) || alreadyInline.has(p)) continue;
       seen.add(p);
+      paths.push(p);
     }
-    if (!seen.size) return;
-    const wrap = el("div", "artifacts");
-    for (const p of seen) {
-      const img = el("img", "artifact-thumb");
-      img.loading = "lazy";
+    if (!paths.length) return;
+
+    // bubble 元素（node 是 .msg.assistant，bubble 是其内第一个 .bubble.markdown）
+    const bubble = node.querySelector('.bubble.markdown') || node;
+
+    for (const p of paths) {
+      const fname = p.split('/').pop();  // 只取文件名用于段落匹配
+      const img = el('img', 'artifact-thumb');
+      img.loading = 'lazy';
       img.src = fileUrl(p);
       img.alt = p;
-      img.onerror = () => img.remove();   // 路径不可读就移除，不留破图
+      img.onerror = () => { img.remove(); };
       img.onclick = () => openImageViewer(fileUrl(p), p);
-      wrap.appendChild(img);
+
+      // 在 bubble 内找第一个文本含文件名（或路径）的块级元素，插到其后
+      const blocks = Array.from(bubble.querySelectorAll('p, h1, h2, h3, li, td'));
+      const anchor = blocks.find(el => el.textContent.includes(fname) || el.textContent.includes(p));
+      if (anchor) {
+        anchor.insertAdjacentElement('afterend', img);
+      } else {
+        // 没找到锚点：append 到 bubble 末尾
+        bubble.appendChild(img);
+      }
     }
-    node.appendChild(wrap);
   }
   // 全屏看大图
   function openImageViewer(src, caption) {
@@ -3690,6 +3760,7 @@
   // ---------------- 轻量 Markdown 渲染（零依赖、先转义后注入白名单标签，无 XSS）----------------
   // 策略：所有原始文本一律先过 escapeHtml，再把 markdown 标记替换成固定的安全 HTML。
   // 因为用户内容已转义，注入的标签只可能来自我们自己的模板，绝不会逃逸。
+  const _LOCAL_IMG_RE = /^[~/][^\s]*\.(?:png|jpe?g|gif|svg|webp|bmp)$/i;
   function mdInline(text) {
     // text 已转义。处理行内：行内码 → 粗 → 斜 → 链接。
     // 行内码优先：先抠出来用占位符，避免里面的 * _ 被误解析
@@ -3698,28 +3769,37 @@
     text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
     text = text.replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>");
-    // 行内图片 ![alt](url) 与裸图片链接：& 已被转义成 &amp;，先还原再校验，只放行 http/https
-    text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
+    // 行内图片 ![alt](url)：http/https 直接用，本地路径走 fileUrl API
+    text = text.replace(/!\[([^\]]*)]\(([^)\s]+)\)/g, (m, alt, url) => {
       const clean = url.replace(/&amp;/g, "&");
-      return /^https?:\/\//.test(clean)
-        ? `<img class="msg-img" src="${escapeAttr(clean)}" alt="${alt}" loading="lazy" />`
-        : m;
+      if (/^https?:\/\//.test(clean))
+        return `<img class="msg-img" src="${escapeAttr(clean)}" alt="${alt}" loading="lazy" />`;
+      if (_LOCAL_IMG_RE.test(clean))
+        return `<img class="msg-img" src="${escapeAttr(fileUrl(clean))}" alt="${escapeAttr(alt || clean)}" loading="lazy" />`;
+      return m;
     });
     text = text.replace(/(^|\s)(https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp)(?:\?[^\s)]*)?)(?=\s|$)/gi, (m, pre, url) => {
       const clean = url.replace(/&amp;/g, "&");
       return `${pre}<img class="msg-img" src="${escapeAttr(clean)}" alt="" loading="lazy" />`;
     });
-    // 本地图片路径（绝对路径或 ~/ 开头），转成 API 地址内联渲染
-    text = text.replace(/(^|\s)([~/][^\s]*\.(?:png|jpe?g|gif|svg|webp|bmp))(?=\s|$)/gi, (m, pre, path) => {
-      const cleanPath = path.replace(/&amp;/g, '&');
-      return `${pre}<img class="msg-img" src="${escapeAttr(fileUrl(cleanPath))}" alt="${escapeAttr(cleanPath)}" loading="lazy" />`;
+    // 本地图片路径（绝对路径或 ~/ 开头），转成 API 地址内联渲染；路径后允许紧跟中英文标点
+    text = text.replace(/(?<![/~\w.\-])([~/][^\s\uff0c\u3002\uff1a:!?\uff08\u3010\u300c\uff09\u3011\u300d,]*\.(?:png|jpe?g|gif|svg|webp|bmp))(?=[,\s\uff09\u3011\u300d\uff0c\u3002\uff1a:!?\uff08\u3010\u300c]|$)/gi, (m, p) => {
+      const cleanPath = p.replace(/&amp;/g, '&');
+      return `<img class="msg-img" src="${escapeAttr(fileUrl(cleanPath))}" alt="${escapeAttr(cleanPath)}" loading="lazy" />`;
     });
     // 链接 [文字](url)：url 转义后 & 变 &amp;，先还原再校验，只放行 http/https
-    text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
+    text = text.replace(/\[([^\]]+)]\(([^)\s]+)\)/g, (m, label, url) => {
       const clean = url.replace(/&amp;/g, "&");
       return /^https?:\/\//.test(clean) ? `<a href="${escapeAttr(clean)}" target="_blank" rel="noopener">${label}</a>` : m;
     });
-    text = text.replace(/ (\d+) /g, (_, i) => `<code>${codes[+i]}</code>`);
+    // 还原行内码：本地图片路径渲染为图片，否则还原为 <code>
+    text = text.replace(/ (\d+) /g, (_, idx) => {
+      const c = codes[+idx];
+      const cleanC = c ? c.replace(/&amp;/g, '&') : c;
+      if (cleanC && _LOCAL_IMG_RE.test(cleanC.trim()))
+        return `<img class="msg-img" src="${escapeAttr(fileUrl(cleanC.trim()))}" alt="${escapeAttr(cleanC.trim())}" loading="lazy" />`;
+      return `<code>${c}</code>`;
+    });
     return text;
   }
 

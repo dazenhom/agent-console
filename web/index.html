@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=36" />
+  <link rel="stylesheet" href="style.css?v=37" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -171,6 +171,7 @@
               <button id="open-todos-btn" class="manage-entry">✅ 待办清单</button>
               <button id="open-memos-btn" class="manage-entry">📝 备忘录<span id="memo-badge" class="entry-badge" style="display:none"></span></button>
               <button id="open-reports-btn" class="manage-entry">📋 日报记录</button>
+              <button id="open-artifacts-btn" class="manage-entry">📦 产出物</button>
               <button id="secretary-trigger-btn" class="manage-entry">🤖 立即生成日报</button>
               <button id="notify-toggle" class="manage-entry">🔔 完成提醒：关</button>
               <button id="voicesend-toggle" class="manage-entry">🎙️ 语音直发：关</button>
@@ -268,7 +269,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=49"></script>
+  <script src="app.js?v=50"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
