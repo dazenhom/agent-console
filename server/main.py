@@ -688,6 +688,15 @@ _IMG_MIME = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp", ".bmp": "image/bmp",
 }
+_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+_AUDIO_MIME = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+}
 
 
 @app.get("/api/file", dependencies=[Depends(require_auth_query)])
@@ -703,9 +712,11 @@ async def get_file(session_id: str = Query(...), path: str = Query(...), downloa
     p = _P(path)
     ext = p.suffix.lower()
     is_img = ext in _IMG_EXTS
+    is_audio = ext in _AUDIO_EXTS
+    is_media = is_img or is_audio
 
-    if is_img and p.is_absolute():
-        # 图片：允许任意绝对路径，不限于 workdir
+    if is_media and p.is_absolute():
+        # 图片/音频：允许任意绝对路径，不限于 workdir
         target = p.resolve()
     else:
         base = _P(sess.get("workdir") or config.DEFAULT_WORKDIR)
@@ -716,14 +727,17 @@ async def get_file(session_id: str = Query(...), path: str = Query(...), downloa
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
     size = target.stat().st_size
-    if size > _FILE_MAX_BYTES:
-        raise HTTPException(status_code=413, detail=f"文件过大（{size // 1024 // 1024}MB，上限 20MB）")
+    max_bytes = 100 * 1024 * 1024 if is_audio else _FILE_MAX_BYTES
+    if size > max_bytes:
+        raise HTTPException(status_code=413, detail=f"文件过大（{size // 1024 // 1024}MB，上限 {max_bytes // 1024 // 1024}MB）")
 
     ext = target.suffix.lower()
     if download:
         return FileResponse(str(target), filename=target.name)
     if ext in _IMG_EXTS:
         return FileResponse(str(target), media_type=_IMG_MIME.get(ext, "application/octet-stream"))
+    if is_audio:
+        return FileResponse(str(target), media_type=_AUDIO_MIME.get(ext, "application/octet-stream"))
     # 文本：尝试 utf-8 解码返回内容
     if size > _TEXT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="文本过大，请下载查看")
