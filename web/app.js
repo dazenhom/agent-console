@@ -3255,6 +3255,12 @@
 
   // 清理残留的流式气泡引用（回合结束/出错/被工具调用打断时）
   function clearStream() {
+    // 若气泡仍停留在纯文本流式态（未经过 finalizeStream），补做 markdown 重渲染，
+    // 否则本地音频等富文本控件永远不会出现（appendDelta 只写 textContent）。
+    if (state.streamEl && state.streamText) {
+      finalizeStream(state.streamText);
+      return;
+    }
     if (state.streamEl) { state.streamEl.classList.remove("streaming"); }
     state.streamEl = null;
     state.streamText = "";
