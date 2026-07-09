@@ -3757,6 +3757,7 @@
   // 策略：所有原始文本一律先过 escapeHtml，再把 markdown 标记替换成固定的安全 HTML。
   // 因为用户内容已转义，注入的标签只可能来自我们自己的模板，绝不会逃逸。
   const _LOCAL_IMG_RE = /^[~/][^\s]*\.(?:png|jpe?g|gif|svg|webp|bmp)$/i;
+  const _LOCAL_AUDIO_RE = /^[~/][^\s]*\.(?:wav|mp3|flac|ogg|m4a|aac)$/i;
   function mdInline(text) {
     // text 已转义。处理行内：行内码 → 粗 → 斜 → 链接。
     // 行内码优先：先抠出来用占位符，避免里面的 * _ 被误解析
@@ -3783,6 +3784,11 @@
       const cleanPath = p.replace(/&amp;/g, '&');
       return `<img class="msg-img" src="${escapeAttr(fileUrl(cleanPath))}" alt="${escapeAttr(cleanPath)}" loading="lazy" />`;
     });
+    // \u672c\u5730\u97f3\u9891\u8def\u5f84\uff08\u7edd\u5bf9\u8def\u5f84\u6216 ~/ \u5f00\u5934\uff09\uff0c\u8f6c\u6210 API \u5730\u5740\u5185\u8054\u6e32\u67d3\uff1b\u8def\u5f84\u540e\u5141\u8bb8\u7d27\u8ddf\u4e2d\u82f1\u6587\u6807\u70b9
+    text = text.replace(/(?<![/~\w.\-])([~/][^\s\uff0c\u3002\uff1a:!?\uff08\u3010\u300c\uff09\u3011\u300d,]*\.(?:wav|mp3|flac|ogg|m4a|aac))(?=[,\s\uff09\u3011\u300d\uff0c\u3002\uff1a:!?\uff08\u3010\u300c]|$)/gi, (m, p) => {
+      const cleanPath = p.replace(/&amp;/g, '&');
+      return `<audio class="msg-audio" controls preload="none" src="${escapeAttr(fileUrl(cleanPath, false))}"></audio>`;
+    });
     // 链接 [文字](url)：url 转义后 & 变 &amp;，先还原再校验，只放行 http/https
     text = text.replace(/\[([^\]]+)]\(([^)\s]+)\)/g, (m, label, url) => {
       const clean = url.replace(/&amp;/g, "&");
@@ -3794,6 +3800,8 @@
       const cleanC = c ? c.replace(/&amp;/g, '&') : c;
       if (cleanC && _LOCAL_IMG_RE.test(cleanC.trim()))
         return `<img class="msg-img" src="${escapeAttr(fileUrl(cleanC.trim()))}" alt="${escapeAttr(cleanC.trim())}" loading="lazy" />`;
+      if (cleanC && _LOCAL_AUDIO_RE.test(cleanC.trim()))
+        return `<audio class="msg-audio" controls preload="none" src="${escapeAttr(fileUrl(cleanC.trim(), false))}"></audio>`;
       return `<code>${c}</code>`;
     });
     return text;
