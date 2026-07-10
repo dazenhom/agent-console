@@ -760,27 +760,23 @@ _PREVIEW_REPORTER = (
 
 
 @app.get("/api/preview", dependencies=[Depends(require_auth_query)])
-async def preview_html(session_id: str = Query(...), path: str = Query(...)):
-    """把 workdir 内的 HTML 文件以内联沙箱预览返回（附高度上报脚本）。"""
+async def preview_html(path: str = Query(...), request: Request = None):
+    """把任意绝对路径的 HTML 文件重定向到 /fs/<path>，由静态文件服务提供，
+    这样页面内的相对路径（fetch('viz/data.json') 等）都能正常解析。"""
     from pathlib import Path as _P
-    from .fs_util import safe_path_under
+    from fastapi.responses import RedirectResponse
 
-    sess = db.get_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    if _P(path).suffix.lower() not in _PREVIEW_EXTS:
+    p = _P(path).resolve()
+    if p.suffix.lower() not in _PREVIEW_EXTS:
         raise HTTPException(status_code=415, detail="仅支持 HTML 文件预览")
-    base = _P(sess.get("workdir") or config.DEFAULT_WORKDIR)
-    try:
-        target = safe_path_under(base, path)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    if not target.exists() or not target.is_file():
+    # 防路径穿越：resolve() 后必须是绝对路径（正常情况下总是）
+    if not p.is_absolute():
+        raise HTTPException(status_code=400, detail="非法路径")
+    if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
-    if target.stat().st_size > _FILE_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="文件过大")
-    html = target.read_text(encoding="utf-8", errors="replace")
-    return HTMLResponse(content=html + _PREVIEW_REPORTER)
+    # 重定向到 /fs/<绝对路径>，让静态文件服务处理，相对路径因此能正常解析
+    fs_url = f"/fs{p}"
+    return RedirectResponse(url=fs_url, status_code=302)
 
 
 # ---------------- 图片上传（手机拍照/截图发给 Agent）----------------
@@ -1053,12 +1049,30 @@ async def swanlab_proxy(request: Request, path: str):
     # 路径白名单：只放行 SwanLab 已知前缀，其余一律拒绝
     if path and not any(path.startswith(p) for p in SWANLAB_ALLOWED_PREFIXES):
         raise HTTPException(status_code=403, detail="不允许访问该路径")
+
+    # sid：优先用浏览器带回来的 cookie，没有则服务端用 api_key 登录换取一个
+    # （SwanLab API 只认 sid cookie，仅带 authorization header 会 403）
+    browser_sid = request.cookies.get("swanlab_sid")
+    if not browser_sid:
+        try:
+            async with httpx.AsyncClient(timeout=10) as login_client:
+                login_resp = await login_client.post(
+                    f"{SWANLAB_HOST}/api/login/api_key",
+                    headers={"authorization": config.SWANLAB_API_KEY},
+                )
+                if login_resp.status_code == 200:
+                    browser_sid = login_resp.json().get("sid", "")
+        except Exception:
+            browser_sid = ""
+
     url = f"{SWANLAB_HOST}/{path}"
     params = dict(request.query_params)
-    headers = {
-        "authorization": config.SWANLAB_API_KEY,
+    # 转发给 SwanLab 的 header：sid cookie + user-agent
+    forward_headers = {
         "user-agent": request.headers.get("user-agent", ""),
     }
+    if browser_sid:
+        forward_headers["cookie"] = f"sid={browser_sid}"
     body = await request.body()
     # follow_redirects=False：防止重定向链跳出到其他内网地址，3xx 由下面手动改写 Location
     async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
@@ -1066,15 +1080,16 @@ async def swanlab_proxy(request: Request, path: str):
             method=request.method,
             url=url,
             params=params,
-            headers=headers,
+            headers=forward_headers,
             content=body,
         )
-    excluded = {"transfer-encoding", "content-encoding", "content-length", "connection"}
+    # set-cookie 也剔除：sid 由下面统一用 swanlab_sid 名字重新种，避免 SwanLab 原始 cookie 干扰
+    excluded = {"transfer-encoding", "content-encoding", "content-length", "connection", "set-cookie"}
     resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
 
     # 重定向：把 Location 头里指向 SwanLab 的绝对 URL 改写回代理路径
     if resp.status_code in (301, 302, 303, 307, 308):
-        location = resp_headers.get("location", "")
+        location = resp.headers.get("location", "")
         if location.startswith(SWANLAB_HOST):
             location = "/proxy/swanlab/" + location[len(SWANLAB_HOST):].lstrip("/")
             resp_headers["location"] = location
@@ -1087,17 +1102,29 @@ async def swanlab_proxy(request: Request, path: str):
         try:
             text = content.decode("utf-8", errors="replace")
             base_tag = '<base href="/proxy/swanlab/">'
-            text = text.replace("<head>", f"<head>{base_tag}", 1)
-            if '<base href=' not in text[:200]:
-                text = base_tag + text
+            # 注入 <base>（防重复：SwanLab HTML 本身带 <head>，只在没有 <base> 时注入一次）
+            if '<base href=' not in text:
+                if "<head>" in text:
+                    text = text.replace("<head>", f"<head>{base_tag}", 1)
+                else:
+                    text = base_tag + text
             # 重写 src/href/action 里以单个 / 开头（排除 //）的绝对路径
-            text = re.sub(r'((?:src|href|action)=["\'])(/(?!/))', r'\1/proxy/swanlab/\2', text)
+            text = re.sub(r'((?:src|href|action)=["\'])(/(?!/))', r'\1/proxy/swanlab\2', text)
             content = text.encode("utf-8")
             resp_headers["content-type"] = "text/html; charset=utf-8"
         except Exception:
             pass  # 解码/重写失败就原样透传
 
-    return Response(content=content, status_code=resp.status_code, headers=resp_headers)
+    response = Response(content=content, status_code=resp.status_code, headers=resp_headers)
+    # 把 sid 种到浏览器 cookie，后续 JS 的 /api 请求会自动带上（转发时再取出塞进 sid cookie）
+    if browser_sid:
+        response.set_cookie(
+            "swanlab_sid", browser_sid,
+            path="/proxy/swanlab",
+            samesite="lax",
+            httponly=False,
+        )
+    return response
 
 @app.post("/api/swanlab/upload", dependencies=[Depends(require_auth)])
 async def swanlab_upload(payload: dict):
@@ -1176,4 +1203,5 @@ async def index():
     )
 
 
+app.mount("/fs", StaticFiles(directory="/"), name="fs")
 app.mount("/", NoCacheStatic(directory=str(config.WEB_DIR)), name="web")
