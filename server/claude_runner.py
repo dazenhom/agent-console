@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import time
 from typing import Awaitable, Callable
@@ -40,6 +41,24 @@ class LoopDetector:
         self._recent_calls = collections.deque(maxlen=repeat_threshold + 2)
         self._consec_errors = 0
 
+    @staticmethod
+    def _is_sleep_bash(block) -> bool:
+        """判断 tool_use block 是否为「Bash 运行 sleep」。
+
+        这类调用（agent 轮询等待后台任务）不应计入循环检测。
+        规则：命令按 && / || / ; 分段，任一段 strip 后以 sleep 开头
+        （词边界）即视为 sleep 命令。
+        """
+        if not isinstance(block, dict) or block.get("name") != "Bash":
+            return False
+        command = (block.get("input") or {}).get("command", "")
+        if not isinstance(command, str):
+            return False
+        for seg in re.split(r"&&|\|\||;", command):
+            if re.match(r"^\s*sleep\b", seg):
+                return True
+        return False
+
     def feed(self, evt: dict):
         """返回 (is_loop: bool, reason: str)。"""
         # 真实 stream-json 事件里 content 嵌在 message 下（见 session_hub.translate_event），
@@ -53,6 +72,8 @@ class LoopDetector:
         if evt.get("role") == "assistant" or evt.get("type") == "assistant":
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
+                    if self._is_sleep_bash(block):
+                        continue  # sleep 白名单：不计入循环检测
                     sig = block.get("name", "") + "|" + hashlib.md5(
                         json.dumps(block.get("input", {}), sort_keys=True).encode()
                     ).hexdigest()[:8]
@@ -168,11 +189,6 @@ class ClaudeRunner:
             # 空格分隔的工具名直接作为多个参数传给 --allowedTools。
             cmd += ["--allowedTools", *config.CLAUDE_ALLOWED_TOOLS.split()]
         disallowed = config.CLAUDE_DISALLOWED_TOOLS.split()
-        if stream_input:
-            # 常驻 stream-json 模式有 stdin 可回 control_response：AskUserQuestion 能经
-            # control_request → 前端选项卡片 → updatedInput.answers 正常交互，不禁用。
-            # 仅老的 headless -p 模式（无 stdin、无法回授权）才禁掉它，防回合卡死。
-            disallowed = [t for t in disallowed if t != "AskUserQuestion"]
         if disallowed:
             cmd += ["--disallowedTools", *disallowed]
         return cmd
