@@ -5,7 +5,7 @@ import json
 import re
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -1039,6 +1039,33 @@ async def ws_monitor(websocket: WebSocket, token: str = Query(default="")):
 
 # ---------- SwanLab 上传 ----------
 SWANLAB_SCRIPT = "/apdcephfs_gy2/share_302533218/zhihangxu/code/asr-code-release-manager/scripts/infer_scripts/vllm0.14/upload_wer_swanlab.py"
+
+SWANLAB_HOST = "https://train-exp.taiji.woa.com"
+SWANLAB_API_KEY = "c9Jlk1bZLgldmuEujxY9C"
+
+
+@app.api_route("/proxy/swanlab/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"])
+async def swanlab_proxy(request: Request, path: str):
+    # 不加 require_auth：iframe 里的静态资源请求带不上鉴权 header，否则会 401
+    import httpx
+    url = f"{SWANLAB_HOST}/{path}"
+    params = dict(request.query_params)
+    headers = {
+        "authorization": SWANLAB_API_KEY,
+        "user-agent": request.headers.get("user-agent", ""),
+    }
+    body = await request.body()
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        resp = await client.request(
+            method=request.method,
+            url=url,
+            params=params,
+            headers=headers,
+            content=body,
+        )
+    excluded = {"transfer-encoding", "content-encoding", "content-length", "connection"}
+    resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
+    return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
 
 @app.post("/api/swanlab/upload", dependencies=[Depends(require_auth)])
 async def swanlab_upload(payload: dict):
