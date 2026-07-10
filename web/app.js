@@ -3750,7 +3750,7 @@
   function looksLikeHtmlDoc(text) {
     const t = String(text).trim();
     return /^<!doctype html/i.test(t) || /^<html[\s>]/i.test(t)
-        || /^<svg[\s>]/i.test(t) || /^<body[\s>]/i.test(t);
+        || /^<svg[\s>]/i.test(t);
   }
   // 把原始 HTML 包成沙箱 iframe 预览块，附带「查看源码」切换
   function htmlEmbedBlock(rawHtml) {
@@ -3758,7 +3758,7 @@
     <div class="cb-head"><span class="cb-lang">HTML 预览</span>
       <button class="html-embed-src" type="button">查看源码</button></div>
     <iframe sandbox="allow-scripts" srcdoc="${escapeAttr(rawHtml)}" loading="lazy"></iframe>
-    <pre class="code-block" style="display:none"><code>${escapeHtml(rawHtml)}</code></pre>
+    <pre class="html-embed-source"><code>${escapeHtml(rawHtml)}</code></pre>
   </div>`;
   }
   function nowTs() { return Date.now() / 1000; }
