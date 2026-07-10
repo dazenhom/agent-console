@@ -2705,11 +2705,15 @@
       const bubble = el("div", "bubble");
       if (role === "assistant") {
         bubble.classList.add("markdown");
-        // 整页 HTML 文档：直接内联沙箱预览
-        if (looksLikeHtmlDoc(content.text || "")) {
-          bubble.innerHTML = htmlEmbedBlock(content.text || "");
+        // 文件路径 HTML：走 /api/preview 内联沙箱预览；整页 HTML 文档：直接内联沙箱预览
+        const _t = content.text || "";
+        const _hp = htmlFilePath(_t);
+        if (_hp) {
+          bubble.innerHTML = htmlSrcEmbedBlock(_hp);
+        } else if (looksLikeHtmlDoc(_t)) {
+          bubble.innerHTML = htmlEmbedBlock(_t);
         } else {
-          bubble.innerHTML = renderMarkdown(content.text || "");
+          bubble.innerHTML = renderMarkdown(_t);
         }
         // 复制按钮：复制原始 markdown 文本
         const copy = el("button", "msg-copy", "复制");
@@ -3231,7 +3235,10 @@
     bubble.classList.remove("streaming");
     bubble.classList.add("markdown");
     const _finalText = fullText || state.streamText || "";
-    if (looksLikeHtmlDoc(_finalText)) {
+    const _hp = htmlFilePath(_finalText);
+    if (_hp) {
+      bubble.innerHTML = htmlSrcEmbedBlock(_hp);
+    } else if (looksLikeHtmlDoc(_finalText)) {
       bubble.innerHTML = htmlEmbedBlock(_finalText);
     } else {
       bubble.innerHTML = renderMarkdown(_finalText);
@@ -3746,6 +3753,8 @@
   // ---------------- 工具函数 ----------------
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   function escapeAttr(s) { return escapeHtml(s == null ? "" : s); }
+  // 注入到预览 iframe 里的高度上报脚本，配合外层 message 监听实现自适应高度
+  const _EMBED_REPORTER = "<scr"+"ipt>(function(){function p(){try{var h=Math.max(document.documentElement.scrollHeight,(document.body||{}).scrollHeight||0);parent.postMessage({__embedHeight:h},'*');}catch(e){}}window.addEventListener('load',p);window.addEventListener('resize',p);if(window.ResizeObserver){try{new ResizeObserver(p).observe(document.documentElement);}catch(e){}}p();setTimeout(p,300);setTimeout(p,1200);})();</scr"+"ipt>";
   // 判断一段文本是否是完整 HTML 文档（用于对话栏内联预览）
   function looksLikeHtmlDoc(text) {
     const t = String(text).trim();
@@ -3756,9 +3765,30 @@
   function htmlEmbedBlock(rawHtml) {
     return `<div class="html-embed">
     <div class="cb-head"><span class="cb-lang">HTML 预览</span>
+      <button class="html-embed-full" type="button" title="全屏">⛶ 全屏</button>
       <button class="html-embed-src" type="button">查看源码</button></div>
-    <iframe sandbox="allow-scripts" srcdoc="${escapeAttr(rawHtml)}" loading="lazy"></iframe>
+    <iframe sandbox="allow-scripts" srcdoc="${escapeAttr(rawHtml + _EMBED_REPORTER)}" loading="lazy"></iframe>
     <pre class="html-embed-source"><code>${escapeHtml(rawHtml)}</code></pre>
+  </div>`;
+  }
+  // 预览接口 URL：把工作区内的 HTML 文件路径转成后端 /api/preview 地址
+  function previewUrl(path) {
+    return `${BASE}/api/preview?session_id=${encodeURIComponent(state.sessionId)}&path=${encodeURIComponent(path)}` +
+      (state.token ? `&token=${encodeURIComponent(state.token)}` : "");
+  }
+  const _HTML_FILE_RE = /^(\/[^\s'"(){}<>]+\.html?)$/i;
+  // 判断一段文本是否就是一个绝对路径的 HTML 文件（用于文件预览）
+  function htmlFilePath(text) {
+    const t = String(text || "").trim();
+    const m = _HTML_FILE_RE.exec(t);
+    return m ? m[1] : null;
+  }
+  // 把 HTML 文件路径包成沙箱 iframe 预览块（走后端 /api/preview 加载）
+  function htmlSrcEmbedBlock(path) {
+    return `<div class="html-embed">
+    <div class="cb-head"><span class="cb-lang">HTML 预览 — ${escapeHtml(path)}</span>
+      <button class="html-embed-full" type="button" title="全屏">⛶ 全屏</button></div>
+    <iframe sandbox="allow-scripts" src="${escapeAttr(previewUrl(path))}" loading="lazy"></iframe>
   </div>`;
   }
   function nowTs() { return Date.now() / 1000; }
@@ -3933,6 +3963,13 @@
   document.addEventListener("click", (e) => {
     const img = e.target.closest("img.msg-img");
     if (img) { openImageViewer(img.src, img.getAttribute("alt") || img.src); return; }
+    // HTML 预览块「全屏」
+    if (e.target.classList.contains("html-embed-full")) {
+      const embed = e.target.closest(".html-embed");
+      const iframe = embed && embed.querySelector("iframe");
+      if (iframe && iframe.requestFullscreen) iframe.requestFullscreen().catch(() => {});
+      return;
+    }
     // HTML 预览块「查看源码 / 查看预览」切换
     if (e.target.classList.contains("html-embed-src")) {
       const embed = e.target.closest(".html-embed");
@@ -3950,6 +3987,21 @@
     const block = btn.closest(".code-block");
     const code = block ? block.querySelector("code") : null;
     if (code) copyText(code.textContent).then((ok) => flashCopied(btn, ok));
+  });
+
+  // 预览 iframe 上报高度：自适应 iframe 高度（上限窗口高 80%）
+  window.addEventListener("message", (e) => {
+    const d = e.data;
+    if (!d || typeof d.__embedHeight !== "number") return;
+    const iframes = document.querySelectorAll(".html-embed iframe");
+    for (const f of iframes) {
+      if (f.contentWindow === e.source) {
+        const max = Math.floor(window.innerHeight * 0.8);
+        f.style.minHeight = "0";
+        f.style.height = Math.min(Math.ceil(d.__embedHeight) + 4, max) + "px";
+        break;
+      }
+    }
   });
 
   // 切后台回前台 / 网络恢复：自动对齐（重连 + 补历史 + 刷状态）
