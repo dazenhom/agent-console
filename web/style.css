@@ -662,6 +662,13 @@ body.hub-resizing {
 .code-block pre { margin: 0; padding: 11px 12px; overflow-x: auto; }
 .code-block code { background: none; padding: 0; color: #c9d1d9; font-size: 12.8px; line-height: 1.5; }
 
+/* 对话栏内联 HTML 预览 */
+.html-embed { margin: 10px 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg-2); }
+.html-embed iframe { display: block; width: 100%; min-height: 320px; border: none; background: #fff; resize: vertical; overflow: auto; }
+.html-embed .cb-head { background: var(--bg-3); display: flex; align-items: center; padding: 4px 12px; gap: 8px; }
+.html-embed-src { padding: 2px 10px; font-size: 11px; background: var(--bg-2); border: 1px solid var(--line); color: var(--muted); border-radius: 6px; cursor: pointer; margin-left: auto; }
+.html-embed-src.on { color: var(--accent); border-color: var(--accent); }
+
 /* 产物缩略图 */
 .artifacts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .artifact-thumb { width: 100%; max-width: 100%; height: auto; max-height: 60vh; object-fit: contain; border-radius: 10px; border: 1px solid var(--line); cursor: pointer; background: var(--bg-3); transition: transform .1s ease; display: block; }

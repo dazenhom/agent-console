@@ -2705,7 +2705,12 @@
       const bubble = el("div", "bubble");
       if (role === "assistant") {
         bubble.classList.add("markdown");
-        bubble.innerHTML = renderMarkdown(content.text || "");
+        // 整页 HTML 文档：直接内联沙箱预览
+        if (looksLikeHtmlDoc(content.text || "")) {
+          bubble.innerHTML = htmlEmbedBlock(content.text || "");
+        } else {
+          bubble.innerHTML = renderMarkdown(content.text || "");
+        }
         // 复制按钮：复制原始 markdown 文本
         const copy = el("button", "msg-copy", "复制");
         copy.type = "button";
@@ -3225,7 +3230,12 @@
     const bubble = state.streamEl;
     bubble.classList.remove("streaming");
     bubble.classList.add("markdown");
-    bubble.innerHTML = renderMarkdown(fullText || state.streamText || "");
+    const _finalText = fullText || state.streamText || "";
+    if (looksLikeHtmlDoc(_finalText)) {
+      bubble.innerHTML = htmlEmbedBlock(_finalText);
+    } else {
+      bubble.innerHTML = renderMarkdown(_finalText);
+    }
     // 给这条消息补上复制按钮 + 时间戳（与 renderMessage 一致）
     const node = bubble.parentElement;
     if (node && !node.querySelector(".msg-copy")) {
@@ -3736,6 +3746,21 @@
   // ---------------- 工具函数 ----------------
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   function escapeAttr(s) { return escapeHtml(s == null ? "" : s); }
+  // 判断一段文本是否是完整 HTML 文档（用于对话栏内联预览）
+  function looksLikeHtmlDoc(text) {
+    const t = String(text).trim();
+    return /^<!doctype html/i.test(t) || /^<html[\s>]/i.test(t)
+        || /^<svg[\s>]/i.test(t) || /^<body[\s>]/i.test(t);
+  }
+  // 把原始 HTML 包成沙箱 iframe 预览块，附带「查看源码」切换
+  function htmlEmbedBlock(rawHtml) {
+    return `<div class="html-embed">
+    <div class="cb-head"><span class="cb-lang">HTML 预览</span>
+      <button class="html-embed-src" type="button">查看源码</button></div>
+    <iframe sandbox="allow-scripts" srcdoc="${escapeAttr(rawHtml)}" loading="lazy"></iframe>
+    <pre class="code-block" style="display:none"><code>${escapeHtml(rawHtml)}</code></pre>
+  </div>`;
+  }
   function nowTs() { return Date.now() / 1000; }
   function fmtTime(ts) { if (!ts) return ""; const d = new Date(ts * 1000); return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
   // 相对时间：「刚刚」「3小时前」「昨天」等，看板卡片底部用
@@ -3827,6 +3852,8 @@
         i++;
         while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
         i++; // 跳过收尾 ```
+        // html/htm 围栏：直接内联沙箱预览，而非纯代码块
+        if (/^html?$/i.test(lang)) { html += htmlEmbedBlock(buf.join("\n")); continue; }
         const code = esc(buf.join("\n"));
         html += `<div class="code-block"><div class="cb-head"><span class="cb-lang">${esc(lang) || "code"}</span>` +
           `<button class="copy-btn" data-copy type="button">复制</button></div>` +
@@ -3906,6 +3933,18 @@
   document.addEventListener("click", (e) => {
     const img = e.target.closest("img.msg-img");
     if (img) { openImageViewer(img.src, img.getAttribute("alt") || img.src); return; }
+    // HTML 预览块「查看源码 / 查看预览」切换
+    if (e.target.classList.contains("html-embed-src")) {
+      const embed = e.target.closest(".html-embed");
+      const iframe = embed.querySelector("iframe");
+      const pre = embed.querySelector("pre");
+      const showing = iframe.style.display !== "none";
+      iframe.style.display = showing ? "none" : "";
+      pre.style.display = showing ? "" : "none";
+      e.target.classList.toggle("on", showing);
+      e.target.textContent = showing ? "查看预览" : "查看源码";
+      return;
+    }
     const btn = e.target.closest("[data-copy]");
     if (!btn) return;
     const block = btn.closest(".code-block");
