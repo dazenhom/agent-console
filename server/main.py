@@ -6,7 +6,7 @@ import re
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler
@@ -746,6 +746,41 @@ async def get_file(session_id: str = Query(...), path: str = Query(...), downloa
     except Exception:
         raise HTTPException(status_code=415, detail="无法以文本读取，请下载查看")
     return {"name": target.name, "content": content, "size": size}
+
+
+_PREVIEW_EXTS = {".html", ".htm"}
+_PREVIEW_REPORTER = (
+    "<script>(function(){function p(){try{var h=Math.max("
+    "document.documentElement.scrollHeight,(document.body||{}).scrollHeight||0);"
+    "parent.postMessage({__embedHeight:h},'*');}catch(e){}}"
+    "window.addEventListener('load',p);window.addEventListener('resize',p);"
+    "if(window.ResizeObserver){try{new ResizeObserver(p).observe(document.documentElement);}catch(e){}}"
+    "p();setTimeout(p,300);setTimeout(p,1200);})();</script>"
+)
+
+
+@app.get("/api/preview", dependencies=[Depends(require_auth_query)])
+async def preview_html(session_id: str = Query(...), path: str = Query(...)):
+    """把 workdir 内的 HTML 文件以内联沙箱预览返回（附高度上报脚本）。"""
+    from pathlib import Path as _P
+    from .fs_util import safe_path_under
+
+    sess = db.get_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if _P(path).suffix.lower() not in _PREVIEW_EXTS:
+        raise HTTPException(status_code=415, detail="仅支持 HTML 文件预览")
+    base = _P(sess.get("workdir") or config.DEFAULT_WORKDIR)
+    try:
+        target = safe_path_under(base, path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if target.stat().st_size > _FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="文件过大")
+    html = target.read_text(encoding="utf-8", errors="replace")
+    return HTMLResponse(content=html + _PREVIEW_REPORTER)
 
 
 # ---------------- 图片上传（手机拍照/截图发给 Agent）----------------
