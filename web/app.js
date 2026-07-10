@@ -1880,8 +1880,11 @@
         buf = parts.pop();
         for (const p of parts) {
           if (!p.trim()) continue;
-          const line = p.replace(/^(data|event): ?/, "");
-          logEl.textContent += line + "\n";
+          const cleaned = p.split("\n")
+            .map(l => l.replace(/^(data|event): ?/, ""))
+            .filter(l => l.trim())
+            .join("\n");
+          logEl.textContent += cleaned + "\n";
           logEl.scrollTop = logEl.scrollHeight;
         }
       }
