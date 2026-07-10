@@ -172,7 +172,7 @@
               <button id="open-memos-btn" class="manage-entry">📝 备忘录<span id="memo-badge" class="entry-badge" style="display:none"></span></button>
               <button id="open-reports-btn" class="manage-entry">📋 日报记录</button>
               <button id="open-artifacts-btn" class="manage-entry">📦 产出物</button>
-              <button id="open-swanlab-btn" class="manage-entry">📊 SwanLab 上传</button>
+              <button id="open-swanlab-btn" class="manage-entry">📊 SwanLab</button>
               <button id="secretary-trigger-btn" class="manage-entry">🤖 立即生成日报</button>
               <button id="notify-toggle" class="manage-entry">🔔 完成提醒：关</button>
               <button id="voicesend-toggle" class="manage-entry">🎙️ 语音直发：关</button>
@@ -265,41 +265,20 @@
     </main>
   </div>
 
-  <!-- SwanLab 上传面板 -->
+  <!-- SwanLab 面板 -->
   <div id="swanlab-view" class="view manage-view hidden">
     <header class="topbar">
       <button id="swanlab-back" class="icon-btn" aria-label="返回">&#8592;</button>
-      <div class="topbar-title">SwanLab 上传</div>
+      <div class="topbar-title">SwanLab</div>
+      <input id="swanlab-url-input" type="text"
+             style="flex:1;margin:0 8px;padding:4px 8px;border-radius:6px;border:1px solid var(--line);font-size:13px;background:var(--bg-2);color:var(--fg)"
+             placeholder="路径，如 @Speech_Model/zhihangxu_ct_exp" />
+      <button id="swanlab-go-btn" class="mini-btn">Go</button>
     </header>
-    <main class="manage-body">
-      <form id="swanlab-form" class="entity-form">
-        <label>ckpt_dir（必填）
-          <input id="sw-ckpt" placeholder="/path/to/ckpt" required />
-        </label>
-        <label>project
-          <input id="sw-project" placeholder="wer-metrics" />
-        </label>
-        <label>run name
-          <input id="sw-name" placeholder="默认取 ckpt_dir 父目录名" />
-        </label>
-        <label>workspace
-          <input id="sw-workspace" placeholder="默认个人 workspace" />
-        </label>
-        <label>result-dir
-          <input id="sw-result-dir" placeholder="asr_test_ct_results_vllm0.14" />
-        </label>
-        <div class="form-field">
-          <div class="field-label" style="margin-bottom:6px;font-weight:500;font-size:13px">extra-result-dir（每行：dir : PREFIX）</div>
-          <div id="sw-extra-rows"></div>
-          <button type="button" id="sw-add-extra" class="mini-btn" style="margin-top:4px">+ 添加一行</button>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="save" id="sw-submit">上传到 SwanLab</button>
-          <button type="button" class="cancel" id="sw-cancel">取消</button>
-        </div>
-      </form>
-      <pre id="sw-log" class="swanlab-log hidden"></pre>
-    </main>
+    <iframe id="swanlab-frame"
+            style="width:100%;height:calc(100dvh - 48px);border:none;display:block"
+            src="about:blank">
+    </iframe>
   </div>
 
   <!-- 浮层容器：toast 通知 + 模态确认框 -->
@@ -307,7 +286,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=56"></script>
+  <script src="app.js?v=57"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

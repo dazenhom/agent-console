@@ -1807,15 +1807,17 @@
   const openArtifactsBtn = document.getElementById('open-artifacts-btn');
   if (openArtifactsBtn) openArtifactsBtn.onclick = () => openManage('artifacts');
 
-  // SwanLab 面板
+  // SwanLab iframe 面板
+  const SWANLAB_DEFAULT = "@Speech_Model/zhihangxu_ct_exp";
   function openSwanlab() {
     $("app-view").classList.add("hidden");
     $("swanlab-view").classList.remove("hidden");
-    $("sw-log").classList.add("hidden");
-    $("sw-log").textContent = "";
-    $("sw-extra-rows").innerHTML = "";
-    $("swanlab-form").reset();
-    $("sw-submit").disabled = false;
+    const frame = $("swanlab-frame");
+    if (!frame.getAttribute("data-loaded")) {
+      $("swanlab-url-input").value = SWANLAB_DEFAULT;
+      frame.src = BASE + "/proxy/swanlab/" + SWANLAB_DEFAULT;
+      frame.setAttribute("data-loaded", "1");
+    }
   }
   function closeSwanlab() {
     $("swanlab-view").classList.add("hidden");
@@ -1823,76 +1825,12 @@
   }
   $("open-swanlab-btn").onclick = openSwanlab;
   $("swanlab-back").onclick = closeSwanlab;
-  $("sw-cancel").onclick = closeSwanlab;
-
-  $("sw-add-extra").onclick = () => {
-    const row = document.createElement("div");
-    row.className = "sw-extra-row";
-    row.style.cssText = "display:flex;gap:6px;margin-bottom:6px;align-items:center";
-    row.innerHTML = `<input class="sw-extra-dir" placeholder="result_dir" style="flex:2">
-      <input class="sw-extra-prefix" placeholder="PREFIX" style="flex:1">
-      <button type="button" class="mini-btn" style="flex-shrink:0">✕</button>`;
-    row.querySelector("button").onclick = () => row.remove();
-    $("sw-extra-rows").appendChild(row);
+  $("swanlab-go-btn").onclick = () => {
+    const path = $("swanlab-url-input").value.trim();
+    if (path) $("swanlab-frame").src = BASE + "/proxy/swanlab/" + path;
   };
-
-  $("swanlab-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const ckptDir = $("sw-ckpt").value.trim();
-    if (!ckptDir) { toast("请填写 ckpt_dir", "info", 1500); return; }
-    const extra = [];
-    document.querySelectorAll("#sw-extra-rows .sw-extra-row").forEach((row) => {
-      const d = row.querySelector(".sw-extra-dir").value.trim();
-      const p = row.querySelector(".sw-extra-prefix").value.trim();
-      if (d && p) extra.push({ dir: d, prefix: p });
-    });
-    const body = {
-      ckpt_dir: ckptDir,
-      project: $("sw-project").value.trim() || undefined,
-      name: $("sw-name").value.trim() || undefined,
-      workspace: $("sw-workspace").value.trim() || undefined,
-      result_dir: $("sw-result-dir").value.trim() || undefined,
-      extra_result_dirs: extra,
-    };
-    const logEl = $("sw-log");
-    logEl.textContent = "";
-    logEl.classList.remove("hidden");
-    $("sw-submit").disabled = true;
-    try {
-      const res = await fetch(BASE + "/api/swanlab/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + state.token },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const t = await res.text();
-        logEl.textContent = "[HTTP " + res.status + "] " + t;
-        return;
-      }
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop();
-        for (const p of parts) {
-          if (!p.trim()) continue;
-          const cleaned = p.split("\n")
-            .map(l => l.replace(/^(data|event): ?/, ""))
-            .filter(l => l.trim())
-            .join("\n");
-          logEl.textContent += cleaned + "\n";
-          logEl.scrollTop = logEl.scrollHeight;
-        }
-      }
-    } catch (err) {
-      logEl.textContent += "\n[前端错误] " + err.message;
-    } finally {
-      $("sw-submit").disabled = false;
-    }
+  $("swanlab-url-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("swanlab-go-btn").click();
   });
   $("secretary-trigger-btn").onclick = async () => {
     try {
