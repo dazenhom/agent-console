@@ -635,8 +635,16 @@ body.hub-resizing {
 .bubble .msg-audio {
   display: block;
   width: 100%;
-  max-width: 360px;
-  margin: 8px 0;
+  max-width: 400px;
+  min-height: 54px;
+  margin: 8px 0 2px;
+}
+.msg-audio-path {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+  margin-bottom: 6px;
 }
 
 /* markdown 表格（设计图右栏评测表格） */
