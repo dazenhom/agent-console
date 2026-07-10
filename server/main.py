@@ -6,7 +6,7 @@ import re
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler
@@ -1035,6 +1035,66 @@ async def ws_monitor(websocket: WebSocket, token: str = Query(default="")):
         pass
     finally:
         hub.unsubscribe_monitor(sub)
+
+
+# ---------- SwanLab 上传 ----------
+SWANLAB_SCRIPT = "/apdcephfs_gy2/share_302533218/zhihangxu/code/asr-code-release-manager/scripts/infer_scripts/vllm0.14/upload_wer_swanlab.py"
+
+@app.post("/api/swanlab/upload", dependencies=[Depends(require_auth)])
+async def swanlab_upload(payload: dict):
+    import sys, os, signal
+    from .claude_runner import _child_env
+    ckpt_dir = (payload.get("ckpt_dir") or "").strip()
+    if not ckpt_dir:
+        raise HTTPException(status_code=400, detail="缺少 ckpt_dir")
+    cmd = [sys.executable, "-u", SWANLAB_SCRIPT, ckpt_dir]
+    if payload.get("project"):
+        cmd += ["--project", payload["project"].strip()]
+    if payload.get("name"):
+        cmd += ["--name", payload["name"].strip()]
+    if payload.get("workspace"):
+        cmd += ["--workspace", payload["workspace"].strip()]
+    if payload.get("result_dir"):
+        cmd += ["--result-dir", payload["result_dir"].strip()]
+    for row in (payload.get("extra_result_dirs") or []):
+        d = (row.get("dir") or "").strip()
+        p = (row.get("prefix") or "").strip()
+        if d and p:
+            cmd += ["--extra-result-dir", f"{d}:{p}"]
+
+    env = _child_env()
+    env["https_proxy"] = "http://star-proxy.oa.com:3128"
+    env["HTTPS_PROXY"] = "http://star-proxy.oa.com:3128"
+    env["PYTHONUNBUFFERED"] = "1"
+
+    async def gen():
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            async for raw in proc.stdout:
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                yield f"data: {line}\n\n"
+            rc = await proc.wait()
+            if rc == 0:
+                yield "event: done\ndata: [DONE] exit=0\n\n"
+            else:
+                yield f"event: error\ndata: [ERROR] exit={rc}\n\n"
+        except asyncio.CancelledError:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except Exception:
+                pass
+            raise
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------------- 静态前端 ----------------
