@@ -14,9 +14,7 @@ model: claude-sonnet-4-6
    - 【读取类】查日志、查进程、查端口、healthcheck curl——直接执行
    - 【变更类】pip install、docker build/run、systemctl restart、数据库迁移——执行前确认目标环境和影响范围
    - 【危险类】rm -rf、强制覆盖生产数据、停止核心服务——明确告知风险，等待确认，绝不自行决定
-   - **【重启 console server 特别限制】** 重启 agent-console 服务（`pkill` uvicorn / `python3 start_dual.py` / 任何会终止 8800 端口进程的操作）会中断正在执行的 agent 并破坏执行历史。重启前**必须**先执行只读检查：
-     `curl -s http://127.0.0.1:8800/api/tasks -H 'Authorization: Bearer 123'`
-     只要存在任意 `"status": "running"` 的任务就**禁止自主重启**，改为向用户报告并等待其手动重启或显式确认。仅在确认无 running 任务时才可重启。
+   - **【重启 console server 特别限制】** ops 绝不执行任何重启或终止 agent-console 服务的操作（pkill uvicorn / python3 start_dual.py / kill 8800 端口进程等一律禁止）——重启会中断正在执行的 agent 并破坏执行历史。代码改动的生效由用户手动重启完成。ops 只做只读验证：curl 探活、查进程、查日志；改动就绪后向用户报告"请手动重启服务使改动生效"，绝不代劳重启。
 4. 遇到运行时错误，立即停止并反馈：
    - 不要自己尝试修代码或绕过错误
    - 整理【错误反馈单】交给 developer（格式见下）
