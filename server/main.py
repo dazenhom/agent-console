@@ -1041,21 +1041,27 @@ async def ws_monitor(websocket: WebSocket, token: str = Query(default="")):
 SWANLAB_SCRIPT = "/apdcephfs_gy2/share_302533218/zhihangxu/code/asr-code-release-manager/scripts/infer_scripts/vllm0.14/upload_wer_swanlab.py"
 
 SWANLAB_HOST = "https://train-exp.taiji.woa.com"
-SWANLAB_API_KEY = "c9Jlk1bZLgldmuEujxY9C"
+# 只允许反代 SwanLab 的已知路径前缀，防止代理被滥用去打其他内网接口。
+# 空串 "" 放行根路径（首页）。
+SWANLAB_ALLOWED_PREFIXES = ("_next/", "api/", "@", "login/", "static/", "favicon", "")
 
 
 @app.api_route("/proxy/swanlab/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"])
 async def swanlab_proxy(request: Request, path: str):
     # 不加 require_auth：iframe 里的静态资源请求带不上鉴权 header，否则会 401
     import httpx
+    # 路径白名单：只放行 SwanLab 已知前缀，其余一律拒绝
+    if path and not any(path.startswith(p) for p in SWANLAB_ALLOWED_PREFIXES):
+        raise HTTPException(status_code=403, detail="不允许访问该路径")
     url = f"{SWANLAB_HOST}/{path}"
     params = dict(request.query_params)
     headers = {
-        "authorization": SWANLAB_API_KEY,
+        "authorization": config.SWANLAB_API_KEY,
         "user-agent": request.headers.get("user-agent", ""),
     }
     body = await request.body()
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+    # follow_redirects=False：防止重定向链跳出到其他内网地址，3xx 由下面手动改写 Location
+    async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
         resp = await client.request(
             method=request.method,
             url=url,
@@ -1065,7 +1071,33 @@ async def swanlab_proxy(request: Request, path: str):
         )
     excluded = {"transfer-encoding", "content-encoding", "content-length", "connection"}
     resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
-    return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
+
+    # 重定向：把 Location 头里指向 SwanLab 的绝对 URL 改写回代理路径
+    if resp.status_code in (301, 302, 303, 307, 308):
+        location = resp_headers.get("location", "")
+        if location.startswith(SWANLAB_HOST):
+            location = "/proxy/swanlab/" + location[len(SWANLAB_HOST):].lstrip("/")
+            resp_headers["location"] = location
+
+    # HTML 路径重写：SwanLab 是 Next.js 应用，HTML 里资源是绝对路径（/_next、/api…），
+    # 在 iframe 里会打到 agent-console 自身导致 404 白屏。注入 <base> + 正则重写绝对路径。
+    content_type = resp.headers.get("content-type", "")
+    content = resp.content
+    if "text/html" in content_type:
+        try:
+            text = content.decode("utf-8", errors="replace")
+            base_tag = '<base href="/proxy/swanlab/">'
+            text = text.replace("<head>", f"<head>{base_tag}", 1)
+            if '<base href=' not in text[:200]:
+                text = base_tag + text
+            # 重写 src/href/action 里以单个 / 开头（排除 //）的绝对路径
+            text = re.sub(r'((?:src|href|action)=["\'])(/(?!/))', r'\1/proxy/swanlab/\2', text)
+            content = text.encode("utf-8")
+            resp_headers["content-type"] = "text/html; charset=utf-8"
+        except Exception:
+            pass  # 解码/重写失败就原样透传
+
+    return Response(content=content, status_code=resp.status_code, headers=resp_headers)
 
 @app.post("/api/swanlab/upload", dependencies=[Depends(require_auth)])
 async def swanlab_upload(payload: dict):

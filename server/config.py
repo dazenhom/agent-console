@@ -133,6 +133,11 @@ DEFAULT_WORKDIR = os.environ.get("AGENT_WORKDIR", str(BASE_DIR.parent))
 # 手机登录用的口令，务必改掉默认值
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "change-me-please")
 
+# ---- SwanLab 代理 ----
+# 反代 SwanLab（train-exp.taiji.woa.com）用的 API key。别硬编码在代码里，
+# 部署时用环境变量 SWANLAB_API_KEY 覆盖。
+SWANLAB_API_KEY: str = os.getenv("SWANLAB_API_KEY", "c9Jlk1bZLgldmuEujxY9C")
+
 # ---- 服务 ----
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8800"))
