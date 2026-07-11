@@ -114,5 +114,7 @@ fi
 
 # 单进程模式默认启用调度器（多进程部署时由外部显式关掉）；用户可 RUN_SCHEDULER=0 禁用
 export RUN_SCHEDULER="${RUN_SCHEDULER:-1}"
+# 单进程模式默认在启动时对账目标调度（重启后把卡在 verifying 态的 goal 推出死锁）
+export RECONCILE_ON_START="${RECONCILE_ON_START:-1}"
 
 exec uvicorn server.main:app --host "$HOST" --port "$PORT" "${_SSL_ARGS[@]}"
