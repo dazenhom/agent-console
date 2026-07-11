@@ -462,8 +462,10 @@ def _validate_schedule(payload: dict) -> dict:
         stop_condition = (payload.get("stop_condition") or "").strip()
         if not stop_condition:
             raise HTTPException(status_code=400, detail="目标循环必须填写完成标准（stop_condition）")
+        raw_max = payload.get("max_iterations")
+        # 用 is None 判空（而非 `or`），否则传入 0 会被 falsy 静默替换为默认值，绕过下面的范围校验
         try:
-            max_iterations = int(payload.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
+            max_iterations = config.GOAL_MAX_ITERATIONS if raw_max is None else int(raw_max)
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="max_iterations 需为整数")
         if not (1 <= max_iterations <= 100):
