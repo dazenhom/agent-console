@@ -75,8 +75,10 @@ async def verify(goal: str, stop_condition: str, produced: str) -> tuple[bool, s
         print(f"[goal_verifier] no result, stderr={err_text!r}")
         return False, "验收无输出，按未完成继续"
     lines = result.splitlines()
-    first = lines[0].strip() if lines else ""
-    done = first.lstrip().upper().startswith("DONE")
+    # 取首个非空行精确匹配 == "DONE" 才算完成（容忍前后空白）：绝不误判完成，
+    # 像 "DONE, but I'm not sure..." 这类带尾巴的一律当 CONTINUE 继续迭代。
+    first = next((ln.strip() for ln in lines if ln.strip()), "")
+    done = first.upper() == "DONE"
     reason = re.sub(r"\s+", " ", " ".join(lines[1:])).strip()[:200]
     if not reason:
         reason = "已达成完成标准" if done else "尚未达成，继续迭代"

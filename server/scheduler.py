@@ -137,6 +137,8 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
         return
     # 成本熔断
     if config.GOAL_MAX_COST_USD > 0:
+        # 已知局限（一期接受）：sum_session_cost 从 created_at 起算，会把用户在同一会话里的
+        # 手动回合成本也计入目标循环预算——可能偏保守提前熔断。二期若要精确应按 goal 启动时间戳起算。
         spent = db.sum_session_cost(sid, sch.get("created_at") or 0)
         if spent >= config.GOAL_MAX_COST_USD:
             await _finish_goal(scid, sess, "exhausted",
@@ -201,10 +203,10 @@ async def _finish_goal(scid: str, sess: dict, status: str, reason: str) -> None:
         status="success" if status == "done" else "cancelled",
     ))
     try:
-        await hub.broadcast_monitor({
+        asyncio.ensure_future(hub.broadcast_monitor({
             "type": "goal_update", "schedule_id": scid,
             "goal_status": status, "reason": reason,
-        })
+        }))
     except Exception:
         pass
 

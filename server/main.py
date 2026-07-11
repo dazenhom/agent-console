@@ -24,11 +24,13 @@ _VALID_MODES = set(config.CLAUDE_MODELS) | {"fast", "strong", "super"}
 async def lifespan(app: FastAPI):
     # 启动：初始化 SQLite。比 @app.on_event("startup") 更可靠，TestClient / 多种部署方式都能触发。
     db.init_db()
+    # 目标循环卡在 producing/verifying 的复位到 running：无条件跑（幂等 UPDATE，双进程各跑一次
+    # 无害）。不能藏在 RECONCILE_ON_START 守卫下——默认 run.sh 不设该变量，否则重启后目标循环永久卡死。
+    db.reconcile_goal_schedules()
     # 仅在被显式要求的进程里对齐僵尸 running 状态（双端口下只让一个进程做，避免重复）。
     import os
     if os.environ.get("RECONCILE_ON_START"):
         db.reconcile_stale_running()
-        db.reconcile_goal_schedules()  # 目标循环卡在 producing/verifying 的复位到 running
         # 清理隔离会话遗留的失效 worktree 记录（目录被删但 git 元数据残留），各 repo 去重后 prune 一次
         try:
             bases = {
@@ -538,9 +540,12 @@ async def schedules_update(sid: str, payload: dict):
                            "at_hhmm": norm["at_hhmm"]})
             fields["next_run"] = scheduler.compute_next_run(norm["kind"], norm["interval_min"], norm["at_hhmm"])
     elif fields.get("enabled") == 1:
-        # 重新启用：goal 复位状态机到 running 并重算 next_run；interval/daily 缺 next_run 才补算
+        # 重新启用：goal 干净重启循环（复位 running + iter_count 归零 + 清 last_feedback），
+        # 否则 done/exhausted 态重新启用会立刻因 iter_count>=max 再次 exhausted 空转；interval/daily 缺 next_run 才补算
         if sch.get("kind") == "goal":
             fields["goal_status"] = "running"
+            fields["iter_count"] = 0
+            fields["last_feedback"] = ""
             fields["next_run"] = scheduler.compute_next_run("goal", None, None)
         elif not sch.get("next_run"):
             fields["next_run"] = scheduler.compute_next_run(sch["kind"], sch.get("interval_min"), sch.get("at_hhmm"))

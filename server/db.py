@@ -84,7 +84,7 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 session_id TEXT,
                 prompt TEXT NOT NULL,
-                kind TEXT,            -- interval / daily
+                kind TEXT,            -- interval / daily / goal
                 interval_min INTEGER, -- kind=interval：每多少分钟
                 at_hhmm TEXT,         -- kind=daily：每天 HH:MM
                 enabled INTEGER DEFAULT 1,
