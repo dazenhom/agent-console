@@ -672,16 +672,18 @@ async def triage_dispatch(tid: str):
 
 @app.post("/api/triage/{tid}/ignore", dependencies=[Depends(require_auth)])
 async def triage_ignore(tid: str):
-    if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
-        raise HTTPException(status_code=404, detail="待分诊事项不存在")
+    rows = db._query("SELECT * FROM todos WHERE id=?", (tid,))
+    if not rows or dict(rows[0]).get("status") != "triage":
+        raise HTTPException(status_code=404, detail="该事项已不在待分诊状态")
     db.update_todo(tid, status="cancelled")
     return {"ok": True}
 
 
 @app.post("/api/triage/{tid}/to_todo", dependencies=[Depends(require_auth)])
 async def triage_to_todo(tid: str):
-    if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
-        raise HTTPException(status_code=404, detail="待分诊事项不存在")
+    rows = db._query("SELECT * FROM todos WHERE id=?", (tid,))
+    if not rows or dict(rows[0]).get("status") != "triage":
+        raise HTTPException(status_code=404, detail="该事项已不在待分诊状态")
     db.update_todo(tid, status="pending", source="manual")
     return {"ok": True}
 

@@ -14,7 +14,6 @@
 import asyncio
 import json
 import re
-import time
 from datetime import date, datetime
 
 from . import config, db, worktree
@@ -224,7 +223,13 @@ def _build_and_start(payload: dict):
 
 
 async def _auto_dispatch_one(it: dict) -> bool:
-    """自动派单一项：建隔离会话 + 目标循环 + in_progress todo。整体 try 包裹，异常 return False。"""
+    """自动派单一项：建隔离会话 + 目标循环 + in_progress todo。整体 try 包裹，异常 return False。
+
+    _build_and_start 成功后已在 DB 落地一条 running/enabled 的 goal schedule + 一个 idle 会话；
+    若后续 create_todo/update_todo 抛异常，必须在 except 里回滚，否则会留下无 todo 跟踪的孤立
+    schedule，被 scheduler._tick_goal 接管后静默烧 cost。
+    """
+    sess = sch = None
     try:
         sess, sch = await asyncio.to_thread(_build_and_start, it)
         todo = db.create_todo(
@@ -241,6 +246,18 @@ async def _auto_dispatch_one(it: dict) -> bool:
         return True
     except Exception as e:
         print(f"[triage] _auto_dispatch_one error: {type(e).__name__}: {e}")
+        # 回滚半成品：孤立 schedule 必须禁用（防被 _tick_goal 接管），孤立 idle 会话一并删除。
+        # 清理各自兜底，别让清理再抛异常盖掉原始错误。
+        if sch:
+            try:
+                db.update_schedule(sch["id"], enabled=0, goal_status="failed")
+            except Exception as ce:
+                print(f"[triage] _auto_dispatch_one cleanup schedule failed: {type(ce).__name__}")
+        if sess:
+            try:
+                db.delete_session(sess["id"])
+            except Exception as ce:
+                print(f"[triage] _auto_dispatch_one cleanup session failed: {type(ce).__name__}")
         return False
 
 
