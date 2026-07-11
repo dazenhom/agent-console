@@ -85,6 +85,19 @@ GOAL_MAX_ITERATIONS = int(os.environ.get("GOAL_MAX_ITERATIONS", "10"))
 GOAL_MAX_COST_USD = float(os.environ.get("GOAL_MAX_COST_USD", "5"))
 GOAL_VERIFY_TIMEOUT = float(os.environ.get("GOAL_VERIFY_TIMEOUT", "60"))
 
+# ---- Triage 自动分流（H3）----
+# 秘书生成晚报后，用便宜模型（CLAUDE_MODEL_KANBAN）对当日会话/任务做一次性分诊：
+# 判断哪些是值得跟进的事项，逐项给出置信度与建议动作。默认保守——TRIAGE_AUTO_DISPATCH=false
+# 时全部进"待分诊收件箱"等人工确认，绝不自动派单。只有开了自动派单、且置信度够高、
+# 范围小、有明确完成标准，且未超每日上限时，才建隔离会话+目标循环自动开工。
+TRIAGE_ENABLED = os.environ.get("TRIAGE_ENABLED", "true").lower() == "true"
+TRIAGE_AUTO_DISPATCH = os.environ.get("TRIAGE_AUTO_DISPATCH", "false").lower() == "true"
+TRIAGE_AUTO_CONFIDENCE = float(os.environ.get("TRIAGE_AUTO_CONFIDENCE", "0.85"))
+TRIAGE_MAX_AUTO_PER_DAY = int(os.environ.get("TRIAGE_MAX_AUTO_PER_DAY", "2"))
+TRIAGE_MAX_ITEMS = int(os.environ.get("TRIAGE_MAX_ITEMS", "8"))
+TRIAGE_TIMEOUT = float(os.environ.get("TRIAGE_TIMEOUT", "90"))
+TRIAGE_GOAL_MAX_ITERATIONS = int(os.environ.get("TRIAGE_GOAL_MAX_ITERATIONS", "3"))
+
 # ---- 会话标题异步刷新 ----
 # 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
 # 之后每 TITLE_EVERY_N 回合刷一次；用户手动改名（title_auto=0）后不再自动覆盖。

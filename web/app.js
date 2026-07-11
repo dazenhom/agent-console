@@ -626,14 +626,81 @@
 
     // 排序权重：in_progress 在前，pending 其次，done/cancelled 最后
     const order = { in_progress: 0, pending: 1, done: 2, cancelled: 3 };
-    const sorted = todos.slice().sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1));
+    const sorted = todos.slice()
+      .filter(t => t.status !== "triage")  // 待分诊项走独立收件箱，不混入主看板
+      .sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1));
 
     list.innerHTML = "";
     if (!sorted.length) {
       list.innerHTML = `<div class="kanban-empty">${archived ? "暂无归档任务" : "暂无任务"}</div>`;
+    } else {
+      for (const t of sorted) list.appendChild(renderKanbanRow(t, archived));
+    }
+    if (!archived) renderTriageInbox();
+  }
+
+  // 待分诊收件箱（H3）：秘书晚报后分诊出的待跟进事项，等人工派单/转任务/忽略
+  async function renderTriageInbox() {
+    const box = $("triage-inbox");
+    if (!box) return;
+    let items;
+    try { items = await api("/api/triage"); }
+    catch (e) { box.classList.add("hidden"); return; }
+    if (!items || !items.length) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
       return;
     }
-    for (const t of sorted) list.appendChild(renderKanbanRow(t, archived));
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="triage-head">🔔 待分诊 (${items.length})</div>`;
+    for (const t of items) box.appendChild(renderTriageRow(t));
+  }
+
+  // 单条待分诊事项：标题 + 置信度 + 建议动作徽章 + 理由 + 三个操作按钮
+  function renderTriageRow(t) {
+    const row = document.createElement("div");
+    row.className = "triage-row";
+    row.dataset.id = t.id;
+    const conf = Math.round((t.confidence || 0) * 100);
+    const action = t.suggested_action || "triage";
+    const reason = (t.description || "").trim();
+    row.innerHTML = `
+      <div class="triage-row-main">
+        <div class="triage-row-top">
+          <span class="triage-row-title">${escapeHtml(t.title)}</span>
+          <span class="triage-badge">${escapeHtml(action)}</span>
+          <span class="triage-conf">${conf}%</span>
+        </div>
+        ${reason ? `<div class="triage-row-reason">${escapeHtml(reason)}</div>` : ""}
+      </div>
+      <div class="triage-row-actions">
+        <button class="kanban-act-btn btn-edit" title="派单开工" data-act="dispatch">▶ 派单</button>
+        <button class="kanban-act-btn btn-edit" title="转为普通任务" data-act="to_todo">→ 任务</button>
+        <button class="kanban-act-btn btn-delete" title="忽略" data-act="ignore">🗑</button>
+      </div>`;
+
+    row.querySelector("[data-act='dispatch']").onclick = async () => {
+      try {
+        await api(`/api/triage/${t.id}/dispatch`, { method: "POST" });
+        toast("已派单开工", "success", 1500);
+        await renderKanban();
+      } catch (e) { toast("派单失败：" + e.message, "error"); }
+    };
+    row.querySelector("[data-act='to_todo']").onclick = async () => {
+      try {
+        await api(`/api/triage/${t.id}/to_todo`, { method: "POST" });
+        toast("已转为任务", "success", 1500);
+        await renderKanban();
+      } catch (e) { toast("转任务失败：" + e.message, "error"); }
+    };
+    row.querySelector("[data-act='ignore']").onclick = async () => {
+      try {
+        await api(`/api/triage/${t.id}/ignore`, { method: "POST" });
+        toast("已忽略", "success", 1500);
+        await renderKanban();
+      } catch (e) { toast("忽略失败：" + e.message, "error"); }
+    };
+    return row;
   }
 
   // 归档任务：从活跃看板隐藏（不物理删除），归档视图里可恢复

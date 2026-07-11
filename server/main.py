@@ -639,6 +639,53 @@ async def todos_unarchive(tid: str):
     return {"ok": True, "archived": False}
 
 
+# ---------------- Triage 待分诊收件箱（H3）----------------
+@app.get("/api/triage", dependencies=[Depends(require_auth)])
+async def triage_list():
+    return db.list_todos(status="triage")
+
+
+@app.post("/api/triage/{tid}/dispatch", dependencies=[Depends(require_auth)])
+async def triage_dispatch(tid: str):
+    rows = db._query("SELECT * FROM todos WHERE id=?", (tid,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="待分诊事项不存在")
+    todo = dict(rows[0])
+    if todo.get("status") != "triage":
+        raise HTTPException(status_code=404, detail="该事项已不在待分诊状态")
+    # 读回分诊原始载荷，缺字段用 todo 兜底（人工明示派单，不受自动派单开关和每日上限约束）
+    try:
+        payload = json.loads(todo.get("triage_payload") or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    payload.setdefault("title", todo["title"])
+    if not payload.get("goal_prompt"):
+        payload["goal_prompt"] = todo["title"]
+    if not payload.get("stop_condition"):
+        payload["stop_condition"] = todo.get("description") or payload.get("reason") or "完成该任务"
+    from . import triage
+    ok = await triage._dispatch_existing_todo(tid, payload)
+    if not ok:
+        raise HTTPException(status_code=500, detail="派单失败")
+    return {"ok": True}
+
+
+@app.post("/api/triage/{tid}/ignore", dependencies=[Depends(require_auth)])
+async def triage_ignore(tid: str):
+    if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
+        raise HTTPException(status_code=404, detail="待分诊事项不存在")
+    db.update_todo(tid, status="cancelled")
+    return {"ok": True}
+
+
+@app.post("/api/triage/{tid}/to_todo", dependencies=[Depends(require_auth)])
+async def triage_to_todo(tid: str):
+    if not db._query("SELECT 1 FROM todos WHERE id=?", (tid,)):
+        raise HTTPException(status_code=404, detail="待分诊事项不存在")
+    db.update_todo(tid, status="pending", source="manual")
+    return {"ok": True}
+
+
 # ---------------- 智能任务看板：进展摘要 ----------------
 @app.post("/api/todos/{tid}/refresh_progress", dependencies=[Depends(require_auth)])
 async def todo_refresh_progress(tid: str, force: bool = False):

@@ -188,6 +188,12 @@ def init_db() -> None:
         _add_col("todos", "progress_at REAL DEFAULT 0")
         _add_col("todos", "progress_src_mtime REAL DEFAULT 0")
         _add_col("todos", "archived INTEGER DEFAULT 0")
+        # Triage 自动分流（H3）：来源 / 置信度 / 建议动作 / 分诊原始载荷(json) / 自动派单后的 schedule id
+        _add_col("todos", "source TEXT DEFAULT 'manual'")
+        _add_col("todos", "confidence REAL DEFAULT 0")
+        _add_col("todos", "suggested_action TEXT DEFAULT ''")
+        _add_col("todos", "triage_payload TEXT DEFAULT ''")
+        _add_col("todos", "dispatched_schedule_id TEXT DEFAULT ''")
         _add_col("memos", "remind_mode TEXT DEFAULT 'daily'")
         _add_col("memos", "remind_at TEXT DEFAULT ''")
         _add_col("memos", "remind_days_before INTEGER DEFAULT 0")
@@ -595,9 +601,35 @@ def create_todo(title: str, description: str = "", priority: int = 0, session_id
     return dict(_query("SELECT * FROM todos WHERE id=?", (tid,))[0])
 
 
+def create_triage_todo(title: str, description: str, confidence: float,
+                       suggested_action: str, triage_payload: dict) -> dict:
+    """建一条待分诊收件箱条目：status/source 固定 'triage'，原始载荷存 json。"""
+    tid = new_id()
+    now = _now()
+    _exec(
+        "INSERT INTO todos(id,title,description,status,priority,session_id,created_at,updated_at,"
+        "source,confidence,suggested_action,triage_payload)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (tid, title, description, "triage", 0, None, now, now,
+         "triage", confidence, suggested_action, json.dumps(triage_payload, ensure_ascii=False)),
+    )
+    return dict(_query("SELECT * FROM todos WHERE id=?", (tid,))[0])
+
+
+def count_triage_dispatched_today(since_ts: float) -> int:
+    """自 since_ts 起分诊来源已自动派单的条数，用于每日自动派单上限。"""
+    rows = _query(
+        "SELECT COUNT(*) FROM todos WHERE source='triage' AND dispatched_schedule_id != '' AND updated_at>=?",
+        (since_ts,),
+    )
+    return rows[0][0] if rows else 0
+
+
 def update_todo(tid: str, **fields) -> bool:
     allowed = {"title", "description", "status", "priority", "session_id",
-               "progress", "progress_at", "progress_src_mtime", "archived"}
+               "progress", "progress_at", "progress_src_mtime", "archived",
+               "source", "confidence", "suggested_action", "triage_payload",
+               "dispatched_schedule_id"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False

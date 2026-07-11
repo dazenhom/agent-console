@@ -39,6 +39,7 @@ def gather_day_data(day: date) -> dict:
             except Exception:
                 pass
         session_briefs.append({
+            "id": s["id"],
             "title": s["title"],
             "workdir": s["workdir"] if "workdir" in s.keys() else "",
             "status": s["status"],
@@ -229,3 +230,15 @@ async def run_report(report_type: str) -> None:
                 )
         except Exception:
             pass
+
+        # Triage 自动分流（H3）：晚报生成后，用便宜模型对当日数据做一次性分诊，
+        # 逐项进"待分诊收件箱"或（开了自动派单且够有把握时）自动建目标循环开工。
+        # 独立子进程、失败静默，绝不影响日报主流程。
+        if report_type == "evening" and config.TRIAGE_ENABLED:
+            try:
+                from . import triage
+                items = await triage.run_triage(data, todos)
+                if items:
+                    await triage.dispatch_triage(items)
+            except Exception:
+                pass
