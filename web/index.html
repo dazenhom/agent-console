@@ -122,6 +122,10 @@
                 <label>工作目录（workdir）
                   <input id="nf-workdir" placeholder="留空用默认目录" />
                 </label>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="nf-isolate" />
+                  隔离工作区（为本会话创建独立 Git worktree + 分支，并行不互相覆盖）
+                </label>
                 <label>模型
                   <select id="nf-mode">
                     <option value="claude-glm-5.2">GLM 5.2</option>

@@ -1448,7 +1448,9 @@
     };
     if (opts.workdir) body.workdir = opts.workdir;
     if (opts.mode) body.mode = opts.mode;
+    if (opts.isolate) body.isolate = true;
     const s = await api("/api/sessions", { method: "POST", body: JSON.stringify(body) });
+    if (s.isolate_notice) toast(s.isolate_notice, "warn", 4000);
     state.sessionId = s.id;
     localStorage.setItem("ac_session", s.id);
     await loadSessions();
@@ -1462,8 +1464,9 @@
     const title = $("nf-title").value.trim();
     const workdir = $("nf-workdir").value.trim();
     const mode = $("nf-mode").value;
+    const isolate = $("nf-isolate").checked;
     try {
-      await createSession({ title, workdir, mode });
+      await createSession({ title, workdir, mode, isolate });
       $("new-form").reset();
       switchTab("overview");
       openDetail();

@@ -176,6 +176,13 @@ def init_db() -> None:
             _add_col("sessions", "title_auto INTEGER DEFAULT 1")
         if "archived" not in cols:
             _add_col("sessions", "archived INTEGER DEFAULT 0")
+        # Git worktree 会话隔离三列：分支名 / 是否隔离 / 原 repo 目录（删除时据此清理 worktree）
+        if "worktree_branch" not in cols:
+            _add_col("sessions", "worktree_branch TEXT DEFAULT ''")
+        if "is_worktree" not in cols:
+            _add_col("sessions", "is_worktree INTEGER DEFAULT 0")
+        if "worktree_base" not in cols:
+            _add_col("sessions", "worktree_base TEXT DEFAULT ''")
         # 看板进展摘要三列：正文 / 生成时间 / 生成时所依据的 jsonl mtime（用于缓存判断）
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")
@@ -222,14 +229,17 @@ def _query(sql: str, params: tuple = ()):  # 读操作
 
 
 # ---------- sessions ----------
-def create_session(title: str, workdir: str, mode: str | None = None) -> dict:
+def create_session(title: str, workdir: str, mode: str | None = None,
+                   worktree_branch: str = "", is_worktree: int = 0, worktree_base: str = "") -> dict:
     sid = new_id()
     now = _now()
     m = mode or config.CLAUDE_DEFAULT_MODE
     _exec(
-        "INSERT INTO sessions(id,title,claude_session_id,workdir,status,mode,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,?,?)",
-        (sid, title or "新会话", None, workdir, "idle", m, now, now),
+        "INSERT INTO sessions(id,title,claude_session_id,workdir,status,mode,"
+        "worktree_branch,is_worktree,worktree_base,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, title or "新会话", None, workdir, "idle", m,
+         worktree_branch, is_worktree, worktree_base, now, now),
     )
     return get_session(sid)
 

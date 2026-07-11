@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler
+from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler, worktree
 from .claude_runner import runner
 from .session_hub import hub, Subscriber
 
@@ -28,6 +28,17 @@ async def lifespan(app: FastAPI):
     import os
     if os.environ.get("RECONCILE_ON_START"):
         db.reconcile_stale_running()
+        # 清理隔离会话遗留的失效 worktree 记录（目录被删但 git 元数据残留），各 repo 去重后 prune 一次
+        try:
+            bases = {
+                s.get("worktree_base")
+                for s in db.list_sessions(include_archived=True)
+                if s.get("is_worktree") and s.get("worktree_base")
+            }
+            for b in bases:
+                worktree.prune(b)
+        except Exception:
+            pass
     scheduler.start()  # 挂起定时任务后台循环
     global _uploads_cleanup_task
     _uploads_cleanup_task = asyncio.ensure_future(_uploads_cleanup_loop())
@@ -97,7 +108,20 @@ async def create_session(payload: dict):
     title = payload.get("title", "新会话")
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
     mode = payload.get("mode") if payload.get("mode") in _VALID_MODES else None
-    return db.create_session(title, workdir, mode)
+    branch, is_wt, wt_base, notice = "", 0, "", ""
+    if payload.get("isolate"):
+        base = workdir
+        path, branch = await asyncio.to_thread(worktree.create, base, title)
+        if branch:
+            workdir, is_wt, wt_base = path, 1, base
+        else:
+            branch = ""
+            notice = "该目录不是 Git 仓库（或创建 worktree 失败），已使用共享工作区，未隔离。"
+    s = db.create_session(title, workdir, mode,
+                          worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base)
+    if notice:
+        s["isolate_notice"] = notice  # 仅本次响应提示，不入库
+    return s
 
 
 @app.patch("/api/sessions/{sid}/mode", dependencies=[Depends(require_auth)])
@@ -140,7 +164,8 @@ async def set_session_workdir(sid: str, payload: dict):
 
 @app.delete("/api/sessions/{sid}", dependencies=[Depends(require_auth)])
 async def remove_session(sid: str):
-    if not db.get_session(sid):
+    sess = db.get_session(sid)
+    if not sess:
         raise HTTPException(status_code=404, detail="会话不存在")
     linked = db.todos_linked_to_session(sid)
     if linked:
@@ -148,6 +173,9 @@ async def remove_session(sid: str):
             status_code=409,
             detail="该会话已被智能看板任务关联，无法删除。请先在看板中解除关联：" + "、".join(linked[:5]),
         )
+    # 隔离会话：物理删除时清理 worktree 目录（不删分支，合并/保留由人工决定）
+    if sess.get("is_worktree") and sess.get("worktree_base"):
+        await asyncio.to_thread(worktree.remove, sess.get("workdir"), sess.get("worktree_base"))
     db.delete_session(sid)
     return {"ok": True}
 

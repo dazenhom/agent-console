@@ -594,6 +594,9 @@ body.hub-resizing {
 /* 表单 */
 .entity-form { display: flex; flex-direction: column; gap: 14px; max-width: 720px; }
 .entity-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+/* checkbox 行：横排，勾选框在文案左侧 */
+.entity-form label.checkbox-label { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
+.entity-form label.checkbox-label input { width: auto; }
 /* 会话选择器容器：与 label 同样的竖排布局，但不是 <label>，避免点击被劫持到内部输入框 */
 .entity-form .form-field { display: flex; flex-direction: column; gap: 6px; }
 .entity-form .form-field > .field-label { font-size: 13px; color: var(--muted); }
@@ -700,6 +703,7 @@ body.hub-resizing {
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.success { border-color: var(--green); }
 .toast.error { border-color: var(--red); }
+.toast.warn { border-color: var(--yellow); }
 .toast.info { border-color: var(--accent); }
 
 /* ---------- 备忘提醒横幅 ---------- */

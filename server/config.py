@@ -129,6 +129,10 @@ WECOM_TIMEOUT = float(os.environ.get("WECOM_TIMEOUT", "15"))
 # Agent 默认工作目录（它在哪个目录里干活）
 DEFAULT_WORKDIR = os.environ.get("AGENT_WORKDIR", str(BASE_DIR.parent))
 
+# ---- Git Worktree 会话隔离 ----
+# 隔离会话的独立 worktree 目录都放这个根下，分支前缀 agent/。
+WORKTREES_ROOT = os.environ.get("WORKTREES_ROOT", str(BASE_DIR / "data" / "worktrees"))
+
 # ---- 鉴权 ----
 # 手机登录用的口令，务必改掉默认值
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "change-me-please")
