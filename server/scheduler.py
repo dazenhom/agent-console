@@ -23,6 +23,8 @@ TICK_SEC = 30
 def compute_next_run(kind: str, interval_min, at_hhmm, *, after: float | None = None) -> float | None:
     """算下一次运行的 epoch 秒。after 不传则用当前时间。"""
     now = after if after is not None else time.time()
+    if kind == "goal":
+        return now + config.GOAL_POLL_SEC
     if kind == "interval":
         try:
             m = int(interval_min)
@@ -58,6 +60,9 @@ async def _run_loop():
                     # 会话已删 → 顺手禁用这条定时任务，避免空转
                     db.update_schedule(sch["id"], enabled=0)
                     continue
+                if sch.get("kind") == "goal":
+                    await _tick_goal(sch, sess, now)
+                    continue
                 # 已在跑就跳过本次（下个 tick 再看），避免堆叠
                 if not hub.is_running(sid):
                     try:
@@ -69,6 +74,140 @@ async def _run_loop():
         except Exception:
             pass
         await asyncio.sleep(TICK_SEC)
+
+
+# ---------- 目标循环（kind=goal）状态机 ----------
+# 每个 tick 只推进一步，转换先写库再动作（防重复触发）：
+#   running   ─[会话空闲 & 未触顶]→ start_turn(迭代prompt), iter_count+1, goal_status=producing
+#   producing ─[会话跑完]→ goal_status=verifying(先落库), ensure_future 后台 verify
+#   verifying ─[后台任务完成]→ DONE→done / CONTINUE→running(存反馈)或 exhausted
+#   done/exhausted：终态，enabled=0
+# verifier 是 fire-and-forget（后台 ensure_future），绝不在 tick 主体 await——否则阻塞调度循环。
+
+def _build_goal_prompt(sch: dict) -> str:
+    """拼一轮迭代指令：目标 + 完成标准 +（有则）上轮验收反馈 + 轮次提示。"""
+    iter_no = int(sch.get("iter_count") or 0) + 1
+    parts = [
+        "【目标】\n" + (sch.get("prompt") or "").strip(),
+        "\n【完成标准】\n" + (sch.get("stop_condition") or "").strip(),
+    ]
+    feedback = (sch.get("last_feedback") or "").strip()
+    if feedback:
+        parts.append("\n【上一轮验收反馈，请针对性改进】\n" + feedback)
+    parts.append(f"\n（这是第 {iter_no} 轮迭代，请朝完成标准推进，做完即可，不必啰嗦汇报。）")
+    return "".join(parts)
+
+
+async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
+    """按状态机推进一步。"""
+    from .session_hub import hub
+    scid = sch["id"]
+    sid = sess["id"]
+    status = sch.get("goal_status") or "running"
+
+    # 终态：确保停用
+    if status in ("done", "exhausted"):
+        db.update_schedule(scid, enabled=0)
+        return
+
+    # verifying：后台验收任务在跑，本 tick 什么都不做，只顺延 next_run 避免反复被 due
+    if status == "verifying":
+        db.update_schedule(scid, next_run=compute_next_run("goal", None, None, after=now))
+        return
+
+    # producing：等本轮会话跑完
+    if status == "producing":
+        if hub.is_running(sid):
+            db.update_schedule(scid, next_run=compute_next_run("goal", None, None, after=now))
+            return
+        # 会话已空闲 → 转 verifying（先落库再起后台任务，防重复触发）
+        db.update_schedule(scid, goal_status="verifying",
+                           next_run=compute_next_run("goal", None, None, after=now))
+        asyncio.ensure_future(_run_goal_verify(scid))
+        return
+
+    # running：发起新一轮迭代（若未在跑、未触顶）
+    if hub.is_running(sid):
+        db.update_schedule(scid, next_run=compute_next_run("goal", None, None, after=now))
+        return
+    iter_count = int(sch.get("iter_count") or 0)
+    max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
+    if iter_count >= max_iter:
+        await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）仍未完成")
+        return
+    # 成本熔断
+    if config.GOAL_MAX_COST_USD > 0:
+        spent = db.sum_session_cost(sid, sch.get("created_at") or 0)
+        if spent >= config.GOAL_MAX_COST_USD:
+            await _finish_goal(scid, sess, "exhausted",
+                               f"已达成本上限（${spent:.2f} ≥ ${config.GOAL_MAX_COST_USD}）")
+            return
+    prompt = _build_goal_prompt(sch)
+    try:
+        await hub.start_turn(sid, prompt)
+    except Exception:
+        # 起回合失败：不推进状态，仅顺延 next_run，下个 tick 重试
+        db.update_schedule(scid, next_run=compute_next_run("goal", None, None, after=now))
+        return
+    db.update_schedule(scid, goal_status="producing", iter_count=iter_count + 1,
+                       last_run=now, next_run=compute_next_run("goal", None, None, after=now))
+
+
+async def _run_goal_verify(scid: str) -> None:
+    """后台验收本轮产出，是唯一把状态推回 running/done 的地方。
+    整体 try/except 兜底：任何异常都复位 running，绝不让状态卡死在 verifying。"""
+    from . import goal_verifier, kanban
+    try:
+        sch = db.get_schedule(scid)
+        if not sch or sch.get("goal_status") != "verifying":
+            return
+        sess = db.get_session(sch["session_id"])
+        if not sess:
+            db.update_schedule(scid, enabled=0)
+            return
+        # 读本轮产出片段
+        produced = ""
+        if sess.get("claude_session_id"):
+            p = kanban._session_jsonl_path(sess["claude_session_id"], sess.get("workdir"))
+            if p:
+                produced = kanban._extract_recent_text(p)
+        done, reason = await goal_verifier.verify(sch.get("prompt") or "",
+                                                  sch.get("stop_condition") or "", produced)
+        iter_count = int(sch.get("iter_count") or 0)
+        max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
+        if done:
+            await _finish_goal(scid, sess, "done", reason)
+        elif iter_count >= max_iter:
+            await _finish_goal(scid, sess, "exhausted",
+                               f"已达迭代上限（{max_iter} 轮）：{reason}")
+        else:
+            db.update_schedule(scid, goal_status="running", last_feedback=reason)
+    except Exception as e:
+        db.update_schedule(scid, goal_status="running",
+                          last_feedback=f"[verify异常:{type(e).__name__}]")
+
+
+async def _finish_goal(scid: str, sess: dict, status: str, reason: str) -> None:
+    """落终态并停用，推企微 + 广播 monitor。"""
+    from . import wecom_notify
+    from .session_hub import hub
+    db.update_schedule(scid, goal_status=status, enabled=0)
+    title = (sess or {}).get("title") or "会话"
+    head = "🎯 目标已达成" if status == "done" else "⏹️ 目标循环终止"
+    asyncio.ensure_future(wecom_notify.notify(
+        title=title,
+        user_text=head,
+        reply_text=reason,
+        status="success" if status == "done" else "cancelled",
+    ))
+    try:
+        await hub.broadcast_monitor({
+            "type": "goal_update", "schedule_id": scid,
+            "goal_status": status, "reason": reason,
+        })
+    except Exception:
+        pass
+
 
 
 _task = None

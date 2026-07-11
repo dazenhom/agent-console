@@ -422,7 +422,9 @@ class SessionHub:
             await self._emit_session_update(sid)
 
             # 企业微信：该会话没有任何前台订阅者就发（含 0 订阅者）。
-            if config.WECOM_ENABLED and not self._has_foreground_sub(sid):
+            # 但目标循环（kind=goal）的每轮迭代不逐轮推送——只在 _finish_goal 终态推一次，
+            # 避免自迭代过程刷屏。
+            if config.WECOM_ENABLED and not self._has_foreground_sub(sid) and not db.has_active_goal(sid):
                 sess2 = db.get_session(sid)
                 asyncio.ensure_future(wecom_notify.notify(
                     title=(sess2 or {}).get("title") or "会话",

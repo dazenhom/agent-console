@@ -192,6 +192,13 @@ def init_db() -> None:
         _add_col("memos", "remind_at TEXT DEFAULT ''")
         _add_col("memos", "remind_days_before INTEGER DEFAULT 0")
         _add_col("tasks", "resolved_model TEXT")
+        # 目标循环（kind=goal）：自然语言停止条件 / 迭代上限 / 已迭代次数 /
+        # 状态机字段（running/producing/verifying/done/exhausted）/ 上一轮验收反馈
+        _add_col("schedules", "stop_condition TEXT DEFAULT ''")
+        _add_col("schedules", "max_iterations INTEGER DEFAULT 10")
+        _add_col("schedules", "iter_count INTEGER DEFAULT 0")
+        _add_col("schedules", "goal_status TEXT DEFAULT ''")
+        _add_col("schedules", "last_feedback TEXT DEFAULT ''")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")
@@ -439,12 +446,15 @@ def get_schedule(sid: str) -> dict | None:
     return dict(rows[0]) if rows else None
 
 
-def create_schedule(session_id: str, prompt: str, kind: str, interval_min, at_hhmm, next_run: float) -> dict:
+def create_schedule(session_id: str, prompt: str, kind: str, interval_min, at_hhmm, next_run: float,
+                    stop_condition: str = "", max_iterations: int = 10, goal_status: str = "") -> dict:
     sid = new_id()
     _exec(
-        "INSERT INTO schedules(id,session_id,prompt,kind,interval_min,at_hhmm,enabled,next_run,last_run,created_at)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (sid, session_id, prompt, kind, interval_min, at_hhmm, 1, next_run, None, _now()),
+        "INSERT INTO schedules(id,session_id,prompt,kind,interval_min,at_hhmm,enabled,next_run,last_run,created_at,"
+        "stop_condition,max_iterations,iter_count,goal_status,last_feedback)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, session_id, prompt, kind, interval_min, at_hhmm, 1, next_run, None, _now(),
+         stop_condition, max_iterations, 0, goal_status, ""),
     )
     return get_schedule(sid)
 
@@ -469,6 +479,33 @@ def delete_schedule(sid: str) -> bool:
 def due_schedules(now_ts: float) -> list[dict]:
     rows = _query("SELECT * FROM schedules WHERE enabled=1 AND next_run IS NOT NULL AND next_run<=?", (now_ts,))
     return [dict(r) for r in rows]
+
+
+def sum_session_cost(session_id: str, since_ts: float) -> float:
+    """某会话自 since_ts 起累计的回合花费（美元），用于目标循环的成本熔断。"""
+    rows = _query(
+        "SELECT COALESCE(SUM(cost_usd),0) FROM tasks WHERE session_id=? AND started_at>=?",
+        (session_id, since_ts),
+    )
+    return float(rows[0][0]) if rows else 0.0
+
+
+def reconcile_goal_schedules() -> None:
+    """进程重启后把卡在中间态的目标循环复位：producing/verifying 的 fire-and-forget
+    任务已随进程消失，不会自愈；重启时归位到 running，下个 tick 重新推进。"""
+    _exec(
+        "UPDATE schedules SET goal_status='running' WHERE kind='goal' AND goal_status IN ('producing','verifying')"
+    )
+
+
+def has_active_goal(session_id: str) -> bool:
+    """该会话是否挂着一条启用中、且未进入终态的目标循环。用于抑制 per-turn 企微通知。"""
+    rows = _query(
+        "SELECT 1 FROM schedules WHERE session_id=? AND kind='goal' AND enabled=1"
+        " AND goal_status NOT IN ('done','exhausted') LIMIT 1",
+        (session_id,),
+    )
+    return bool(rows)
 
 
 # ---------- todos（待办事项）----------

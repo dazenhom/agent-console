@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
     import os
     if os.environ.get("RECONCILE_ON_START"):
         db.reconcile_stale_running()
+        db.reconcile_goal_schedules()  # 目标循环卡在 producing/verifying 的复位到 running
         # 清理隔离会话遗留的失效 worktree 记录（目录被删但 git 元数据残留），各 repo 去重后 prune 一次
         try:
             bases = {
@@ -449,12 +450,24 @@ async def import_do(payload: dict):
 
 # ---------------- 定时/周期任务 ----------------
 def _validate_schedule(payload: dict) -> dict:
-    """校验并归一化定时任务参数。返回 {kind, interval_min, at_hhmm}。"""
+    """校验并归一化定时任务参数。返回 {kind, interval_min, at_hhmm[, stop_condition, max_iterations]}。"""
     kind = payload.get("kind")
-    if kind not in ("interval", "daily"):
-        raise HTTPException(status_code=400, detail="kind 仅支持 interval / daily")
+    if kind not in ("interval", "daily", "goal"):
+        raise HTTPException(status_code=400, detail="kind 仅支持 interval / daily / goal")
     interval_min = None
     at_hhmm = None
+    if kind == "goal":
+        stop_condition = (payload.get("stop_condition") or "").strip()
+        if not stop_condition:
+            raise HTTPException(status_code=400, detail="目标循环必须填写完成标准（stop_condition）")
+        try:
+            max_iterations = int(payload.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_iterations 需为整数")
+        if not (1 <= max_iterations <= 100):
+            raise HTTPException(status_code=400, detail="max_iterations 需在 1..100 之间")
+        return {"kind": kind, "interval_min": None, "at_hhmm": None,
+                "stop_condition": stop_condition, "max_iterations": max_iterations}
     if kind == "interval":
         try:
             interval_min = int(payload.get("interval_min"))
@@ -488,6 +501,11 @@ async def schedules_create(payload: dict):
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt 不能为空")
     norm = _validate_schedule(payload)
+    if norm["kind"] == "goal":
+        nxt = scheduler.compute_next_run("goal", None, None)
+        return db.create_schedule(session_id, prompt, "goal", None, None, nxt,
+                                  stop_condition=norm["stop_condition"],
+                                  max_iterations=norm["max_iterations"], goal_status="running")
     nxt = scheduler.compute_next_run(norm["kind"], norm["interval_min"], norm["at_hhmm"])
     return db.create_schedule(session_id, prompt, norm["kind"], norm["interval_min"], norm["at_hhmm"], nxt)
 
@@ -508,11 +526,24 @@ async def schedules_update(sid: str, payload: dict):
     # 改了调度规格 → 重算 next_run
     if "kind" in payload:
         norm = _validate_schedule(payload)
-        fields.update(norm)
-        fields["next_run"] = scheduler.compute_next_run(norm["kind"], norm["interval_min"], norm["at_hhmm"])
-    elif fields.get("enabled") == 1 and not sch.get("next_run"):
-        # 重新启用且没有 next_run → 按现有规格补算
-        fields["next_run"] = scheduler.compute_next_run(sch["kind"], sch.get("interval_min"), sch.get("at_hhmm"))
+        if norm["kind"] == "goal":
+            fields.update({
+                "kind": "goal", "interval_min": None, "at_hhmm": None,
+                "stop_condition": norm["stop_condition"], "max_iterations": norm["max_iterations"],
+                "goal_status": "running", "iter_count": 0, "last_feedback": "",
+            })
+            fields["next_run"] = scheduler.compute_next_run("goal", None, None)
+        else:
+            fields.update({"kind": norm["kind"], "interval_min": norm["interval_min"],
+                           "at_hhmm": norm["at_hhmm"]})
+            fields["next_run"] = scheduler.compute_next_run(norm["kind"], norm["interval_min"], norm["at_hhmm"])
+    elif fields.get("enabled") == 1:
+        # 重新启用：goal 复位状态机到 running 并重算 next_run；interval/daily 缺 next_run 才补算
+        if sch.get("kind") == "goal":
+            fields["goal_status"] = "running"
+            fields["next_run"] = scheduler.compute_next_run("goal", None, None)
+        elif not sch.get("next_run"):
+            fields["next_run"] = scheduler.compute_next_run(sch["kind"], sch.get("interval_min"), sch.get("at_hhmm"))
     db.update_schedule(sid, **fields)
     return db.get_schedule(sid)
 

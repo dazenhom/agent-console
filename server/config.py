@@ -76,6 +76,15 @@ CLAUDE_SESSION_IDLE_SEC = int(os.environ.get("CLAUDE_SESSION_IDLE_SEC", "3600"))
 SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "true").lower() == "true"
 SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "60"))
 
+# ---- 目标循环（kind=goal）----
+# 给一个自然语言目标 + 完成标准，让会话自迭代直到 verifier（小模型 checker）判定达成
+# 或触顶（迭代数/成本）。GOAL_POLL_SEC 是状态机 tick 间隔；verifier 用 CLAUDE_MODEL_KANBAN
+# 与生产会话模型分离，保证 maker/checker 独立。GOAL_MAX_COST_USD<=0 表示不做成本熔断。
+GOAL_POLL_SEC = int(os.environ.get("GOAL_POLL_SEC", "30"))
+GOAL_MAX_ITERATIONS = int(os.environ.get("GOAL_MAX_ITERATIONS", "10"))
+GOAL_MAX_COST_USD = float(os.environ.get("GOAL_MAX_COST_USD", "5"))
+GOAL_VERIFY_TIMEOUT = float(os.environ.get("GOAL_VERIFY_TIMEOUT", "60"))
+
 # ---- 会话标题异步刷新 ----
 # 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
 # 之后每 TITLE_EVERY_N 回合刷一次；用户手动改名（title_auto=0）后不再自动覆盖。
