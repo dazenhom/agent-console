@@ -1924,6 +1924,7 @@
   function fmtSchedule(s) {
     if (s.kind === "interval") return `每 ${s.interval_min} 分钟`;
     if (s.kind === "daily") return `每天 ${s.at_hhmm}`;
+    if (s.kind === "goal") return `目标循环 (${s.iter_count || 0}/${s.max_iterations || 10})`;
     return s.kind || "";
   }
   function fmtTs(ts) {
@@ -1948,9 +1949,15 @@
         const head = el("div", "e-head");
         head.appendChild(el("span", "e-name", escapeHtml(fmtSchedule(it))));
         head.appendChild(el("span", "e-tag", it.enabled ? "启用" : "停用"));
+        if (it.kind === "goal" && it.goal_status) {
+          head.appendChild(el("span", "e-tag", it.goal_status));
+        }
         li.appendChild(head);
         li.appendChild(el("div", "e-desc", escapeHtml((it.prompt || "").slice(0, 80))));
-        li.appendChild(el("div", "e-preview", `会话：${escapeHtml(sess ? sess.title : "(已删除)")} · 下次：${fmtTs(it.next_run)}`));
+        const previewText = it.kind === "goal"
+          ? `会话：${escapeHtml(sess ? sess.title : "(已删除)")} · 迭代 ${it.iter_count || 0}/${it.max_iterations || 10} · 状态：${escapeHtml(it.goal_status || "-")}`
+          : `会话：${escapeHtml(sess ? sess.title : "(已删除)")} · 下次：${fmtTs(it.next_run)}`;
+        li.appendChild(el("div", "e-preview", previewText));
         const actions = el("div", "e-actions");
         const toggle = el("button", "btn-sm", it.enabled ? "停用" : "启用");
         toggle.onclick = async () => {
@@ -1980,7 +1987,7 @@
     $("manage-list").classList.add("hidden");
     $("manage-new").classList.add("hidden");
     form.classList.remove("hidden");
-    let d = { id: null, session_id: state.sessionId || (state.sessions[0] || {}).id || "", prompt: "", kind: "interval", interval_min: 60, at_hhmm: "09:00", enabled: 1 };
+    let d = { id: null, session_id: state.sessionId || (state.sessions[0] || {}).id || "", prompt: "", kind: "interval", interval_min: 60, at_hhmm: "09:00", stop_condition: "", max_iterations: 10, enabled: 1 };
     if (id) {
       const all = await api("/api/schedules").catch(() => []);
       const found = all.find((x) => x.id === id);
@@ -1998,6 +2005,7 @@
         <select id="sf-kind">
           <option value="interval" ${d.kind === "interval" ? "selected" : ""}>每隔一段时间</option>
           <option value="daily" ${d.kind === "daily" ? "selected" : ""}>每天定时</option>
+          <option value="goal" ${d.kind === "goal" ? "selected" : ""}>目标循环（自迭代直到达成）</option>
         </select>
       </label>
       <label id="sf-interval-wrap">间隔分钟数
@@ -2005,6 +2013,12 @@
       </label>
       <label id="sf-daily-wrap">每天几点（HH:MM，24小时制）
         <input id="sf-hhmm" value="${escapeAttr(d.at_hhmm || "09:00")}" placeholder="09:00" />
+      </label>
+      <label id="sf-stop-wrap">完成标准（自然语言，验收员据此判断是否达成）
+        <textarea id="sf-stop" class="tall" placeholder="例：README 里新增「快速开始」章节，且 pytest 全部通过">${escapeHtml(d.stop_condition || "")}</textarea>
+      </label>
+      <label id="sf-maxiter-wrap">最大迭代轮数（1-100）
+        <input id="sf-maxiter" type="number" min="1" max="100" value="${escapeAttr(String(d.max_iterations || 10))}" />
       </label>
       <div class="form-err" id="f-err"></div>
       <div class="form-actions">
@@ -2015,6 +2029,8 @@
       const k = form.querySelector("#sf-kind").value;
       form.querySelector("#sf-interval-wrap").style.display = k === "interval" ? "" : "none";
       form.querySelector("#sf-daily-wrap").style.display = k === "daily" ? "" : "none";
+      form.querySelector("#sf-stop-wrap").style.display = k === "goal" ? "" : "none";
+      form.querySelector("#sf-maxiter-wrap").style.display = k === "goal" ? "" : "none";
     };
     syncKind();
     form.querySelector("#sf-kind").onchange = syncKind;
@@ -2028,8 +2044,13 @@
         interval_min: parseInt(form.querySelector("#sf-interval").value, 10),
         at_hhmm: form.querySelector("#sf-hhmm").value.trim(),
       };
+      if (body.kind === "goal") {
+        body.stop_condition = form.querySelector("#sf-stop").value.trim();
+        body.max_iterations = parseInt(form.querySelector("#sf-maxiter").value, 10);
+      }
       const errEl = form.querySelector("#f-err");
       if (!body.prompt) { errEl.textContent = "指令不能为空"; return; }
+      if (body.kind === "goal" && !body.stop_condition) { errEl.textContent = "完成标准不能为空"; return; }
       try {
         if (id) await api(`/api/schedules/${id}`, { method: "PUT", body: JSON.stringify(body) });
         else await api("/api/schedules", { method: "POST", body: JSON.stringify(body) });
