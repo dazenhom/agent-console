@@ -128,7 +128,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   grid-template-columns: var(--hub-left-w, minmax(0, 1fr)) 6px minmax(0, 1fr); gap: 12px;
 }
 .hub-left, .hub-right {
-  min-height: 0; display: flex; flex-direction: column;
+  min-height: 0; position: relative; display: flex; flex-direction: column;
   background: var(--bg-2); border: 1px solid var(--line); border-radius: 18px;
   box-shadow: var(--shadow); overflow: hidden;
 }
@@ -692,7 +692,7 @@ body.hub-resizing {
 .imp-meta { font-size: 11px; color: var(--muted-2); flex: 0 0 auto; }
 
 /* ---------- 新消息 pill / 回顶部 ---------- */
-.new-msg-pill { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%) translateY(8px); padding: 7px 16px; border-radius: 18px; background: var(--accent); color: #fff; border: none; font-size: 13px; font-weight: 600; box-shadow: var(--shadow-lg); opacity: 0; pointer-events: none; transition: opacity var(--ease), transform var(--ease); z-index: 5; }
+.new-msg-pill { position: absolute; left: 50%; bottom: calc(76px + var(--safe-b)); transform: translateX(-50%) translateY(8px); padding: 7px 16px; border-radius: 18px; background: var(--accent); color: #fff; border: none; font-size: 13px; font-weight: 600; box-shadow: var(--shadow-lg); opacity: 0; pointer-events: none; transition: opacity var(--ease), transform var(--ease); z-index: 5; }
 .new-msg-pill.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
 .to-top-btn { position: absolute; left: 50%; top: 14px; transform: translateX(-50%) translateY(-8px); padding: 6px 14px; border-radius: 16px; background: var(--bg-2); color: var(--text); border: 1px solid var(--line); font-size: 12px; box-shadow: var(--shadow-lg); opacity: 0; pointer-events: none; transition: opacity var(--ease), transform var(--ease); z-index: 5; }
 .to-top-btn.show { opacity: .96; transform: translateX(-50%) translateY(0); pointer-events: auto; }
