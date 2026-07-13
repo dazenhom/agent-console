@@ -49,7 +49,7 @@ CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() 
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
 # 看板进展摘要专用模型：用 hy preview（tclaude 提供的预览档模型），概括质量更好。
 CLAUDE_MODEL_KANBAN = os.environ.get("CLAUDE_MODEL_KANBAN", "claude-hy3-preview")
-CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-4-6")
+CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-5")
 CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-4-8[1m]")
 # 前端可选的完整模型列表（mode 直接存模型 ID）。GLM 5.2 放首位作为默认。
 CLAUDE_MODELS = [

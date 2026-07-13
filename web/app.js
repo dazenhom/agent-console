@@ -1511,7 +1511,7 @@
     // 旧档位迁移映射（与后端 session_hub 的 _LEGACY_MAP 保持一致）
     const legacyMap = {
       fast: "claude-haiku-4-5",
-      strong: "claude-sonnet-4-6",
+      strong: "claude-sonnet-5",
       super: "claude-opus-4-8[1m]",
     };
     let mode = cur.mode;
