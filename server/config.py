@@ -74,6 +74,20 @@ CLAUDE_PERSISTENT = os.environ.get("CLAUDE_PERSISTENT", "true").lower() == "true
 # 设长一点（1小时）减少冷启动重复发生——冷启动是 tclaude 加载工具/认证的固有开销。
 CLAUDE_SESSION_IDLE_SEC = int(os.environ.get("CLAUDE_SESSION_IDLE_SEC", "3600"))
 
+# ---- Codex CLI (tcodex wrapper) ----
+# tcodex 是对 codex CLI 的 wrapper；跑无状态的 `tcodex -- exec [resume <id>] --json ...`，
+# 每回合一个子进程，从 stdout 逐行读 JSONL 事件。默认走 workspace-write 沙箱，
+# CODEX_BYPASS=true 时改用 --dangerously-bypass-approvals-and-sandbox 免审批（root/内网常用）。
+CODEX_BIN = os.environ.get("CODEX_BIN", "/root/.nvm/versions/node/v22.23.1/bin/tcodex")
+CODEX_SANDBOX = os.environ.get("CODEX_SANDBOX", "workspace-write")
+CODEX_BYPASS = os.environ.get("CODEX_BYPASS", "true").lower() == "true"
+CODEX_SKIP_GIT_CHECK = os.environ.get("CODEX_SKIP_GIT_CHECK", "true").lower() == "true"
+CODEX_TURN_TIMEOUT = int(os.environ.get("CODEX_TURN_TIMEOUT", "3600"))
+CODEX_MODEL = os.environ.get("CODEX_MODEL", "")
+# 会话底层 Agent 引擎：claude（tclaude）或 codex（tcodex）。新会话默认 claude。
+VALID_ENGINES = {"claude", "codex"}
+DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
+
 # ---- 会话行摘要（列表里"刚做了什么"一句话）----
 # 用一次性 Haiku 概括（独立子进程，不碰会话上下文）；失败回退启发式截断。
 SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "true").lower() == "true"

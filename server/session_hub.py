@@ -22,7 +22,13 @@ import time
 from typing import Awaitable, Callable
 
 from . import config, db, wecom_notify
-from .claude_runner import runner
+from .claude_runner import runner as claude_runner
+from .codex_runner import runner as codex_runner
+
+
+def _runner_for(sess):
+    """按会话 engine 字段选 runner：codex → CodexRunner，其余 → ClaudeRunner。"""
+    return codex_runner if (sess or {}).get("engine") == "codex" else claude_runner
 
 
 # ---------------- stream-json 事件翻译（从 main.py 搬入） ----------------
@@ -347,7 +353,12 @@ class SessionHub:
             }
             model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
             db.update_task(task_id, resolved_model=model_name)
-            _turn_fn = runner.send_turn if config.CLAUDE_PERSISTENT else runner.run_turn
+            r = _runner_for(sess)
+            # codex 无常驻进程，恒走 run_turn；claude 视配置走 send_turn / run_turn
+            if (sess or {}).get("engine") == "codex":
+                _turn_fn = r.run_turn
+            else:
+                _turn_fn = r.send_turn if config.CLAUDE_PERSISTENT else r.run_turn
             ret = await _turn_fn(
                 session_id=sid,
                 message=user_text,
@@ -366,7 +377,7 @@ class SessionHub:
                     "type": "message", "role": "error",
                     "content": {"message": "Agent 上下文已失效，正在自动重启并续接近期对话…"},
                 })
-                await runner.forget_session(sid)
+                await r.forget_session(sid)
                 db.update_session(sid, claude_session_id=None)
                 retry_message = self._build_resume_recovery_prompt(sid, user_text)
                 ret = await _turn_fn(
@@ -536,7 +547,7 @@ class SessionHub:
             pend.pop(request_id, None)
             if not pend:
                 self._pending_perms.pop(sid, None)
-        await runner.respond_permission(sid, request_id, behavior, updated_input)
+        await _runner_for(db.get_session(sid)).respond_permission(sid, request_id, behavior, updated_input)
 
     async def resend_pending_perms(self, sid: str, sub: "Subscriber") -> None:
         """WS 连接建立时，把该会话未决的权限请求重发给这条订阅者（补断线期间漏掉的弹窗）。"""
@@ -554,11 +565,12 @@ class SessionHub:
 
     async def cancel(self, sid: str) -> None:
         # 取消回合前，对该会话所有待确认权限自动回 deny，避免 CLI 卡在等授权
+        r = _runner_for(db.get_session(sid))
         pend = self._pending_perms.pop(sid, None)
         if pend:
             for request_id in list(pend.keys()):
-                await runner.respond_permission(sid, request_id, "deny")
-        await runner.cancel(sid)
+                await r.respond_permission(sid, request_id, "deny")
+        await r.cancel(sid)
 
 
 hub = SessionHub()

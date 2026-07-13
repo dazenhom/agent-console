@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler, worktree
 from .claude_runner import runner
-from .session_hub import hub, Subscriber
+from .session_hub import hub, Subscriber, _runner_for
 
 
 _uploads_cleanup_task = None
@@ -45,6 +45,8 @@ async def lifespan(app: FastAPI):
     scheduler.start()  # 挂起定时任务后台循环
     global _uploads_cleanup_task
     _uploads_cleanup_task = asyncio.ensure_future(_uploads_cleanup_loop())
+    # 预热 SwanLab sid，避免第一批请求并发登录竞争
+    asyncio.ensure_future(_swanlab_sid_warmup())
     yield
     # 关闭：当前没有需要清理的资源（子进程在每回合结束时会自行清理）。
     if _uploads_cleanup_task and not _uploads_cleanup_task.done():
@@ -111,6 +113,8 @@ async def create_session(payload: dict):
     title = payload.get("title", "新会话")
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
     mode = payload.get("mode") if payload.get("mode") in _VALID_MODES else None
+    engine = payload.get("engine")
+    engine = engine if engine in config.VALID_ENGINES else config.DEFAULT_ENGINE
     branch, is_wt, wt_base, notice = "", 0, "", ""
     if payload.get("isolate"):
         base = workdir
@@ -121,7 +125,8 @@ async def create_session(payload: dict):
             branch = ""
             notice = "该目录不是 Git 仓库（或创建 worktree 失败），已使用共享工作区，未隔离。"
     s = db.create_session(title, workdir, mode,
-                          worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base)
+                          worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base,
+                          engine=engine)
     if notice:
         s["isolate_notice"] = notice  # 仅本次响应提示，不入库
     return s
@@ -213,7 +218,7 @@ async def resume_session(sid: str):
 
     try:
         workdir = sess.get("workdir") or config.DEFAULT_WORKDIR
-        status = await runner.ensure_warm(sid, workdir, resume=claude_session_id)
+        status = await _runner_for(sess).ensure_warm(sid, workdir, resume=claude_session_id)
         return {"ok": True, "status": status, "claude_session_id": claude_session_id}
     except (FileNotFoundError, PermissionError, OSError) as e:
         raise HTTPException(status_code=500, detail=f"启动 Claude CLI 失败：{e}")
@@ -863,6 +868,27 @@ async def get_file(session_id: str = Query(...), path: str = Query(...), downloa
     return {"name": target.name, "content": content, "size": size}
 
 
+@app.get("/api/audio")
+async def get_audio(path: str = Query(default=None)):
+    """音频代理：给 viz HTML 里的 <audio src> 用。本路由不挂 require_auth——因为
+    app.mount("/fs", StaticFiles(directory="/")) 已无鉴权全盘暴露文件系统，本路由
+    不算新增风险面；安全边界靠 AUDIO_ROOTS 白名单（只允许读白名单 root 下的绝对
+    路径）+ 文件类型过滤。Range/206 由 Starlette FileResponse 原生支持。"""
+    from pathlib import Path as _P
+
+    if not path:
+        raise HTTPException(status_code=400, detail="缺少 path 参数")
+    p = _P(path).resolve()
+    if not any(p == _P(root).resolve() or p.is_relative_to(_P(root).resolve()) for root in config.AUDIO_ROOTS):
+        raise HTTPException(status_code=403, detail="路径不在允许的音频根目录内")
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    ext = p.suffix.lower()
+    if ext not in _AUDIO_EXTS:
+        raise HTTPException(status_code=415, detail="不支持的文件类型")
+    return FileResponse(str(p), media_type=_AUDIO_MIME.get(ext, "application/octet-stream"))
+
+
 _PREVIEW_EXTS = {".html", ".htm"}
 _PREVIEW_REPORTER = (
     "<script>(function(){function p(){try{var h=Math.max("
@@ -1154,7 +1180,23 @@ SWANLAB_SCRIPT = "/apdcephfs_gy2/share_302533218/zhihangxu/code/asr-code-release
 SWANLAB_HOST = "https://train-exp.taiji.woa.com"
 # 只允许反代 SwanLab 的已知路径前缀，防止代理被滥用去打其他内网接口。
 # 空串 "" 放行根路径（首页）。
-SWANLAB_ALLOWED_PREFIXES = ("_next/", "api/", "@", "login/", "static/", "favicon", "")
+SWANLAB_ALLOWED_PREFIXES = ("_next/", "api/", "@", "login/", "static/", "favicon", "assets/", "")
+_swanlab_sid_cache: dict = {}
+
+
+async def _swanlab_sid_warmup():
+    """启动时预热 SwanLab sid，避免第一批并发请求各自登录。"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(
+                f"{SWANLAB_HOST}/api/login/api_key",
+                headers={"authorization": config.SWANLAB_API_KEY},
+            )
+            if r.status_code == 200:
+                _swanlab_sid_cache["sid"] = r.json().get("sid", "")
+    except Exception:
+        pass
 
 
 @app.api_route("/proxy/swanlab/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"])
@@ -1165,72 +1207,161 @@ async def swanlab_proxy(request: Request, path: str):
     if path and not any(path.startswith(p) for p in SWANLAB_ALLOWED_PREFIXES):
         raise HTTPException(status_code=403, detail="不允许访问该路径")
 
-    # sid：优先用浏览器带回来的 cookie，没有则服务端用 api_key 登录换取一个
-    # （SwanLab API 只认 sid cookie，仅带 authorization header 会 403）
-    browser_sid = request.cookies.get("swanlab_sid")
-    if not browser_sid:
+    async def _login_swanlab() -> str:
         try:
-            async with httpx.AsyncClient(timeout=10) as login_client:
-                login_resp = await login_client.post(
+            async with httpx.AsyncClient(timeout=10) as lc:
+                r = await lc.post(
                     f"{SWANLAB_HOST}/api/login/api_key",
                     headers={"authorization": config.SWANLAB_API_KEY},
                 )
-                if login_resp.status_code == 200:
-                    browser_sid = login_resp.json().get("sid", "")
+                if r.status_code == 200:
+                    sid = r.json().get("sid", "")
+                    _swanlab_sid_cache["sid"] = sid
+                    return sid
         except Exception:
-            browser_sid = ""
+            pass
+        return ""
+
+    # sid：服务端缓存，避免每次重新登录
+    browser_sid = _swanlab_sid_cache.get("sid", "") or request.cookies.get("swanlab_sid", "")
+    if not browser_sid:
+        browser_sid = await _login_swanlab()
 
     url = f"{SWANLAB_HOST}/{path}"
     params = dict(request.query_params)
-    # 转发给 SwanLab 的 header：sid cookie + user-agent
-    forward_headers = {
-        "user-agent": request.headers.get("user-agent", ""),
+    FORWARD_HEADERS = {
+        "user-agent", "accept", "accept-language", "content-type",
+        "rsc", "next-router-state-tree", "next-router-prefetch",
+        "next-router-segment-prefetch", "next-url",
     }
+    forward_headers = {k: v for k, v in request.headers.items() if k.lower() in FORWARD_HEADERS}
     if browser_sid:
         forward_headers["cookie"] = f"sid={browser_sid}"
     body = await request.body()
-    # follow_redirects=False：防止重定向链跳出到其他内网地址，3xx 由下面手动改写 Location
+
     async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
         resp = await client.request(
-            method=request.method,
-            url=url,
-            params=params,
-            headers=forward_headers,
-            content=body,
+            method=request.method, url=url, params=params,
+            headers=forward_headers, content=body,
         )
+
+    # sid 过期（401）→ 重新登录并重试一次
+    if resp.status_code == 401 and path.startswith("api/"):
+        _swanlab_sid_cache.clear()
+        browser_sid = await _login_swanlab()
+        if browser_sid:
+            forward_headers["cookie"] = f"sid={browser_sid}"
+            async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
+                resp = await client.request(
+                    method=request.method, url=url, params=params,
+                    headers=forward_headers, content=body,
+                )
     # set-cookie 也剔除：sid 由下面统一用 swanlab_sid 名字重新种，避免 SwanLab 原始 cookie 干扰
     excluded = {"transfer-encoding", "content-encoding", "content-length", "connection", "set-cookie"}
     resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
 
-    # 重定向：把 Location 头里指向 SwanLab 的绝对 URL 改写回代理路径
+    # 重定向：把 Location 头里指向 SwanLab 的绝对/相对 URL 改写回代理路径
     if resp.status_code in (301, 302, 303, 307, 308):
         location = resp.headers.get("location", "")
         if location.startswith(SWANLAB_HOST):
             location = "/proxy/swanlab/" + location[len(SWANLAB_HOST):].lstrip("/")
-            resp_headers["location"] = location
+        elif location.startswith("/") and not location.startswith("/proxy/swanlab"):
+            location = "/proxy/swanlab" + location
+        resp_headers["location"] = location
 
-    # HTML 路径重写：SwanLab 是 Next.js 应用，HTML 里资源是绝对路径（/_next、/api…），
-    # 在 iframe 里会打到 agent-console 自身导致 404 白屏。注入 <base> + 正则重写绝对路径。
+    # HTML 路径重写：SwanLab 是 Vite SPA，资源路径和 JS 内 fetch('/api/...') 都是绝对路径，
+    # 在 iframe 里会打到 agent-console 自身导致 404/错误。三步处理：
+    # 1) 注入 <base> 让相对路径资源走代理
+    # 2) 正则重写 src/href/action 里的绝对路径
+    # 3) 注入 fetch/XHR 拦截器，把 JS 运行时的 /api/ 请求重定向到 /proxy/swanlab/api/
     content_type = resp.headers.get("content-type", "")
     content = resp.content
+    if "javascript" in content_type or (path.startswith("assets/") and "text" not in content_type and "image" not in content_type):
+        try:
+            text = content.decode("utf-8", errors="replace")
+            # Vite preload URL builder: function(e){return"/"+e} → patch to include proxy prefix
+            if 'return"/"+e' in text:
+                text = text.replace('return"/"+e', 'return"/proxy/swanlab/"+e')
+                content = text.encode("utf-8")
+        except Exception:
+            pass
     if "text/html" in content_type:
         try:
             text = content.decode("utf-8", errors="replace")
-            base_tag = '<base href="/proxy/swanlab/">'
-            # 注入 <base>（防重复：SwanLab HTML 本身带 <head>，只在没有 <base> 时注入一次）
-            if '<base href=' not in text:
-                if "<head>" in text:
-                    text = text.replace("<head>", f"<head>{base_tag}", 1)
-                else:
-                    text = base_tag + text
-            # 重写 src/href/action 里以单个 / 开头（排除 //）的绝对路径
+            # 第一步：正则重写 src/href/action 里的绝对路径（必须在注入 <base> 之前，否则会把注入的 base href 也重写一遍）
             text = re.sub(r'((?:src|href|action)=["\'])(/(?!/))', r'\1/proxy/swanlab\2', text)
+            # 第二步：注入 fetch/XHR 拦截器 + Vue Router pathname 修正 + <base>，统一拼在 <head> 开头
+            base_tag = '<base href="/proxy/swanlab/">'
+            interceptor = """<script>
+(function(){
+  var _PROXY = '/proxy/swanlab';
+  var _ORIGIN = location.origin; // e.g. https://29.191.211.218.devcloud.woa.com
+  function rewrite(url) {
+    if (typeof url !== 'string') return url;
+    // absolute URL pointing to same origin: strip origin then add proxy prefix
+    if (url.startsWith(_ORIGIN + '/') && !url.startsWith(_ORIGIN + _PROXY)) {
+      return _ORIGIN + _PROXY + url.slice(_ORIGIN.length);
+    }
+    // root-relative path
+    if (url.startsWith('/') && !url.startsWith(_PROXY)) {
+      return _PROXY + url;
+    }
+    return url;
+  }
+  // 1. fetch interceptor — covers Vite preload polyfill's fetch(link.href) and API calls
+  var _fetch = window.fetch;
+  window.fetch = function(input, init) {
+    if (typeof input === 'string') input = rewrite(input);
+    else if (input && typeof input === 'object' && input.url) input = new Request(rewrite(input.url), input);
+    return _fetch.call(this, input, init);
+  };
+  // 2. XHR interceptor
+  var _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    arguments[1] = rewrite(url);
+    return _open.apply(this, arguments);
+  };
+  // 3. Intercept createElement so any <link href="/assets/..."> or <script src="/assets/...">
+  //    gets the proxy prefix BEFORE it is appended to the DOM.
+  var _createElement = document.createElement.bind(document);
+  document.createElement = function(tag) {
+    var el = _createElement(tag);
+    var t = tag.toLowerCase();
+    if (t === 'link') {
+      Object.defineProperty(el, 'href', {
+        set: function(v) { el.setAttribute('href', rewrite(v)); },
+        get: function() { return el.getAttribute('href') || ''; },
+        configurable: true,
+      });
+    } else if (t === 'script') {
+      Object.defineProperty(el, 'src', {
+        set: function(v) { el.setAttribute('src', rewrite(v)); },
+        get: function() { return el.getAttribute('src') || ''; },
+        configurable: true,
+      });
+    }
+    return el;
+  };
+  // 4. dynamic import() resolves relative to the current page URL which already has /proxy/swanlab/
+  //    so "./dynamic/App.js" resolves correctly. Nothing needed here.
+  // NOTE: do NOT override history.pushState/replaceState or location.pathname.
+  // Vue Router reads <base href="/proxy/swanlab/"> and sets its own base correctly.
+  // Overriding pushState causes an infinite navigation loop.
+})();
+</script>"""
+            inject = base_tag + interceptor
+            if "<head>" in text:
+                text = text.replace("<head>", f"<head>{inject}", 1)
+            else:
+                text = inject + text
             content = text.encode("utf-8")
             resp_headers["content-type"] = "text/html; charset=utf-8"
         except Exception:
             pass  # 解码/重写失败就原样透传
 
     response = Response(content=content, status_code=resp.status_code, headers=resp_headers)
+    if "text/html" in resp_headers.get("content-type", ""):
+        response.headers["cache-control"] = "no-store"
     # 把 sid 种到浏览器 cookie，后续 JS 的 /api 请求会自动带上（转发时再取出塞进 sid cookie）
     if browser_sid:
         response.set_cookie(
