@@ -522,6 +522,7 @@
     meta.appendChild(el("span", null, fmtTime(s.updated_at) || ""));
     if (s.workdir) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, shortDir(s.workdir))); }
     if (s.mode) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, modeLabel(s.mode))); }
+    if (s.engine === "codex") { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", "engine-badge", "Codex")); }
     main.append(row1, sub, meta);
     main.onclick = () => {
       const q = (($("session-search") && $("session-search").value) || "").trim().toLowerCase();
@@ -1503,6 +1504,8 @@
       cur.mode = mode;
     }
     if (mode) sel.value = mode;
+    // codex 会话的模型由 CODEX_MODEL 决定，顶栏切换无意义，置灰
+    sel.disabled = (cur && cur.engine === "codex");
   }
   // 切换档位：持久化到会话（后端 PATCH），下一回合即生效
   $("mode-select").onchange = async (e) => {
@@ -1521,6 +1524,7 @@
     };
     if (opts.workdir) body.workdir = opts.workdir;
     if (opts.mode) body.mode = opts.mode;
+    if (opts.engine) body.engine = opts.engine;
     if (opts.isolate) body.isolate = true;
     const s = await api("/api/sessions", { method: "POST", body: JSON.stringify(body) });
     if (s.isolate_notice) toast(s.isolate_notice, "warn", 4000);
@@ -1537,9 +1541,10 @@
     const title = $("nf-title").value.trim();
     const workdir = $("nf-workdir").value.trim();
     const mode = $("nf-mode").value;
+    const engine = $("nf-engine").value;
     const isolate = $("nf-isolate").checked;
     try {
-      await createSession({ title, workdir, mode, isolate });
+      await createSession({ title, workdir, mode, engine, isolate });
       $("new-form").reset();
       switchTab("overview");
       openDetail();
