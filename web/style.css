@@ -1672,3 +1672,5 @@ select[multiple] { min-height: 80px; height: auto; }
   vertical-align: middle;
   letter-spacing: 0.02em;
 }
+
+.mode-price-hint:empty { display: none; }
