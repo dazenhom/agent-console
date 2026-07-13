@@ -114,7 +114,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .tabbar .mode-select {
   flex: 0 0 auto; background: var(--bg-3); color: var(--text);
   border: 1px solid var(--line); border-radius: 10px;
-  padding: 7px 10px; font-size: 13px; max-width: 130px; transition: border-color var(--ease);
+  padding: 7px 10px; font-size: 13px; max-width: 160px; transition: border-color var(--ease);
 }
 .tabbar .mode-select:hover { border-color: var(--bg-4); }
 .conn-dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--muted-2); margin: 0 4px; }
@@ -845,7 +845,7 @@ body.hub-resizing {
   .tab-btn .tab-label { display: none; }            /* 非激活只留图标 */
   .tab-btn.active { padding: 8px 14px; }
   .tab-btn.active .tab-label { display: inline; }   /* 激活项展开文字 */
-  .tabbar .mode-select { padding: 6px 7px; font-size: 12px; max-width: 110px; }
+  .tabbar .mode-select { padding: 6px 7px; font-size: 12px; max-width: 130px; }
 
   /* 左栏内容：收紧内边距 */
   .hub { grid-template-columns: 1fr; gap: 0; }
@@ -1653,8 +1653,15 @@ select[multiple] { min-height: 80px; height: auto; }
 }
 
 .mode-price-hint {
-  font-size: 11px;
-  color: #888;
-  margin-left: 4px;
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  background: #4a9d6f;
+  padding: 2px 7px;
+  border-radius: 10px;
+  margin-left: 6px;
   white-space: nowrap;
+  vertical-align: middle;
+  letter-spacing: 0.02em;
 }
