@@ -573,6 +573,12 @@
       "claude-haiku-4-5": "Haiku 4.5",
       "claude-hy3-preview": "HY3 Preview",
       "opusplan": "Opus Plan",
+      "claude-sonnet-5": "Sonnet 5",
+      "claude-sonnet-5[1m]": "Sonnet 5 长文",
+      "claude-deepseek-v4-pro": "DeepSeek V4 Pro",
+      "claude-deepseek-v4-pro[1m]": "DeepSeek V4 Pro 长文",
+      "claude-deepseek-v4-flash": "DeepSeek V4 Flash",
+      "claude-deepseek-v4-flash[1m]": "DeepSeek V4 Flash 长文",
       // 兼容旧档位标签
       "fast": "极速", "strong": "均衡", "super": "最强"
     };
@@ -1747,7 +1753,7 @@
       if (shown < msgs.length) renderLoadEarlierBtn();
       const start = msgs.length - shown;
       for (let i = start; i < msgs.length; i++) {
-        appendMessageGrouped(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+        appendMsgWithPreview(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
       }
       if (q) {
         const firstMark = highlightChat(q);
@@ -1785,7 +1791,7 @@
       const prevH = chat.scrollHeight, prevTop = chat.scrollTop;
       const frag = document.createDocumentFragment();
       for (let i = newStart; i < curStart; i++) {
-        appendMessageGrouped(frag, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+        appendMsgWithPreview(frag, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
       }
       btn.after(frag);
       state.histShown = msgs.length - newStart;
@@ -2850,11 +2856,20 @@
           node.appendChild(bar);
         }
       } else {
-        bubble.textContent = content.text || "";
+        const _ut = content.text || "";
+        const _uhp = htmlFilePath(_ut);
+        if (_uhp) {
+          // 路径消息：显示为文件名片，预览由 assistant 侧渲染
+          const fname = _uhp.split("/").pop();
+          bubble.classList.add("html-path-chip");
+          bubble.innerHTML = `<span class="html-path-icon">📄</span><span class="html-path-name">${escapeHtml(fname)}</span><span class="html-path-full">${escapeHtml(_uhp)}</span>`;
+        } else {
+          bubble.textContent = _ut;
+        }
         // user 消息重发按钮：点击把内容填回输入框
         const resend = el("button", "msg-resend", "重发");
         resend.type = "button";
-        resend.onclick = () => { input.value = content.text || ""; input.dispatchEvent(new Event("input")); input.focus(); };
+        resend.onclick = () => { input.value = _ut; input.dispatchEvent(new Event("input")); input.focus(); };
         node.appendChild(resend);
       }
       node.appendChild(bubble);
@@ -2961,6 +2976,21 @@
     chat.appendChild(node);
     requestAnimationFrame(() => node.classList.add("msg-in"));
     if (doScroll) scrollBottom();
+  }
+
+  // 历史消息渲染包装：遇到 user 消息是 HTML 路径时，自动在其后补一条 assistant 预览节点
+  function appendMsgWithPreview(parentEl, groups, role, content, ts) {
+    appendMessageGrouped(parentEl, groups, role, content, ts);
+    if (role === "user") {
+      const _hp = htmlFilePath(content.text || "");
+      if (_hp) {
+        const previewNode = buildMessageNode("assistant", { text: _hp }, ts, false);
+        if (previewNode) {
+          previewNode.classList.add("msg-enter", "msg-in");
+          parentEl.appendChild(previewNode);
+        }
+      }
+    }
   }
 
   // 子智能体归拢：构建消息节点后按 parent 路由。父容器 parentEl（#chat），groups 为
@@ -3498,6 +3528,11 @@
     const queued = state.running;
     if (!queued) {
       renderMessage("user", { text });
+      // 如果是 HTML 文件路径，立即在 assistant 侧插入预览块（不等 agent 回复）
+      const _previewPath = htmlFilePath(text);
+      if (_previewPath) {
+        renderMessage("assistant", { text: _previewPath, _htmlPreview: true });
+      }
     }
     state.ws.send(JSON.stringify({ type: "user_message", content: text }));
     input.value = ""; input.style.height = "auto";
@@ -3890,7 +3925,7 @@
   }
   // 预览接口 URL：把工作区内的 HTML 文件路径转成后端 /api/preview 地址
   function previewUrl(path) {
-    return `${BASE}/api/preview?session_id=${encodeURIComponent(state.sessionId)}&path=${encodeURIComponent(path)}` +
+    return `${BASE}/api/preview?path=${encodeURIComponent(path)}` +
       (state.token ? `&token=${encodeURIComponent(state.token)}` : "");
   }
   const _HTML_FILE_RE = /^(\/[^\s'"(){}<>]+\.html?)$/i;
@@ -3902,10 +3937,14 @@
   }
   // 把 HTML 文件路径包成沙箱 iframe 预览块（走后端 /api/preview 加载）
   function htmlSrcEmbedBlock(path) {
+    const fname = path.split("/").pop();
     return `<div class="html-embed">
-    <div class="cb-head"><span class="cb-lang">HTML 预览 — ${escapeHtml(path)}</span>
-      <button class="html-embed-full" type="button" title="全屏">⛶ 全屏</button></div>
-    <iframe sandbox="allow-scripts" src="${escapeAttr(previewUrl(path))}" loading="lazy"></iframe>
+    <div class="cb-head">
+      <span class="cb-lang">📄 ${escapeHtml(fname)}</span>
+      <span class="html-embed-path" title="${escapeAttr(path)}">${escapeHtml(path)}</span>
+      <button class="html-embed-full" type="button" title="全屏">⛶</button>
+    </div>
+    <iframe sandbox="allow-scripts allow-same-origin allow-forms" src="${escapeAttr(previewUrl(path))}" loading="lazy"></iframe>
   </div>`;
   }
   function nowTs() { return Date.now() / 1000; }
@@ -4113,7 +4152,7 @@
     const iframes = document.querySelectorAll(".html-embed iframe");
     for (const f of iframes) {
       if (f.contentWindow === e.source) {
-        const max = Math.floor(window.innerHeight * 0.8);
+        const max = Math.floor(window.innerHeight * 0.9);
         f.style.minHeight = "0";
         f.style.height = Math.min(Math.ceil(d.__embedHeight) + 4, max) + "px";
         break;

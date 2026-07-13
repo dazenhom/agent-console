@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=41" />
+  <link rel="stylesheet" href="style.css?v=43" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -51,6 +51,12 @@
         <option value="claude-haiku-4-5">Haiku 4.5</option>
         <option value="claude-hy3-preview">HY3 Preview</option>
         <option value="opusplan">Opus Plan</option>
+        <option value="claude-sonnet-5">Sonnet 5</option>
+        <option value="claude-sonnet-5[1m]">Sonnet 5 长文</option>
+        <option value="claude-deepseek-v4-pro">DeepSeek V4 Pro</option>
+        <option value="claude-deepseek-v4-pro[1m]">DeepSeek V4 Pro 长文</option>
+        <option value="claude-deepseek-v4-flash">DeepSeek V4 Flash</option>
+        <option value="claude-deepseek-v4-flash[1m]">DeepSeek V4 Flash 长文</option>
       </select>
       <span id="conn-dot" class="conn-dot" title="连接状态"></span>
     </nav>
@@ -142,6 +148,12 @@
                     <option value="claude-haiku-4-5">Haiku 4.5</option>
                     <option value="claude-hy3-preview">HY3 Preview</option>
                     <option value="opusplan">Opus Plan</option>
+                    <option value="claude-sonnet-5">Sonnet 5</option>
+                    <option value="claude-sonnet-5[1m]">Sonnet 5 长文</option>
+                    <option value="claude-deepseek-v4-pro">DeepSeek V4 Pro</option>
+                    <option value="claude-deepseek-v4-pro[1m]">DeepSeek V4 Pro 长文</option>
+                    <option value="claude-deepseek-v4-flash">DeepSeek V4 Flash</option>
+                    <option value="claude-deepseek-v4-flash[1m]">DeepSeek V4 Flash 长文</option>
                   </select>
                 </label>
                 <div class="form-actions">
@@ -291,7 +303,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=57"></script>
+  <script src="app.js?v=63"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

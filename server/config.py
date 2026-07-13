@@ -59,6 +59,9 @@ CLAUDE_MODELS = [
     "claude-opus-4-7", "claude-opus-4-7[1m]",
     "claude-opus-4-6", "claude-opus-4-6[1m]",
     "claude-haiku-4-5", "claude-hy3-preview", "opusplan",
+    "claude-sonnet-5", "claude-sonnet-5[1m]",
+    "claude-deepseek-v4-pro", "claude-deepseek-v4-pro[1m]",
+    "claude-deepseek-v4-flash", "claude-deepseek-v4-flash[1m]",
 ]
 # 新会话默认模型：GLM 5.2。（旧档位 fast/strong/super 仍兼容，见 session_hub 的 _LEGACY_MAP。）
 CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "claude-glm-5.2")
@@ -167,6 +170,13 @@ SWANLAB_API_KEY: str = os.getenv("SWANLAB_API_KEY", "c9Jlk1bZLgldmuEujxY9C")
 # ---- 服务 ----
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8800"))
+
+# ---- 音频代理白名单 ----
+# GET /api/audio 只允许读取这些 root 下的音频文件（安全边界）。
+# 环境变量 AUDIO_ROOTS 用冒号分隔多个 root 覆盖默认值。
+AUDIO_ROOTS = [
+    r for r in os.environ.get("AUDIO_ROOTS", "/apdcephfs_gy2:/apdcephfs_gy8").split(":") if r
+]
 
 # ---- 存储 ----
 DB_PATH = os.environ.get("DB_PATH", str(BASE_DIR / "data" / "console.db"))
