@@ -1735,7 +1735,6 @@
     // 高亮当前会话行（跨三个列表）
     document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
     syncModeSelect();
-    syncEngineSelect();
     await loadHistory();
     if (prevId !== id) restoreDraft(id);      // 恢复新会话草稿（同会话不覆盖当前输入）
     connectWs();
@@ -1825,6 +1824,8 @@
       state.pendingHighlight = null;
       chat.innerHTML = "";
       toast("加载历史失败：" + e.message, "error");
+      state.histMsgs = [];
+      syncEngineSelect();
     }
   }
 
