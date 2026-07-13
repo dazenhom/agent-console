@@ -95,6 +95,8 @@ def build_evening_prompt(today_data: dict, todos: list) -> str:
 ### 待办事项
 {_format_todos(todos)}
 
+（字数有限时，优先保留：实际完成事项、有风险的待办、需跟进的异常；可省略：无实质内容的套话、已完成任务的细节展开。）
+
 ---
 请输出：
 1. **今日成果摘要**（一两句话）
@@ -120,6 +122,8 @@ def build_morning_prompt(yesterday_data: dict, todos: list) -> str:
 
 ### 当前待办事项
 {_format_todos(todos)}
+
+（字数有限时，优先保留：实际完成事项、有风险的待办、需跟进的异常；可省略：无实质内容的套话、已完成任务的细节展开。）
 
 ---
 请输出：
