@@ -559,6 +559,18 @@
     const parts = String(workdir).replace(/\/$/, "").split("/");
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : workdir;
   }
+  const CODEX_MODELS = ["gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","hy3-preview-ioa"];
+  const CLAUDE_MODELS = [
+    "claude-glm-5.2","claude-glm-5.2[1m]",
+    "claude-sonnet-4-6","claude-sonnet-4-6[1m]",
+    "claude-opus-4-8","claude-opus-4-8[1m]",
+    "claude-opus-4-7","claude-opus-4-7[1m]",
+    "claude-opus-4-6","claude-opus-4-6[1m]",
+    "claude-haiku-4-5","claude-hy3-preview","opusplan",
+    "claude-sonnet-5","claude-sonnet-5[1m]",
+    "claude-deepseek-v4-pro","claude-deepseek-v4-pro[1m]",
+    "claude-deepseek-v4-flash","claude-deepseek-v4-flash[1m]",
+  ];
   const PRICE_TABLE = {
     "claude-haiku-4-5":           { in: 0.80, out: 4   },
     "claude-sonnet-4-6":          { in: 3,    out: 15  },
@@ -598,6 +610,13 @@
       "claude-deepseek-v4-pro[1m]": "DeepSeek V4 Pro 长文",
       "claude-deepseek-v4-flash": "DeepSeek V4 Flash",
       "claude-deepseek-v4-flash[1m]": "DeepSeek V4 Flash 长文",
+      // codex 模型
+      "gpt-5.5": "GPT-5.5",
+      "gpt-5.4": "GPT-5.4",
+      "gpt-5.3-codex": "GPT-5.3 Codex",
+      "gpt-5.1-codex": "GPT-5.1 Codex",
+      "gpt-5.1-codex-mini": "GPT-5.1 Mini",
+      "hy3-preview-ioa": "HY3 Preview",
       // 兼容旧档位标签
       "fast": "极速", "strong": "均衡", "super": "最强"
     };
@@ -1508,12 +1527,30 @@
     const cur = state.sessions.find((s) => s.id === state.sessionId);
     const sel = $("mode-select");
     if (!sel || !cur) return;
+    if (cur.engine === "codex") {
+      // codex 会话：用 codex 模型列表重建 options，可自由切换。
+      sel.innerHTML = CODEX_MODELS.map((id) => `<option value="${id}">${modeLabel(id)}</option>`).join("");
+      sel.disabled = false;
+      let mode = cur.mode;
+      if (!CODEX_MODELS.includes(mode)) {
+        // 脏值/claude 模型残留：默认首个 codex 模型并持久化。
+        mode = CODEX_MODELS[0];
+        api(`/api/sessions/${cur.id}/mode`, { method: "PATCH", body: JSON.stringify({ mode }) }).catch(() => {});
+        cur.mode = mode;
+      }
+      sel.value = mode;
+      const hint = $("mode-price-hint");
+      if (hint) hint.textContent = modePriceStr(sel.value) || "";
+      return;
+    }
     // 旧档位迁移映射（与后端 session_hub 的 _LEGACY_MAP 保持一致）
     const legacyMap = {
       fast: "claude-haiku-4-5",
       strong: "claude-sonnet-5",
       super: "claude-opus-4-8[1m]",
     };
+    // 重建 claude 模型 options（切回 claude 会话时覆盖 codex 会话残留的 options）
+    sel.innerHTML = CLAUDE_MODELS.map((id) => `<option value="${id}">${modeLabel(id)}</option>`).join("");
     let mode = cur.mode;
     if (legacyMap[mode]) {
       // DB 存量旧会话：这些值不是任何 <option>，自动迁移到对应新模型 ID
@@ -1522,8 +1559,7 @@
       cur.mode = mode;
     }
     if (mode) sel.value = mode;
-    // codex 会话的模型由 CODEX_MODEL 决定，顶栏切换无意义，置灰
-    sel.disabled = (cur && cur.engine === "codex");
+    sel.disabled = false;
     const hint = $("mode-price-hint");
     if (hint) hint.textContent = modePriceStr(sel.value) || "";
   }
