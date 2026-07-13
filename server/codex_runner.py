@@ -143,8 +143,17 @@ class CodexRunner:
             while True:
                 try:
                     line = await proc.stdout.readline()
-                except (asyncio.LimitOverrunError, ValueError):
-                    # 单行超长，跳过该行避免崩溃
+                except asyncio.LimitOverrunError:
+                    # 排空超长行，避免 readline 死循环
+                    try:
+                        while True:
+                            chunk = await proc.stdout.read(65536)
+                            if not chunk or b"\n" in chunk:
+                                break
+                    except Exception:
+                        pass
+                    continue
+                except ValueError:
                     continue
                 if not line:
                     break

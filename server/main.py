@@ -164,7 +164,7 @@ async def set_session_workdir(sid: str, payload: dict):
         raise HTTPException(status_code=404, detail="会话不存在")
     if (old.get("workdir") or "").strip() != workdir:
         db.update_session(sid, workdir=workdir, claude_session_id=None)
-        await runner.forget_session(sid)
+        await _runner_for(old).forget_session(sid)
     else:
         db.update_session(sid, workdir=workdir)
     return {"ok": True, "workdir": workdir}
