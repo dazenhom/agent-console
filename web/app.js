@@ -1558,6 +1558,12 @@
       api(`/api/sessions/${cur.id}/mode`, { method: "PATCH", body: JSON.stringify({ mode }) }).catch(() => {});
       cur.mode = mode;
     }
+    if (!CLAUDE_MODELS.includes(mode)) {
+      // 脏值/codex 模型残留：默认首个 claude 模型并持久化。
+      mode = CLAUDE_MODELS[0];
+      api(`/api/sessions/${cur.id}/mode`, { method: "PATCH", body: JSON.stringify({ mode }) }).catch(() => {});
+      cur.mode = mode;
+    }
     if (mode) sel.value = mode;
     sel.disabled = false;
     const hint = $("mode-price-hint");
