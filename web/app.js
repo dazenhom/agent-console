@@ -559,6 +559,24 @@
     const parts = String(workdir).replace(/\/$/, "").split("/");
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : workdir;
   }
+  const PRICE_TABLE = {
+    "claude-haiku-4-5":           { in: 0.80, out: 4   },
+    "claude-sonnet-4-6":          { in: 3,    out: 15  },
+    "claude-sonnet-4-6[1m]":      { in: 3,    out: 15  },
+    "claude-sonnet-5":            { in: 3,    out: 15  },
+    "claude-sonnet-5[1m]":        { in: 3,    out: 15  },
+    "claude-opus-4-6":            { in: 15,   out: 75  },
+    "claude-opus-4-6[1m]":        { in: 15,   out: 75  },
+    "claude-opus-4-7":            { in: 15,   out: 75  },
+    "claude-opus-4-7[1m]":        { in: 15,   out: 75  },
+    "claude-opus-4-8":            { in: 15,   out: 75  },
+    "claude-opus-4-8[1m]":        { in: 15,   out: 75  },
+  };
+  function modePriceStr(m) {
+    const p = PRICE_TABLE[m];
+    if (!p) return null;
+    return `$${p.in}/$${p.out}/M`;
+  }
   function modeLabel(m) {
     const labels = {
       "claude-glm-5.2": "GLM 5.2",
@@ -1506,6 +1524,8 @@
     if (mode) sel.value = mode;
     // codex 会话的模型由 CODEX_MODEL 决定，顶栏切换无意义，置灰
     sel.disabled = (cur && cur.engine === "codex");
+    const hint = $("mode-price-hint");
+    if (hint) hint.textContent = modePriceStr(sel.value) || "";
   }
   // 切换档位：持久化到会话（后端 PATCH），下一回合即生效
   $("mode-select").onchange = async (e) => {
@@ -1515,6 +1535,8 @@
       await api(`/api/sessions/${state.sessionId}/mode`, { method: "PATCH", body: JSON.stringify({ mode }) });
       const cur = state.sessions.find((s) => s.id === state.sessionId);
       if (cur) cur.mode = mode;
+      const hint = $("mode-price-hint");
+      if (hint) hint.textContent = modePriceStr(mode) || "";
     } catch (err) { /* ignore，下次切会话会重新同步 */ }
   };
 
@@ -1536,6 +1558,10 @@
   }
 
   // New Tab 高级配置：自定义标题/目录/档位新建会话
+  $("nf-mode").onchange = (e) => {
+    const hint = $("nf-mode-price-hint");
+    if (hint) hint.textContent = modePriceStr(e.target.value) || "";
+  };
   $("new-form").onsubmit = async (e) => {
     e.preventDefault();
     const title = $("nf-title").value.trim();
