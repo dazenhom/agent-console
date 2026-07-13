@@ -1540,6 +1540,29 @@
     } catch (err) { /* ignore，下次切会话会重新同步 */ }
   };
 
+  // 把当前会话的底层 Agent 回填到详情栏 select；有消息后置灰（回合已开始不可切）
+  function syncEngineSelect() {
+    const cur = state.sessions.find((s) => s.id === state.sessionId);
+    const sel = $("engine-select");
+    if (!sel || !cur) return;
+    sel.value = cur.engine || "claude";
+    sel.disabled = !!(state.histMsgs && state.histMsgs.length > 0);
+  }
+  // 切换底层 Agent：仅在无消息时可切，持久化到会话（后端 PATCH）
+  $("engine-select").onchange = async (e) => {
+    const engine = e.target.value;
+    if (!state.sessionId) return;
+    try {
+      await api(`/api/sessions/${state.sessionId}/engine`, { method: "PATCH", body: JSON.stringify({ engine }) });
+      const cur = state.sessions.find((s) => s.id === state.sessionId);
+      if (cur) cur.engine = engine;
+      syncModeSelect();  // 切到 codex 需把模型档位置灰
+    } catch (err) {
+      toast("切换失败：" + err.message, "error");
+      syncEngineSelect();  // 失败回滚 select 显示
+    }
+  };
+
   async function createSession(opts = {}) {
     const body = {
       title: opts.title || ("新会话 " + new Date().toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit" })),
@@ -1712,6 +1735,7 @@
     // 高亮当前会话行（跨三个列表）
     document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
     syncModeSelect();
+    syncEngineSelect();
     await loadHistory();
     if (prevId !== id) restoreDraft(id);      // 恢复新会话草稿（同会话不覆盖当前输入）
     connectWs();
@@ -1767,12 +1791,15 @@
       const msgs = await api(`/api/sessions/${state.sessionId}/messages`);
       chat.innerHTML = "";
       if (!msgs.length) {
+        state.histMsgs = [];
+        syncEngineSelect();   // 无消息：底层 Agent 可切
         chat.innerHTML = `<div class="chat-welcome"><div class="cw-emoji">💬</div>` +
           `<div class="cw-title">开始新的对话</div>` +
           `<div class="cw-sub">输入指令，或点下方快捷指令快速开始</div></div>`;
         return;
       }
       state.histMsgs = msgs;
+      syncEngineSelect();   // 有消息：底层 Agent 置灰
       const q = state.pendingHighlight;
       let shown = Math.min(HISTORY_WINDOW, msgs.length);
       let hitIdx = -1;

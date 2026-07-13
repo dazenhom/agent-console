@@ -143,6 +143,19 @@ async def set_session_mode(sid: str, payload: dict):
     return {"ok": True, "mode": mode}
 
 
+@app.patch("/api/sessions/{sid}/engine", dependencies=[Depends(require_auth)])
+async def set_session_engine(sid: str, payload: dict):
+    engine = payload.get("engine")
+    if engine not in config.VALID_ENGINES:
+        raise HTTPException(status_code=400, detail="engine 需为：" + ", ".join(sorted(config.VALID_ENGINES)))
+    if not db.get_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if db.list_messages(sid):
+        raise HTTPException(status_code=409, detail="会话已开始，无法切换底层 Agent")
+    db.update_session(sid, engine=engine)
+    return {"ok": True, "engine": engine}
+
+
 @app.patch("/api/sessions/{sid}/title", dependencies=[Depends(require_auth)])
 async def set_session_title(sid: str, payload: dict):
     title = (payload.get("title") or "").strip()
