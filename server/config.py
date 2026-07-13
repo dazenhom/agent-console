@@ -84,6 +84,12 @@ CODEX_BYPASS = os.environ.get("CODEX_BYPASS", "true").lower() == "true"
 CODEX_SKIP_GIT_CHECK = os.environ.get("CODEX_SKIP_GIT_CHECK", "true").lower() == "true"
 CODEX_TURN_TIMEOUT = int(os.environ.get("CODEX_TURN_TIMEOUT", "3600"))
 CODEX_MODEL = os.environ.get("CODEX_MODEL", "")
+# 前端可选的 codex 模型列表（codex 会话的 mode 直接存模型 ID）。gpt-5.5 放首位作为默认。
+CODEX_MODELS = [
+    "gpt-5.5", "gpt-5.4", "gpt-5.3-codex",
+    "gpt-5.1-codex", "gpt-5.1-codex-mini", "hy3-preview-ioa",
+]
+CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.5")
 # 会话底层 Agent 引擎：claude（tclaude）或 codex（tcodex）。新会话默认 claude。
 VALID_ENGINES = {"claude", "codex"}
 DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")

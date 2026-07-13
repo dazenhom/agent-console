@@ -17,7 +17,7 @@ from .session_hub import hub, Subscriber, _runner_for
 _uploads_cleanup_task = None
 
 # 合法 mode：完整模型列表 + 兼容存量的旧档位值。
-_VALID_MODES = set(config.CLAUDE_MODELS) | {"fast", "strong", "super"}
+_VALID_MODES = set(config.CLAUDE_MODELS) | set(config.CODEX_MODELS) | {"fast", "strong", "super"}
 
 
 @asynccontextmanager

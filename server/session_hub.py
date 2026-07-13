@@ -266,7 +266,7 @@ class SessionHub:
                 await self.broadcast(sid, {"type": "error", "message": err})
                 return f"error:{err}"
             user_text = expanded
-        if mode in config.CLAUDE_MODELS or mode in ("fast", "strong", "super"):
+        if mode in config.CLAUDE_MODELS or mode in config.CODEX_MODELS or mode in ("fast", "strong", "super"):
             db.update_session(sid, mode=mode)
         await self.start_turn(sid, user_text)
         return "started"
@@ -343,15 +343,22 @@ class SessionHub:
 
         try:
             sess = db.get_session(sid)
-            # 模型档位 → 模型名
-            sess_mode = (sess or {}).get("mode") or config.CLAUDE_DEFAULT_MODE
-            # 旧档位值映射到具体模型；新会话的 mode 本身就是模型 ID，直接用。
-            _LEGACY_MAP = {
-                "fast": config.CLAUDE_MODEL_FAST,
-                "strong": config.CLAUDE_MODEL_STRONG,
-                "super": config.CLAUDE_MODEL_SUPER,
-            }
-            model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
+            # 模型档位 → 模型名（按 engine 分流：codex 用 CODEX_MODELS，claude 走旧档位映射）
+            engine = (sess or {}).get("engine")
+            sess_mode = (sess or {}).get("mode")
+            if engine == "codex":
+                # codex 会话的 mode 直接存模型 ID；脏值/空值回退到 CODEX_MODEL 或默认模型。
+                cand = model or sess_mode
+                model_name = cand if cand in config.CODEX_MODELS else (config.CODEX_MODEL or config.CODEX_DEFAULT_MODEL)
+            else:
+                sess_mode = sess_mode or config.CLAUDE_DEFAULT_MODE
+                # 旧档位值映射到具体模型；新会话的 mode 本身就是模型 ID，直接用。
+                _LEGACY_MAP = {
+                    "fast": config.CLAUDE_MODEL_FAST,
+                    "strong": config.CLAUDE_MODEL_STRONG,
+                    "super": config.CLAUDE_MODEL_SUPER,
+                }
+                model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
             db.update_task(task_id, resolved_model=model_name)
             r = _runner_for(sess)
             # codex 无常驻进程，恒走 run_turn；claude 视配置走 send_turn / run_turn

@@ -35,7 +35,7 @@ class CodexRunner:
         # session_id -> {"proc": Process, "cancelled": bool}（每回合一个进程）
         self._procs: dict[str, dict] = {}
 
-    def _build_cmd(self, *, message: str, resume: str | None) -> list[str]:
+    def _build_cmd(self, *, message: str, resume: str | None, model: str | None = None) -> list[str]:
         """组 tcodex exec 命令。prompt 作为最后一个位置参数。"""
         cmd = [config.CODEX_BIN, "--", "exec"]
         if resume:
@@ -47,8 +47,10 @@ class CodexRunner:
             cmd += ["--dangerously-bypass-approvals-and-sandbox"]
         else:
             cmd += ["-s", config.CODEX_SANDBOX]
-        if config.CODEX_MODEL:
-            cmd += ["-m", config.CODEX_MODEL]
+        # 优先用会话选定的模型，回退到 CODEX_MODEL（空则不传，让 CLI 用默认）。
+        m = model or config.CODEX_MODEL
+        if m:
+            cmd += ["-m", m]
         cmd += [message]
         return cmd
 
@@ -93,9 +95,9 @@ class CodexRunner:
         """跑一个回合。返回 {claude_session_id, returncode, error, cancelled}。
 
         on_permission: codex 走沙箱/免审批，无交互授权，忽略此参数（仅保持接口一致）。
-        model: codex 模型由 CODEX_MODEL 控制，忽略传入 model（保持接口一致）。
+        model: 会话选定的 codex 模型（CODEX_MODELS 之一）；空则回退到 CODEX_MODEL / CLI 默认。
         """
-        cmd = self._build_cmd(message=message, resume=resume_claude_session)
+        cmd = self._build_cmd(message=message, resume=resume_claude_session, model=model)
 
         try:
             proc = await asyncio.create_subprocess_exec(
