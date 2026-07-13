@@ -23,7 +23,7 @@ BASE_ENV.update({
     'CLAUDE_BIN': '/root/.nvm/versions/node/v22.23.1/bin/tclaude',
     'ASR2_BASE_URLS': 'http://29.228.42.53:8012', 'ASR2_MODEL': 'HYAudio',
     'CLAUDE_MODEL_FAST': 'claude-haiku-4-5', 'CLAUDE_MODEL_STRONG': 'claude-sonnet-5',
-    'CLAUDE_MODEL_SUPER': 'claude-opus-4-8[1m]', 'CLAUDE_DEFAULT_MODE': 'claude-sonnet-4-6',
+    'CLAUDE_MODEL_SUPER': 'claude-opus-4-8[1m]', 'CLAUDE_DEFAULT_MODE': 'claude-sonnet-5',
     'CLAUDE_EFFORT': 'medium',
     'CLAUDE_PERSISTENT': 'true',  # 常驻进程模式（更接近交互式）
     'CLAUDE_SESSION_IDLE_SEC': '3600',
