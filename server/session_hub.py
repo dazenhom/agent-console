@@ -360,6 +360,12 @@ class SessionHub:
                 }
                 model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
             db.update_task(task_id, resolved_model=model_name)
+            # 会话级 effort（推理强度）：空则回落全局默认。codex 无此参数，置 None 且不传。
+            effort = (sess or {}).get("effort") or config.CLAUDE_EFFORT
+            if (sess or {}).get("engine") == "codex":
+                effort = None
+            # codex 的 run_turn 不接受 effort 形参，故仅 claude 引擎透传该 kwarg。
+            turn_extra = {} if effort is None else {"effort": effort}
             r = _runner_for(sess)
             # codex 无常驻进程，恒走 run_turn；claude 视配置走 send_turn / run_turn
             if (sess or {}).get("engine") == "codex":
@@ -375,6 +381,7 @@ class SessionHub:
                 model=model_name,
                 on_permission=on_permission if config.CLAUDE_PERMISSION_PROMPT else None,
                 on_session_id=_on_session_id,
+                **turn_extra,
             )
             # resume 失败：缓存的 claude_sid 与当前 cwd 归属目录不一致，tclaude 立即报
             # "No conversation found"。此时自动重启（丢弃坏 sid，全新 spawn），并把近期
@@ -396,6 +403,7 @@ class SessionHub:
                     model=model_name,
                     on_permission=on_permission if config.CLAUDE_PERMISSION_PROMPT else None,
                     on_session_id=_on_session_id,
+                    **turn_extra,
                 )
             if ret.get("claude_session_id"):
                 db.update_session(sid, claude_session_id=ret["claude_session_id"])

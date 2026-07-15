@@ -159,7 +159,8 @@ class ClaudeRunner:
         self._session_locks: dict[str, asyncio.Lock] = {}
 
     def _build_cmd(self, *, message: str | None, model: str | None,
-                   resume: str | None, stream_input: bool) -> list[str]:
+                   resume: str | None, stream_input: bool,
+                   effort: str | None = None) -> list[str]:
         """组 tclaude 命令。stream_input=True 时走常驻 stream-json 输入（message 走 stdin）。"""
         cmd = [config.CLAUDE_BIN, "--", "-p"]
         if not stream_input:
@@ -169,8 +170,10 @@ class ClaudeRunner:
             cmd += ["--input-format", "stream-json"]
         if model:
             cmd += ["--model", model]
-        if config.CLAUDE_EFFORT:
-            cmd += ["--effort", config.CLAUDE_EFFORT]
+        # 优先用会话级 effort，其次落回全局默认 CLAUDE_EFFORT。
+        eff = effort or config.CLAUDE_EFFORT
+        if eff:
+            cmd += ["--effort", eff]
         if config.CLAUDE_STREAM_PARTIAL:
             cmd += ["--include-partial-messages"]
         try:
@@ -205,7 +208,8 @@ class ClaudeRunner:
         proc = self._get_proc(session_id)
         return proc is not None and proc.returncode is None
 
-    async def ensure_warm(self, session_id: str, workdir: str, resume: str | None = None) -> str:
+    async def ensure_warm(self, session_id: str, workdir: str, resume: str | None = None,
+                          effort: str | None = None) -> str:
         """预热常驻进程：进程已存活则返回 'running'，否则 spawn 并返回 'warmed'。"""
         lock = self._session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
@@ -215,7 +219,7 @@ class ClaudeRunner:
             if sess and sess.get("turn_active"):
                 return "running"  # 回合进行中，不干预
             # 进程不存在或已退出，重新 spawn（model=None 沿用会话默认 model）
-            await self._spawn_session(session_id, workdir, model=None, resume=resume)
+            await self._spawn_session(session_id, workdir, model=None, resume=resume, effort=effort)
             return "warmed"
 
     def was_cancelled(self, session_id: str) -> bool:
@@ -257,6 +261,7 @@ class ClaudeRunner:
         model: str | None = None,
         on_permission=None,
         on_session_id=None,
+        effort: str | None = None,
     ) -> dict:
         """跑一个回合。返回 {claude_session_id, returncode, error}。
 
@@ -264,7 +269,8 @@ class ClaudeRunner:
         on_permission: 老模式无 stdin 回写权限，忽略此参数（仅常驻模式支持）。
         """
         cmd = self._build_cmd(message=message, model=model,
-                              resume=resume_claude_session, stream_input=False)
+                              resume=resume_claude_session, stream_input=False,
+                              effort=effort)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -421,9 +427,10 @@ class ClaudeRunner:
         self._sessions.pop(session_id, None)
 
     async def _spawn_session(self, session_id: str, workdir: str, model: str | None,
-                             resume: str | None) -> dict:
+                             resume: str | None, effort: str | None = None) -> dict:
         """为会话拉起一个常驻 stream-json 进程，启动后台 reader。返回 sess 记录。"""
-        cmd = self._build_cmd(message=None, model=model, resume=resume, stream_input=True)
+        cmd = self._build_cmd(message=None, model=model, resume=resume, stream_input=True,
+                              effort=effort)
         proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=workdir, env=_child_env(),
             stdin=asyncio.subprocess.PIPE,
@@ -538,7 +545,7 @@ class ClaudeRunner:
     async def send_turn(self, session_id: str, message: str, workdir: str,
                         resume_claude_session: str | None, on_event: EventCallback,
                         model: str | None = None, on_permission=None,
-                        on_session_id=None) -> dict:
+                        on_session_id=None, effort: str | None = None) -> dict:
         """常驻进程模式跑一回合。进程不存在/已死则拉起（带 resume），写 stdin，等本回合 result。"""
         sess = self._sessions.get(session_id)
         proc_dead = (not sess) or (sess["proc"].returncode is not None)
@@ -546,7 +553,7 @@ class ClaudeRunner:
             # 崩溃/超时/首次：重新拉起，用上次 claude_sid 或传入的 resume 续上下文
             resume = (sess or {}).get("claude_sid") or resume_claude_session
             try:
-                sess = await self._spawn_session(session_id, workdir, model, resume)
+                sess = await self._spawn_session(session_id, workdir, model, resume, effort=effort)
             except FileNotFoundError:
                 return {"claude_session_id": resume_claude_session, "returncode": -1,
                         "error": f"找不到 Claude CLI：{config.CLAUDE_BIN}"}

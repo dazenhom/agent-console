@@ -18,6 +18,8 @@ _uploads_cleanup_task = None
 
 # 合法 mode：完整模型列表 + 兼容存量的旧档位值。
 _VALID_MODES = set(config.CLAUDE_MODELS) | set(config.CODEX_MODELS) | {"fast", "strong", "super"}
+# 合法 effort（推理强度）：low/medium/high/xhigh/max。
+_VALID_EFFORTS = set(config.CLAUDE_EFFORTS)
 
 
 @asynccontextmanager
@@ -113,6 +115,7 @@ async def create_session(payload: dict):
     title = payload.get("title", "新会话")
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
     mode = payload.get("mode") if payload.get("mode") in _VALID_MODES else None
+    effort = payload.get("effort") if payload.get("effort") in _VALID_EFFORTS else None
     engine = payload.get("engine")
     engine = engine if engine in config.VALID_ENGINES else config.DEFAULT_ENGINE
     branch, is_wt, wt_base, notice = "", 0, "", ""
@@ -126,7 +129,7 @@ async def create_session(payload: dict):
             notice = "该目录不是 Git 仓库（或创建 worktree 失败），已使用共享工作区，未隔离。"
     s = db.create_session(title, workdir, mode,
                           worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base,
-                          engine=engine)
+                          engine=engine, effort=effort)
     if notice:
         s["isolate_notice"] = notice  # 仅本次响应提示，不入库
     return s
@@ -141,6 +144,23 @@ async def set_session_mode(sid: str, payload: dict):
         raise HTTPException(status_code=404, detail="会话不存在")
     db.update_session(sid, mode=mode)
     return {"ok": True, "mode": mode}
+
+
+@app.patch("/api/sessions/{sid}/effort", dependencies=[Depends(require_auth)])
+async def set_session_effort(sid: str, payload: dict):
+    effort = payload.get("effort")
+    if effort not in _VALID_EFFORTS:
+        raise HTTPException(status_code=400, detail="effort 需为：" + ", ".join(config.CLAUDE_EFFORTS))
+    sess = db.get_session(sid)
+    if not sess:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if sess.get("engine") == "codex":
+        raise HTTPException(status_code=400, detail="codex 会话不支持调节推理强度")
+    db.update_session(sid, effort=effort)
+    # 会话正在跑：只更库，下一回合自然生效，不动进程；空闲则回收常驻进程使其立即重建生效。
+    if not hub.is_running(sid):
+        await runner.forget_session(sid)
+    return {"ok": True, "effort": effort}
 
 
 @app.patch("/api/sessions/{sid}/engine", dependencies=[Depends(require_auth)])
@@ -231,7 +251,11 @@ async def resume_session(sid: str):
 
     try:
         workdir = sess.get("workdir") or config.DEFAULT_WORKDIR
-        status = await _runner_for(sess).ensure_warm(sid, workdir, resume=claude_session_id)
+        # codex 无 effort 概念，其 ensure_warm 也不接受该 kwarg；仅 claude 引擎透传。
+        warm_extra = {} if sess.get("engine") == "codex" else {
+            "effort": sess.get("effort") or config.CLAUDE_EFFORT
+        }
+        status = await _runner_for(sess).ensure_warm(sid, workdir, resume=claude_session_id, **warm_extra)
         return {"ok": True, "status": status, "claude_session_id": claude_session_id}
     except (FileNotFoundError, PermissionError, OSError) as e:
         raise HTTPException(status_code=500, detail=f"启动 Claude CLI 失败：{e}")

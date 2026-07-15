@@ -66,7 +66,12 @@ CLAUDE_MODELS = [
 # 新会话默认模型：GLM 5.2。（旧档位 fast/strong/super 仍兼容，见 session_hub 的 _LEGACY_MAP。）
 CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "claude-glm-5.2")
 # 思考深度（low/medium/high/xhigh/max）。medium 平衡速度与质量；要更深手动调。
+# CLAUDE_EFFORT 是全局默认/兜底；每会话可在 sessions.effort 单独设置（见 db/main）。
 CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "medium")
+# 前端可选的完整 effort 列表（会话 effort 直接存这些值）。
+CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+# 新会话默认 effort：不显式指定则沿用全局 CLAUDE_EFFORT。
+CLAUDE_DEFAULT_EFFORT = os.environ.get("CLAUDE_DEFAULT_EFFORT", CLAUDE_EFFORT)
 # 常驻进程模式：每会话维持一个长生命周期 tclaude 进程（--input-format stream-json），
 # 更接近交互式，上下文常驻进程内。false=老的每回合新进程+resume 模式（回退用）。
 CLAUDE_PERSISTENT = os.environ.get("CLAUDE_PERSISTENT", "true").lower() == "true"

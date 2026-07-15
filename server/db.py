@@ -46,6 +46,7 @@ def init_db() -> None:
                 workdir TEXT,
                 status TEXT DEFAULT 'idle',
                 mode TEXT DEFAULT 'fast',     -- fast / strong
+                effort TEXT DEFAULT '',       -- 推理强度：low/medium/high/xhigh/max（空=用全局默认）
                 engine TEXT DEFAULT 'claude', -- 底层 Agent 引擎：claude / codex
                 summary TEXT DEFAULT '',      -- 行摘要：列表里"刚做了什么"一句话
                 title_auto INTEGER DEFAULT 1, -- 标题是否由 AI 自动维护（用户手动改名后置 0）
@@ -169,6 +170,8 @@ def init_db() -> None:
         cols = [r[1] for r in _conn.execute("PRAGMA table_info(sessions)").fetchall()]
         if "mode" not in cols:
             _add_col("sessions", "mode TEXT DEFAULT 'fast'")
+        if "effort" not in cols:
+            _add_col("sessions", "effort TEXT DEFAULT ''")
         if "engine" not in cols:
             _add_col("sessions", "engine TEXT DEFAULT 'claude'")
         if "summary" not in cols:
@@ -247,15 +250,16 @@ def _query(sql: str, params: tuple = ()):  # 读操作
 # ---------- sessions ----------
 def create_session(title: str, workdir: str, mode: str | None = None,
                    worktree_branch: str = "", is_worktree: int = 0, worktree_base: str = "",
-                   engine: str = "claude") -> dict:
+                   engine: str = "claude", effort: str | None = None) -> dict:
     sid = new_id()
     now = _now()
     m = mode or config.CLAUDE_DEFAULT_MODE
+    eff = effort or config.CLAUDE_DEFAULT_EFFORT
     _exec(
-        "INSERT INTO sessions(id,title,claude_session_id,workdir,status,mode,engine,"
+        "INSERT INTO sessions(id,title,claude_session_id,workdir,status,mode,effort,engine,"
         "worktree_branch,is_worktree,worktree_base,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, title or "新会话", None, workdir, "idle", m, engine,
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, title or "新会话", None, workdir, "idle", m, eff, engine,
          worktree_branch, is_worktree, worktree_base, now, now),
     )
     return get_session(sid)
