@@ -73,6 +73,7 @@ async def run_triage(day_data: dict, todos: list) -> list:
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
         "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
+        "--effort", config.CLAUDE_ONESHOT_EFFORT,
     ]
     try:
         proc = await asyncio.create_subprocess_exec(

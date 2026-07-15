@@ -39,6 +39,7 @@ async def verify(goal: str, stop_condition: str, produced: str) -> tuple[bool, s
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
         "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
+        "--effort", config.CLAUDE_ONESHOT_EFFORT,
     ]
     try:
         proc = await asyncio.create_subprocess_exec(

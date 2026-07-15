@@ -37,6 +37,7 @@ async def _haiku(user_text: str, reply_text: str) -> str:
     cmd = [
         config.CLAUDE_BIN, "--", "-p", _build_prompt(user_text, reply_text),
         "--model", config.CLAUDE_MODEL_FAST, "--output-format", "json",
+        "--effort", config.CLAUDE_ONESHOT_EFFORT,
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd, env=_child_env(),
@@ -93,6 +94,7 @@ async def _gen_title_haiku(convo: str) -> str:
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
         "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
+        "--effort", config.CLAUDE_ONESHOT_EFFORT,
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd, env=_child_env(),
