@@ -59,6 +59,13 @@
         <option value="claude-deepseek-v4-flash[1m]">DeepSeek V4 Flash 长文</option>
       </select>
       <span id="mode-price-hint" class="mode-price-hint"></span>
+      <select id="effort-select" class="mode-select" title="推理强度">
+        <option value="low">低</option>
+        <option value="medium">中</option>
+        <option value="high">高</option>
+        <option value="xhigh">极高</option>
+        <option value="max">最大</option>
+      </select>
       <span id="conn-dot" class="conn-dot" title="连接状态"></span>
     </nav>
 
@@ -157,6 +164,15 @@
                     <option value="claude-deepseek-v4-flash[1m]">DeepSeek V4 Flash 长文</option>
                   </select>
                   <span id="nf-mode-price-hint" class="mode-price-hint"></span>
+                </label>
+                <label>推理强度
+                  <select id="nf-effort">
+                    <option value="low">低</option>
+                    <option value="medium" selected>中</option>
+                    <option value="high">高</option>
+                    <option value="xhigh">极高</option>
+                    <option value="max">最大</option>
+                  </select>
                 </label>
                 <label>底层 Agent
                   <select id="nf-engine">

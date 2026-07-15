@@ -330,6 +330,7 @@
     $("session-title").textContent = cur ? cur.title : "会话";
     if (cur) markSeen(cur.id, cur.updated_at);  // 当前会话标记已读
     syncModeSelect();
+    syncEffortSelect();
   }
 
   // 渲染三个列表：Overview(全部) / Sessions(全部，可搜) / Review(待审视)
@@ -571,6 +572,7 @@
     "claude-deepseek-v4-pro","claude-deepseek-v4-pro[1m]",
     "claude-deepseek-v4-flash","claude-deepseek-v4-flash[1m]",
   ];
+  const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
   const PRICE_TABLE = {
     "claude-haiku-4-5":           { in: 0.80, out: 4   },
     "claude-sonnet-4-6":          { in: 3,    out: 15  },
@@ -621,6 +623,10 @@
       "fast": "极速", "strong": "均衡", "super": "最强"
     };
     return labels[m] || m;
+  }
+  function effortLabel(e) {
+    const labels = { low: "低", medium: "中", high: "高", xhigh: "极高", max: "最大" };
+    return labels[e] || e;
   }
 
   // 从 status + 最近 task 派生状态徽章（对齐设计图 Working / Review changes / Resume / Failed）
@@ -1582,6 +1588,28 @@
     } catch (err) { /* ignore，下次切会话会重新同步 */ }
   };
 
+  // 把当前会话的推理强度回填到顶栏 select；codex 会话不支持 effort，置灰。
+  function syncEffortSelect() {
+    const cur = state.sessions.find((s) => s.id === state.sessionId);
+    const sel = $("effort-select");
+    if (!sel || !cur) return;
+    sel.value = cur.effort || "medium";
+    sel.disabled = cur.engine === "codex";
+  }
+  // 切换推理强度：持久化到会话（后端 PATCH），下一回合即生效
+  $("effort-select").onchange = async (e) => {
+    const effort = e.target.value;
+    if (!state.sessionId) return;
+    try {
+      await api(`/api/sessions/${state.sessionId}/effort`, { method: "PATCH", body: JSON.stringify({ effort }) });
+      const cur = state.sessions.find((s) => s.id === state.sessionId);
+      if (cur) cur.effort = effort;
+    } catch (err) {
+      toast("切换失败：" + err.message, "error");
+      syncEffortSelect();  // 失败回滚 select 显示
+    }
+  };
+
   // 把当前会话的底层 Agent 回填到详情栏 select；有消息后置灰（回合已开始不可切）
   function syncEngineSelect() {
     const cur = state.sessions.find((s) => s.id === state.sessionId);
@@ -1611,6 +1639,7 @@
     };
     if (opts.workdir) body.workdir = opts.workdir;
     if (opts.mode) body.mode = opts.mode;
+    if (opts.effort) body.effort = opts.effort;
     if (opts.engine) body.engine = opts.engine;
     if (opts.isolate) body.isolate = true;
     const s = await api("/api/sessions", { method: "POST", body: JSON.stringify(body) });
@@ -1632,10 +1661,11 @@
     const title = $("nf-title").value.trim();
     const workdir = $("nf-workdir").value.trim();
     const mode = $("nf-mode").value;
+    const effort = $("nf-effort").value;
     const engine = $("nf-engine").value;
     const isolate = $("nf-isolate").checked;
     try {
-      await createSession({ title, workdir, mode, engine, isolate });
+      await createSession({ title, workdir, mode, effort, engine, isolate });
       $("new-form").reset();
       switchTab("overview");
       openDetail();
@@ -1777,6 +1807,7 @@
     // 高亮当前会话行（跨三个列表）
     document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
     syncModeSelect();
+    syncEffortSelect();
     await loadHistory();
     if (prevId !== id) restoreDraft(id);      // 恢复新会话草稿（同会话不覆盖当前输入）
     connectWs();
