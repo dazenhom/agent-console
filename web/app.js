@@ -3698,8 +3698,6 @@
     }
     input.focus();
   };
-  // Stop：中断当前回合（同 cancel-btn）
-  $("act-stop").onclick = () => { if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify({ type: "cancel" })); };
   // Archive：归档=从活跃列表隐藏（不物理删除），可在 Sessions 页「归档」视图恢复
   $("act-archive").onclick = async () => {
     const sid = state.sessionId;
