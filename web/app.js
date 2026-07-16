@@ -569,7 +569,7 @@
     "claude-opus-4-8","claude-opus-4-8[1m]",
     "claude-opus-4-7","claude-opus-4-7[1m]",
     "claude-opus-4-6","claude-opus-4-6[1m]",
-    "claude-haiku-4-5","claude-hy3-preview","opusplan",
+    "claude-haiku-4-5","claude-hy3","opusplan",
     "claude-sonnet-5","claude-sonnet-5[1m]",
     "claude-deepseek-v4-pro","claude-deepseek-v4-pro[1m]",
     "claude-deepseek-v4-flash","claude-deepseek-v4-flash[1m]",
@@ -606,7 +606,7 @@
       "claude-opus-4-6": "Opus 4.6",
       "claude-opus-4-6[1m]": "Opus 4.6 (1M)",
       "claude-haiku-4-5": "Haiku 4.5",
-      "claude-hy3-preview": "HY3 Preview",
+      "claude-hy3": "HY3",
       "opusplan": "Opus Plan",
       "claude-sonnet-5": "Sonnet 5",
       "claude-sonnet-5[1m]": "Sonnet 5 长文",
@@ -2147,10 +2147,60 @@
   // ---------------- 角色化动态调度（智能分派） ----------------
   let _dispatchPollTimer = null;
   function stopDispatchPoll() { if (_dispatchPollTimer) { clearTimeout(_dispatchPollTimer); _dispatchPollTimer = null; } }
+  function openDispatchView() {
+    stopDispatchPoll();
+    $("app-view").classList.add("hidden");
+    $("dispatch-view").classList.remove("hidden");
+    showDispatchList();
+  }
   function closeDispatchView() {
     stopDispatchPoll();
     $("dispatch-view").classList.add("hidden");
     $("app-view").classList.remove("hidden");
+  }
+
+  async function showDispatchList() {
+    stopDispatchPoll();
+    const body = $("dispatch-body");
+    body.innerHTML = '<div class="entity-loading">加载中…</div>';
+    try {
+      const items = await api("/api/dispatch/plans");
+      body.innerHTML = "";
+      if (!items.length) {
+        body.innerHTML = '<div class="entity-empty"><div class="empty-emoji">🧭</div><div>还没有分派记录</div><div class="empty-sub">点右上角「+ 新需求」发起第一次</div></div>';
+        return;
+      }
+      const ul = el("ul", "entity-list");
+      for (const it of items) {
+        const li = el("li");
+        const head = el("div", "e-head");
+        head.appendChild(el("span", "e-name", escapeHtml((it.title || "").slice(0, 60) || "（无标题）")));
+        head.appendChild(el("span", "e-tag", escapeHtml((it.subtask_count || 0) + " 个子任务")));
+        li.appendChild(head);
+        li.appendChild(el("div", "e-desc", escapeHtml(fmtTime(it.created_at))));
+        li.style.cursor = "pointer";
+        li.onclick = () => openDispatchDetail(it.plan_id);
+        ul.appendChild(li);
+      }
+      body.appendChild(ul);
+    } catch (e) {
+      body.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function openDispatchDetail(planId) {
+    stopDispatchPoll();
+    $("dispatch-view").classList.remove("hidden");
+    $("app-view").classList.add("hidden");
+    $("dispatch-body").innerHTML = '<div class="entity-loading">加载中…</div>';
+    try {
+      const subtasks = await api("/api/dispatch/" + encodeURIComponent(planId));
+      renderDispatchPlan({ plan_id: planId, subtasks });
+      const anyRunning = subtasks.some((s) => s.session_status === "running");
+      if (anyRunning) pollDispatch(planId, 0);
+    } catch (e) {
+      $("dispatch-body").innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
   }
 
   async function openDispatchInput() {
@@ -2219,7 +2269,7 @@
     body.appendChild(ul);
   }
 
-  $("open-dispatch-btn").onclick = openDispatchInput;
+  $("open-dispatch-btn").onclick = openDispatchView;
   $("dispatch-back").onclick = closeDispatchView;
   $("dispatch-new").onclick = openDispatchInput;
 
@@ -4000,7 +4050,7 @@
   };
   // 背对背仲裁 / 分派子任务：详情操作区入口（复用 Experimental 面板里的实现）
   $("act-arbitrate").onclick = openArbitrationInput;
-  $("act-dispatch").onclick = openDispatchInput;
+  $("act-dispatch").onclick = openDispatchView;
 
   // ---------------- 按住说话（录音 → 后端 ASR）----------------
   // 约束：getUserMedia 需要安全上下文（HTTPS 或 localhost）。HTTP + 内网 IP 下浏览器禁用麦克风。
