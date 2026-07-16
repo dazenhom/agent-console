@@ -110,11 +110,14 @@ async def run_arbitration(arb_id: str) -> None:
     question = arb.get("question") or ""
     # 阶段2 影子表：纯附加观测，写失败只记日志绝不影响仲裁主流程
     try:
-        db.create_work_item(
+        _wid = db.create_work_item(
             origin="arbiter", topology="candidates", isolation="shared",
             verify_mode="candidates", status="running",
             ref_id=arb_id, session_id=arb.get("session_id") or "", summary=question,
         )
+        # 阶段4：把 work_item id 记回 arbitrations，建立 arbitration→work_item 的正向关联
+        if _wid:
+            db.update_arbitration(arb_id, work_item_id=_wid)
     except Exception as e:
         print(f"[work_items] arbiter insert failed: {type(e).__name__}: {e}")
     model_a = arb.get("model_a") or config.CLAUDE_MODEL_SUPER

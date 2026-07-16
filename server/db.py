@@ -305,6 +305,12 @@ def init_db() -> None:
         _add_col("schedules", "active_subtask_id TEXT DEFAULT ''")
         # 老库 goal_iterations 补 produced_excerpt 列（新库已在 CREATE TABLE 里带上）
         _add_col("goal_iterations", "produced_excerpt TEXT DEFAULT ''")
+        # 阶段4：给四张来源子表补 work_item_id 关联列，把它们挂到统一的 work_items 观测视图。
+        # 纯附加（历史数据该列自然为空，属已知局限，不回填）；不删任何既有列、不改既有数据。
+        _add_col("goal_iterations", "work_item_id TEXT DEFAULT ''")
+        _add_col("goal_subtasks", "work_item_id TEXT DEFAULT ''")
+        _add_col("dispatch_subtasks", "work_item_id TEXT DEFAULT ''")
+        _add_col("arbitrations", "work_item_id TEXT DEFAULT ''")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")
@@ -1041,7 +1047,7 @@ def list_arbitrations(limit: int = 50) -> list[dict]:
 
 def update_arbitration(aid: str, **fields) -> bool:
     allowed = {"status", "result_a", "job_a_id", "result_b", "job_b_id",
-               "verdict", "job_final_id", "error", "updated_at"}
+               "verdict", "job_final_id", "error", "work_item_id", "updated_at"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False
@@ -1120,13 +1126,14 @@ def get_latest_job(schedule_id: str, kind: str) -> dict | None:
     return dict(rows[0]) if rows else None
 
 
-def create_goal_iteration(schedule_id: str, iter_no: int, prompt: str, task_id: str = "") -> dict:
+def create_goal_iteration(schedule_id: str, iter_no: int, prompt: str, task_id: str = "",
+                          work_item_id: str = "") -> dict:
     gid = new_id()
     now = _now()
     _exec(
-        "INSERT INTO goal_iterations(id,schedule_id,iter_no,prompt,task_id,status,started_at)"
-        " VALUES(?,?,?,?,?,?,?)",
-        (gid, schedule_id, iter_no, prompt, task_id, "producing", now),
+        "INSERT INTO goal_iterations(id,schedule_id,iter_no,prompt,task_id,work_item_id,status,started_at)"
+        " VALUES(?,?,?,?,?,?,?,?)",
+        (gid, schedule_id, iter_no, prompt, task_id, work_item_id, "producing", now),
     )
     return get_goal_iteration(gid)
 
@@ -1197,17 +1204,17 @@ def get_goal_loop_detail(schedule_id: str) -> dict | None:
 
 
 # ---------- goal_subtasks（planned 目标循环：目标拆解出的有序子任务）----------
-def replace_goal_subtasks(schedule_id: str, subtasks: list[dict]) -> None:
+def replace_goal_subtasks(schedule_id: str, subtasks: list[dict], work_item_id: str = "") -> None:
     """整体重置某目标循环的子任务清单（拆解成功后写入，或重启循环时清空传 []）。"""
     _exec("DELETE FROM goal_subtasks WHERE schedule_id=?", (schedule_id,))
     now = _now()
     for seq, st in enumerate(subtasks):
         _exec(
             "INSERT INTO goal_subtasks(id,schedule_id,seq,title,instruction,category,status,"
-            "attempts,last_feedback,verify_job_id,task_id,created_at,updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "attempts,last_feedback,verify_job_id,task_id,work_item_id,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (new_id(), schedule_id, seq, (st.get("title") or "")[:200], st.get("instruction") or "",
-             st.get("category") or "", "pending", 0, "", "", "", now, now),
+             st.get("category") or "", "pending", 0, "", "", "", work_item_id, now, now),
         )
 
 
@@ -1245,7 +1252,8 @@ def update_goal_subtask(sid: str, **fields) -> bool:
     return cur.rowcount > 0
 
 
-# ---------- work_items（阶段2 影子表：统一观测四套机制的"发起"，纯写不读，可整表 drop 回退）----------
+# ---------- work_items（阶段2 影子表→阶段4 统一"任务运行"聚合视图：观测四套机制的"发起"，
+# 仍只作观测+展示用途，绝不作为任何状态机的决策依据；可整表 drop 回退）----------
 def create_work_item(origin: str, topology: str, isolation: str, verify_mode: str,
                      status: str, ref_id: str = "", session_id: str = "", summary: str = "") -> str:
     wid = new_id()
@@ -1263,3 +1271,34 @@ def update_work_item_status_by_ref(ref_id: str, status: str) -> None:
     """按来源表主键收尾对应影子记录状态（找不到静默跳过）。
     ref_id 全局唯一（schedule/plan/arbitration id），无需再按 origin 过滤。"""
     _exec("UPDATE work_items SET status=?,updated_at=? WHERE ref_id=?", (status, _now(), ref_id))
+
+
+def work_item_id_for_ref(ref_id: str) -> str | None:
+    """按来源表主键反查对应影子记录 id，供四处发起点把 work_item_id 回填进各自子表。
+    ref_id 全局唯一；找不到（如历史数据、边缘情况）返回 None，调用方跳过即可。"""
+    if not ref_id:
+        return None
+    rows = _query("SELECT id FROM work_items WHERE ref_id=? ORDER BY created_at DESC LIMIT 1", (ref_id,))
+    return rows[0][0] if rows else None
+
+
+def list_work_items(origin: str | None = None, status: str | None = None, limit: int = 50) -> list[dict]:
+    """阶段4：统一"任务运行"聚合视图的列表态。按 origin/status 过滤（None/空则不过滤），
+    纯只读参数化查询，不做任何决策依据用途。"""
+    where = []
+    params: list = []
+    if origin:
+        where.append("origin=?")
+        params.append(origin)
+    if status:
+        where.append("status=?")
+        params.append(status)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    params.append(limit)
+    rows = _query(f"SELECT * FROM work_items{clause} ORDER BY created_at DESC LIMIT ?", tuple(params))
+    return [dict(r) for r in rows]
+
+
+def get_work_item(wid: str) -> dict | None:
+    rows = _query("SELECT * FROM work_items WHERE id=?", (wid,))
+    return dict(rows[0]) if rows else None

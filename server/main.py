@@ -389,11 +389,47 @@ async def get_dispatch_plan(plan_id: str):
     return subtasks
 
 
+# ---------------- work_items（阶段4：统一"任务运行"聚合视图，只读观测，不作决策依据）----------------
+@app.get("/api/work_items", dependencies=[Depends(require_auth)])
+async def get_work_items(origin: str = Query(default=None), status: str = Query(default=None),
+                         limit: int = Query(default=50)):
+    return db.list_work_items(origin=origin, status=status, limit=limit)
+
+
+@app.get("/api/work_items/{wid}", dependencies=[Depends(require_auth)])
+async def get_work_item(wid: str):
+    item = db.get_work_item(wid)
+    if not item:
+        raise HTTPException(status_code=404, detail="work_item not found")
+    # 关联详情（尽力而为）：按 origin 顺手反查来源表摘要，复用现有查询函数，
+    # 任一查询失败都不影响返回 work_item 本体。related 为 None 表示无关联或反查失败。
+    related = None
+    try:
+        origin = item.get("origin")
+        ref_id = item.get("ref_id") or ""
+        if origin in ("goal", "triage") and ref_id:
+            sch = db.get_schedule(ref_id)
+            if sch:
+                related = {"kind": "schedule", "goal_status": sch.get("goal_status"),
+                           "enabled": sch.get("enabled"), "iter_count": sch.get("iter_count"),
+                           "max_iterations": sch.get("max_iterations")}
+        elif origin == "dispatch" and ref_id:
+            related = {"kind": "dispatch_subtasks", "subtasks": db.list_dispatch_subtasks(ref_id)}
+        elif origin == "arbiter" and ref_id:
+            arb = db.get_arbitration(ref_id)
+            if arb:
+                related = {"kind": "arbitration", "status": arb.get("status"),
+                           "verdict": arb.get("verdict")}
+    except Exception as e:
+        print(f"[work_items] related lookup failed: {type(e).__name__}: {e}")
+        related = None
+    item["related"] = related
+    return item
+
+
 @app.get("/api/artifacts", dependencies=[Depends(require_auth)])
 async def get_artifacts(session_id: str = Query(default=None)):
     return db.list_artifacts(session_id)
-
-
 @app.post("/api/artifacts", dependencies=[Depends(require_auth)])
 async def post_artifact(payload: dict):
     url = (payload.get("url") or "").strip()

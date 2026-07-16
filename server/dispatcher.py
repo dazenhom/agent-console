@@ -203,13 +203,14 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
     subtasks = await run_planner(request)
     plan_id = db.new_id()
     # 阶段2 影子表：纯附加观测，写失败只记日志绝不影响扇出主流程
+    work_item_id = ""
     try:
-        db.create_work_item(
+        work_item_id = db.create_work_item(
             origin="dispatch", topology="fanout",
             isolation="worktree" if isolate else "shared",
             verify_mode="none", status="running",
             ref_id=plan_id, session_id=parent_session_id or "", summary=request,
-        )
+        ) or ""
     except Exception as e:
         print(f"[work_items] dispatch insert failed: {type(e).__name__}: {e}")
     for seq, st in enumerate(subtasks):
@@ -225,7 +226,7 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                 plan_id=plan_id, parent_session_id=parent_session_id, seq=seq,
                 title=st["title"], instruction=st["instruction"], category=category,
                 engine=engine, model=model, child_session_id=child["id"],
-                status="dispatched",
+                status="dispatched", work_item_id=work_item_id,
             )
             # 后台起跑，不 await 阻塞后续子任务的建立
             asyncio.ensure_future(_fire(child["id"], st["instruction"], subtask["id"]))
@@ -235,6 +236,6 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                 plan_id=plan_id, parent_session_id=parent_session_id, seq=seq,
                 title=st.get("title", ""), instruction=st.get("instruction", ""),
                 category=category, engine=engine, model=model,
-                child_session_id="", status="error",
+                child_session_id="", status="error", work_item_id=work_item_id,
             )
     return plan_id

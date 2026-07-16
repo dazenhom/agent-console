@@ -175,7 +175,13 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
     db.update_schedule(scid, goal_status="producing", iter_count=iter_count + 1,
                        last_run=now, next_run=compute_next_run("goal", None, None, after=now))
     # 记录本轮迭代历史：start_turn 内已同步落 tasks 记录，此刻取回即为本轮任务
-    db.create_goal_iteration(scid, iter_count + 1, prompt, task_id=db.latest_task_id(sid) or "")
+    # 阶段4：顺手关联 work_item（按 schedule id 反查影子记录），拿不到就留空，不影响主流程
+    try:
+        _wid = db.work_item_id_for_ref(scid) or ""
+    except Exception:
+        _wid = ""
+    db.create_goal_iteration(scid, iter_count + 1, prompt, task_id=db.latest_task_id(sid) or "",
+                             work_item_id=_wid)
 
 
 async def _run_shell(command: str, cwd: str, timeout: float) -> str:
@@ -432,7 +438,13 @@ async def _tick_goal_planned(sch: dict, sess: dict, now: float) -> None:
     db.update_schedule(scid, goal_status="producing", active_subtask_id=nxt["id"],
                        iter_count=iter_count + 1, last_run=now,
                        next_run=compute_next_run("goal", None, None, after=now))
-    db.create_goal_iteration(scid, iter_count + 1, prompt, task_id=db.latest_task_id(sid) or "")
+    # 阶段4：顺手关联 work_item（按 schedule id 反查），拿不到留空，不影响主流程
+    try:
+        _wid = db.work_item_id_for_ref(scid) or ""
+    except Exception:
+        _wid = ""
+    db.create_goal_iteration(scid, iter_count + 1, prompt, task_id=db.latest_task_id(sid) or "",
+                             work_item_id=_wid)
 
 
 async def _run_goal_plan(scid: str) -> None:
@@ -459,7 +471,12 @@ async def _run_goal_plan(scid: str) -> None:
             db.update_schedule(scid, plan_status="plan_failed")
             await _finish_goal(scid, sess, "exhausted", "目标拆解失败：未能拆出任何可执行子任务")
             return
-        db.replace_goal_subtasks(scid, subtasks)
+        # 阶段4：拆解落库的子任务顺手关联 work_item（按 schedule id 反查），拿不到留空
+        try:
+            _wid = db.work_item_id_for_ref(scid) or ""
+        except Exception:
+            _wid = ""
+        db.replace_goal_subtasks(scid, subtasks, work_item_id=_wid)
         db.update_schedule(scid, plan_status="planned", goal_status="running",
                            next_run=compute_next_run("goal", None, None))
     except Exception as e:
