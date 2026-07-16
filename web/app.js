@@ -39,6 +39,7 @@
     searchContentSids: null, // 会话内容搜索命中的 session_id 集合（Set），null 表示未启用/未搜索
     searchDebounce: null,    // 会话内容搜索的防抖定时器
     pendingHighlight: null,  // 从搜索结果切入会话后，待在消息内高亮/跳转的查询词，用后即清
+    dispatchExpanded: new Set(), // Sessions Tab 主列表里已展开的调度批次 plan_id（仅内存，不持久化）
   };
 
   // ---------------- API ----------------
@@ -316,7 +317,7 @@
       state.sessionView = b.dataset.view;
       document.querySelectorAll(".sv-btn").forEach((x) => x.classList.toggle("active", x === b));
       if (state.sessionView === "archived") loadArchivedSessions();
-      else { fillList($("session-list-all"), state.sessions); applySessionSearch(); }
+      else { fillListGrouped($("session-list-all"), state.sessions, false); applySessionSearch(); }
     };
   });
 
@@ -340,7 +341,7 @@
     fillList($("session-list"), state.sessions);
     // Sessions Tab 在「归档」视图下不用活跃列表覆盖，交给 renderArchivedSessionList
     if (state.sessionView === "archived") renderArchivedSessionList();
-    else fillList($("session-list-all"), state.sessions);
+    else fillListGrouped($("session-list-all"), state.sessions, false);
     fillList($("session-list-review"), state.sessions.filter((s) => deriveState(s).key === "review"));
     const sub = $("agents-sub");
     if (sub) {
@@ -359,6 +360,77 @@
       return;
     }
     for (const s of sessions) ul.appendChild(renderSessionRow(s, isArchived));
+  }
+
+  // Sessions Tab 主列表专用：把同一调度批次（dispatch_plan_id）的子会话折叠成一组，
+  // 其余普通会话原样渲染。sessions 已按 updated_at DESC 排序。
+  function fillListGrouped(ul, sessions, isArchived = false) {
+    if (!ul) return;
+    ul.innerHTML = "";
+    if (!sessions.length) {
+      ul.innerHTML = `<div class="entity-empty"><div class="empty-emoji">📭</div><div>这里还没有会话</div></div>`;
+      return;
+    }
+    // 混合排序项：普通会话取自身 updated_at，分组取组内最大 updated_at 作锚点。
+    // 源数组已按 updated_at 降序，故每组首次遇到的成员即锚点。
+    const items = [];        // [{ ts, kind: "session"|"group", ... }]
+    const groupMap = {};     // plan_id -> item
+    for (const s of sessions) {
+      if (s.dispatch_plan_id) {
+        let g = groupMap[s.dispatch_plan_id];
+        if (!g) {
+          g = { ts: s.updated_at, kind: "group", planId: s.dispatch_plan_id,
+                title: s.dispatch_plan_title || "未命名批次", children: [] };
+          groupMap[s.dispatch_plan_id] = g;
+          items.push(g);
+        }
+        g.children.push(s);
+      } else {
+        items.push({ ts: s.updated_at, kind: "session", session: s });
+      }
+    }
+    items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    for (const it of items) {
+      if (it.kind === "group") {
+        ul.appendChild(renderDispatchGroup(it.planId, it.title, it.children, isArchived));
+      } else {
+        ul.appendChild(renderSessionRow(it.session, isArchived));
+      }
+    }
+  }
+
+  // 渲染一个调度批次分组：头部（可点击折叠）+ 子会话 body。
+  // 头部 <li> 不带 data-sid，避免被 applySessionSearch / patchSessionRow 当成普通会话行。
+  function renderDispatchGroup(planId, title, children, isArchived = false) {
+    const li = document.createElement("li");
+    li.className = "dispatch-group";
+    li.dataset.planId = planId;
+
+    // 状态摘要：统计组内进行中数量
+    const running = children.filter((c) => deriveState(c).key === "running").length;
+    const expanded = state.dispatchExpanded.has(planId);
+
+    const head = el("div", "dispatch-group-head");
+    const caret = el("span", "dispatch-caret", expanded ? "▴" : "▾");
+    const label = el("span", "dispatch-group-label",
+      `📦 批次：${escapeHtml(title)}（${children.length}个子任务）`);
+    const summary = el("span", "dispatch-group-summary", `进行中 ${running} / 共 ${children.length}`);
+    head.append(caret, label, summary);
+
+    const body = el("div", "dispatch-group-body");
+    body.style.display = expanded ? "" : "none";
+    for (const c of children) body.appendChild(renderSessionRow(c, isArchived));
+
+    head.onclick = () => {
+      const nowExpanded = !state.dispatchExpanded.has(planId);
+      if (nowExpanded) state.dispatchExpanded.add(planId);
+      else state.dispatchExpanded.delete(planId);
+      body.style.display = nowExpanded ? "" : "none";
+      caret.textContent = nowExpanded ? "▴" : "▾";
+    };
+
+    li.append(head, body);
+    return li;
   }
 
   // 加载并渲染归档会话（Sessions Tab「归档」视图）
@@ -498,11 +570,37 @@
     const ul = $("session-list-all");
     if (!ul) return;
     let visible = 0;
-    ul.querySelectorAll("li").forEach((li) => {
+    // 先处理所有普通会话行（含分组 body 内的子会话），按 data-sid 匹配
+    ul.querySelectorAll("li[data-sid]").forEach((li) => {
       const s = src.find((x) => x.id === li.dataset.sid);
       const hit = s ? sessionMatchesQuery(s, q) : !q;
       li.style.display = hit ? "" : "none";
       if (hit) { visible++; highlightRow(li, q); }
+    });
+    // 再处理调度批次分组头：按组内可见子会话数量决定显隐/临时展开
+    ul.querySelectorAll("li.dispatch-group").forEach((group) => {
+      const planId = group.dataset.planId;
+      const body = group.querySelector(".dispatch-group-body");
+      const caret = group.querySelector(".dispatch-caret");
+      const rows = body ? body.querySelectorAll("li[data-sid]") : [];
+      if (q) {
+        let visibleChildren = 0;
+        rows.forEach((r) => { if (r.style.display !== "none") visibleChildren++; });
+        if (visibleChildren > 0) {
+          group.style.display = "";
+          // 临时强制展开，不改 state.dispatchExpanded 的记忆值
+          if (body) body.style.display = "";
+          if (caret) caret.textContent = "▴";
+        } else {
+          group.style.display = "none";
+        }
+      } else {
+        // 搜索清空：恢复分组头显示，展开状态按记忆值恢复
+        group.style.display = "";
+        const expanded = state.dispatchExpanded.has(planId);
+        if (body) body.style.display = expanded ? "" : "none";
+        if (caret) caret.textContent = expanded ? "▴" : "▾";
+      }
     });
     toggleNoResult(ul, !!q && visible === 0);
   }
