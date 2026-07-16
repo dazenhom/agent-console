@@ -13,7 +13,7 @@ import asyncio
 import json
 import re
 
-from . import config, db
+from . import config, db, skill_store, agent_store
 from .job_store import run_logged_oneshot
 
 _VALID_CATEGORIES = {"plan", "deep", "dev"}
@@ -26,8 +26,50 @@ _KW_DEEP = ("架构", "设计方案", "根因", "权衡", "推导", "算法", "�
 _KW_DEV = ("改", "修", "加字段", "写测试", "重命名", "格式化", "注释", "文档", "lint", "小改", "补充")
 
 
+def _capabilities_block() -> str:
+    """列出已有 skills（编排流水线）与 subagents，供 planner 拆任务时复用。
+    都为空则返回空串。每段最多 20 条，description 截断到 100 字，空 description 只列名字。"""
+    def _fmt(items: list[dict]) -> tuple[list[str], bool]:
+        lines = []
+        for it in items[:20]:
+            name = (it.get("name") or "").strip()
+            if not name:
+                continue
+            desc = (it.get("description") or "").strip()
+            if len(desc) > 100:
+                desc = desc[:100] + "…"
+            lines.append(f"- {name} — {desc}" if desc else f"- {name}")
+        return lines, len(items) > 20
+
+    skill_lines, skill_more = _fmt(skill_store.list_skills_meta())
+    agent_lines, agent_more = _fmt(agent_store.list_agents())
+    if not skill_lines and not agent_lines:
+        return ""
+
+    parts = [
+        "## 可复用的已有能力",
+        "下列 skills（编排流水线）与 subagents（子智能体）已存在，拆解子任务时若某个子任务能直接"
+        "复用某个 skill/subagent，请在其 instruction 中显式点名引用，不要重复造轮子；如果没有合适的，"
+        "正常拆解即可。",
+    ]
+    if skill_lines:
+        parts.append("")
+        parts.append("### Skills")
+        parts.extend(skill_lines)
+        if skill_more:
+            parts.append("（仅列出部分）")
+    if agent_lines:
+        parts.append("")
+        parts.append("### Subagents")
+        parts.extend(agent_lines)
+        if agent_more:
+            parts.append("（仅列出部分）")
+    return "\n".join(parts) + "\n"
+
+
 def _build_planner_prompt(request: str) -> str:
     request = (request or "").strip()[:3000]
+    caps = _capabilities_block()
     return (
         "你是一个资深技术负责人。下面是一个较大的开发需求。请把它拆解成若干个可独立执行的子任务，"
         "每个子任务足够聚焦、边界清晰，能单独交给一位工程师完成。\n\n"
@@ -38,6 +80,7 @@ def _build_planner_prompt(request: str) -> str:
         "- category：plan=需要先规划/调研，deep=需要深度分析/架构设计/根因推导，dev=直接改代码的开发活。\n"
         "- need_codex：若该子任务适合用另一套引擎做独立视角/交叉验证/复核，置 true，否则 false。\n"
         f"- 最多 {_MAX_SUBTASKS} 个子任务，宁少勿滥，粒度适中。\n\n"
+        f"{caps + chr(10) if caps else ''}"
         f"## 需求\n{request}\n"
     )
 
