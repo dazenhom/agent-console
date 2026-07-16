@@ -338,7 +338,7 @@
 
   // 渲染三个列表：Overview(全部) / Sessions(全部，可搜) / Review(待审视)
   function renderSessionLists() {
-    fillList($("session-list"), state.sessions);
+    fillListGrouped($("session-list"), state.sessions, false);
     // Sessions Tab 在「归档」视图下不用活跃列表覆盖，交给 renderArchivedSessionList
     if (state.sessionView === "archived") renderArchivedSessionList();
     else fillListGrouped($("session-list-all"), state.sessions, false);
