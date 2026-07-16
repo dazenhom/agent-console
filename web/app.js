@@ -39,7 +39,7 @@
     searchContentSids: null, // 会话内容搜索命中的 session_id 集合（Set），null 表示未启用/未搜索
     searchDebounce: null,    // 会话内容搜索的防抖定时器
     pendingHighlight: null,  // 从搜索结果切入会话后，待在消息内高亮/跳转的查询词，用后即清
-    dispatchExpanded: new Set(), // Sessions Tab 主列表里已展开的调度批次 plan_id（仅内存，不持久化）
+    dispatchExpanded: new Set(), // 会话列表（Overview/Sessions Tab 共用）里已展开的调度批次 plan_id（仅内存，不持久化）
   };
 
   // ---------------- API ----------------
@@ -362,7 +362,7 @@
     for (const s of sessions) ul.appendChild(renderSessionRow(s, isArchived));
   }
 
-  // Sessions Tab 主列表专用：把同一调度批次（dispatch_plan_id）的子会话折叠成一组，
+  // Overview 与 Sessions Tab 主列表共用：把同一调度批次（dispatch_plan_id）的子会话折叠成一组，
   // 其余普通会话原样渲染。sessions 已按 updated_at DESC 排序。
   function fillListGrouped(ul, sessions, isArchived = false) {
     if (!ul) return;
@@ -1537,10 +1537,30 @@
     document.querySelectorAll(`li[data-sid="${s.id}"]`).forEach((li) => {
       const fresh = renderSessionRow(s);
       li.replaceWith(fresh);
+      // 若该行属于某个折叠分组，同步刷新其分组头的「进行中N/共M」计数
+      // （否则展开前的摘要会停留在上次整页渲染的旧值，直到下次 renderSessionLists）
+      refreshDispatchGroupSummary(fresh);
     });
     renderDashboard();
     // review 列表成员可能因状态变化增减，简单起见重建一次该列表
     fillList($("session-list-review"), state.sessions.filter((x) => deriveState(x).key === "review"));
+  }
+
+  // 根据某个子会话行所在的分组 body，重算并更新该分组头的状态摘要。
+  // 计数口径与 renderDispatchGroup 一致（deriveState().key === "running"）。
+  // 行不在任何分组内则静默跳过；每处命中各自更新所在分组，互不干扰。
+  function refreshDispatchGroupSummary(rowEl) {
+    const body = rowEl.closest(".dispatch-group-body");
+    if (!body) return;
+    const summary = body.parentElement.querySelector(".dispatch-group-summary");
+    if (!summary) return;
+    const rows = body.querySelectorAll("li[data-sid]");
+    let running = 0;
+    for (const r of rows) {
+      const sess = state.sessions.find((x) => x.id === r.dataset.sid);
+      if (sess && deriveState(sess).key === "running") running++;
+    }
+    summary.textContent = `进行中 ${running} / 共 ${rows.length}`;
   }
 
   // ---------------- peek 速览面板：不切会话查看 + 回复 ----------------
