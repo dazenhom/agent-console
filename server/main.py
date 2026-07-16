@@ -6,10 +6,12 @@ import re
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler, worktree, arbiter, dispatcher
+from . import config, db, memory_store, agent_store, skill_store, asr_client, session_import, wecom_notify, scheduler, worktree, arbiter, dispatcher
+from . import logging_util
+from .llms_doc import build_llms_txt, build_llms_full_txt
 from .claude_runner import runner
 from .session_hub import hub, Subscriber, _runner_for
 
@@ -24,6 +26,10 @@ _VALID_EFFORTS = set(config.CLAUDE_EFFORTS)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 日志装配点：安装 LoggerProvider（默认透传 stdlib logging，行为等价）。各业务模块
+    # 经 logging_util.get_logger 获取 logger，此处是唯一的初始化/注入入口——将来要切换
+    # 日志后端或测试注入假 logger，只改这一行传入自定义 Provider 即可，无需动业务模块。
+    logging_util.configure()
     # 启动：初始化 SQLite。比 @app.on_event("startup") 更可靠，TestClient / 多种部署方式都能触发。
     db.init_db()
     # 目标循环卡在 producing/verifying 的复位到 running：无条件跑（幂等 UPDATE，双进程各跑一次
@@ -523,6 +529,69 @@ async def agents_delete(name: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ---------------- Skill 管理（.claude/skills/<name>/SKILL.md）----------------
+@app.get("/api/skills", dependencies=[Depends(require_auth)])
+async def skills_list():
+    return skill_store.list_skills_meta()
+
+
+@app.post("/api/skills", dependencies=[Depends(require_auth)])
+async def skills_create(payload: dict):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name 不能为空")
+    try:
+        return skill_store.create_skill(name, payload.get("description", ""), payload.get("body", ""))
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/skills/{name}", dependencies=[Depends(require_auth)])
+async def skills_get(name: str):
+    try:
+        s = skill_store.get_skill(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not s:
+        raise HTTPException(status_code=404, detail="skill 不存在")
+    return s
+
+
+@app.put("/api/skills/{name}", dependencies=[Depends(require_auth)])
+async def skills_update(name: str, payload: dict):
+    try:
+        return skill_store.update_skill(name, payload.get("description"), payload.get("body"))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/skills/{name}", dependencies=[Depends(require_auth)])
+async def skills_delete(name: str):
+    try:
+        return skill_store.delete_skill(name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------- llms.txt / llms-full.txt（供外部 agent 摄取，不鉴权）----------------
+@app.get("/llms.txt")
+async def llms_txt():
+    """项目文本索引（llms.txt 约定）；无鉴权供外部 agent 直接摄取。"""
+    return PlainTextResponse(build_llms_txt(app), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/llms-full.txt")
+async def llms_full_txt():
+    """项目全文：索引 + 所有 skill / subagent 定义全文内联。"""
+    return PlainTextResponse(build_llms_full_txt(app), media_type="text/plain; charset=utf-8")
+
+
 # ---------------- 快捷指令（可自定义，存 DB）----------------
 @app.get("/api/snippets", dependencies=[Depends(require_auth)])
 async def snippets_list():
@@ -598,8 +667,13 @@ def _validate_schedule(payload: dict) -> dict:
             raise HTTPException(status_code=400, detail="max_iterations 需为整数")
         if not (1 <= max_iterations <= 100):
             raise HTTPException(status_code=400, detail="max_iterations 需在 1..100 之间")
+        verify_command = (payload.get("verify_command") or "").strip()
+        exec_mode = payload.get("exec_mode") or "solo"
+        if exec_mode not in ("solo", "team"):
+            raise HTTPException(status_code=400, detail="exec_mode 仅支持 solo / team")
         return {"kind": kind, "interval_min": None, "at_hhmm": None,
-                "stop_condition": stop_condition, "max_iterations": max_iterations}
+                "stop_condition": stop_condition, "max_iterations": max_iterations,
+                "verify_command": verify_command, "exec_mode": exec_mode}
     if kind == "interval":
         try:
             interval_min = int(payload.get("interval_min"))
@@ -637,7 +711,8 @@ async def schedules_create(payload: dict):
         nxt = scheduler.compute_next_run("goal", None, None)
         return db.create_schedule(session_id, prompt, "goal", None, None, nxt,
                                   stop_condition=norm["stop_condition"],
-                                  max_iterations=norm["max_iterations"], goal_status="running")
+                                  max_iterations=norm["max_iterations"], goal_status="running",
+                                  verify_command=norm["verify_command"], exec_mode=norm["exec_mode"])
     nxt = scheduler.compute_next_run(norm["kind"], norm["interval_min"], norm["at_hhmm"])
     return db.create_schedule(session_id, prompt, norm["kind"], norm["interval_min"], norm["at_hhmm"], nxt)
 
@@ -662,6 +737,7 @@ async def schedules_update(sid: str, payload: dict):
             fields.update({
                 "kind": "goal", "interval_min": None, "at_hhmm": None,
                 "stop_condition": norm["stop_condition"], "max_iterations": norm["max_iterations"],
+                "verify_command": norm["verify_command"], "exec_mode": norm["exec_mode"],
                 "goal_status": "running", "iter_count": 0, "last_feedback": "",
             })
             fields["next_run"] = scheduler.compute_next_run("goal", None, None)
@@ -688,6 +764,28 @@ async def schedules_delete(sid: str):
     if not db.delete_schedule(sid):
         raise HTTPException(status_code=404, detail="定时任务不存在")
     return {"ok": True}
+
+
+@app.get("/api/schedules/{sid}/iterations", dependencies=[Depends(require_auth)])
+async def schedules_iterations(sid: str):
+    """某个目标循环的每轮迭代历史（含验收判定/反馈/产出摘要），只读。"""
+    if not db.get_schedule(sid):
+        raise HTTPException(status_code=404, detail="定时任务不存在")
+    return db.list_goal_iterations(sid)
+
+
+# ---------------- 目标循环历史（H2 goal loop：列表态 + 详情态）----------------
+@app.get("/api/goals", dependencies=[Depends(require_auth)])
+async def goals_list():
+    return db.list_goal_loops()
+
+
+@app.get("/api/goals/{sid}", dependencies=[Depends(require_auth)])
+async def goals_detail(sid: str):
+    detail = db.get_goal_loop_detail(sid)
+    if not detail:
+        raise HTTPException(status_code=404, detail="目标循环不存在")
+    return detail
 
 
 # ---------------- 待办事项 ----------------
