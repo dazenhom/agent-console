@@ -133,10 +133,11 @@ async def run_arbitration(arb_id: str) -> None:
         db.update_arbitration(arb_id, result_a=text_a, job_a_id=job_a,
                               result_b=text_b, job_b_id=job_b)
 
-        # 综合仲裁：用更强的模型
-        prompt = _build_arbitration_prompt(question, model_a, text_a, model_b, text_b)
-        job_final, verdict = await _run_claude_oneshot(
-            prompt, config.ARBITER_MODEL, effort="high", kind="arbitration_final",
+        # 综合仲裁：走统一验收入口的 candidates 策略（内部仍用更强的 ARBITER_MODEL）
+        from . import verifier
+        job_final, verdict = await verifier.judge(
+            "candidates", question=question, model_a=model_a, result_a=text_a,
+            model_b=model_b, result_b=text_b,
         )
         if not verdict:
             verdict = "（仲裁生成失败：无输出）"

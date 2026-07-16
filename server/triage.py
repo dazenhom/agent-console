@@ -201,12 +201,9 @@ def _build_and_start(payload: dict):
     stop_condition = payload.get("stop_condition") or "完成该任务"
 
     # 建隔离 worktree（降级共享工作区）
-    path, branch = worktree.create(workdir, title[:24])
-    if branch:
-        sess = db.create_session(f"[自动派单] {title}", path,
-                                 worktree_branch=branch, is_worktree=1, worktree_base=workdir)
-    else:
-        sess = db.create_session(f"[自动派单] {title}", workdir)
+    wd, branch, is_wt, wt_base, _ = worktree.provision_workdir(workdir, title[:24], True)
+    sess = db.create_session(f"[自动派单] {title}", wd,
+                             worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base)
 
     nxt = scheduler.compute_next_run("goal", None, None)
     sch = db.create_schedule(

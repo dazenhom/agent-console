@@ -13,7 +13,7 @@ import asyncio
 import json
 import re
 
-from . import config, db, skill_store, agent_store
+from . import config, db, skill_store, agent_store, worktree
 from .job_store import run_logged_oneshot
 
 _VALID_CATEGORIES = {"plan", "deep", "dev"}
@@ -179,11 +179,15 @@ def _route(subtask: dict) -> tuple[str, str, str]:
     return "claude", config.CLAUDE_MODEL_STRONG, "dev"
 
 
-async def dispatch(request: str, parent_session_id: str | None, workdir: str) -> str:
+async def dispatch(request: str, parent_session_id: str | None, workdir: str,
+                   isolate: bool = False) -> str:
     """规划 → 路由 → 建子会话 → 后台开工。返回 plan_id。
 
     session_hub 延迟 import 打破顶层循环导入。单个子任务建立失败记 status=error 跳过，
     不中断整个循环；子会话回合用 fire-and-forget 起跑，避免一个卡住其余子任务的建立。
+
+    isolate=True 时每个子任务各建独立 worktree（默认 False，沿用共享父目录的旧行为），
+    避免多个并行子任务在同一目录互相踩踏。
     """
     from .session_hub import hub
 
@@ -201,8 +205,11 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str) ->
     for seq, st in enumerate(subtasks):
         engine, model, category = _route(st)
         try:
+            wd, branch, is_wt, wt_base, _ = await asyncio.to_thread(
+                worktree.provision_workdir, workdir, st["title"][:24], isolate)
             child = db.create_session(
-                title=st["title"][:80], workdir=workdir, mode=model, engine=engine,
+                title=st["title"][:80], workdir=wd, mode=model, engine=engine,
+                worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base,
             )
             subtask = db.create_dispatch_subtask(
                 plan_id=plan_id, parent_session_id=parent_session_id, seq=seq,

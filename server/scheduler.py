@@ -233,7 +233,7 @@ async def _git_diff_stat(cwd: str) -> str:
 async def _run_goal_verify(scid: str) -> None:
     """后台验收本轮产出，是唯一把状态推回 running/done 的地方。
     整体 try/except 兜底：任何异常都复位 running，绝不让状态卡死在 verifying。"""
-    from . import goal_verifier, kanban
+    from . import verifier, kanban
     try:
         sch = db.get_schedule(scid)
         if not sch or sch.get("goal_status") != "verifying":
@@ -258,10 +258,12 @@ async def _run_goal_verify(scid: str) -> None:
         git_diff = ""
         if sess.get("is_worktree") and workdir:
             git_diff = await _git_diff_stat(workdir)
-        done, reason = await goal_verifier.verify(sch.get("prompt") or "",
-                                                  sch.get("stop_condition") or "", produced,
-                                                  session_id=sess.get("id"), schedule_id=scid,
-                                                  cmd_result=cmd_result, git_diff=git_diff)
+        done, reason = await verifier.judge("nl",
+                                            goal=sch.get("prompt") or "",
+                                            stop_condition=sch.get("stop_condition") or "",
+                                            produced=produced,
+                                            session_id=sess.get("id"), schedule_id=scid,
+                                            cmd_result=cmd_result, git_diff=git_diff)
         iter_count = int(sch.get("iter_count") or 0)
         max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
         job = db.get_latest_job(scid, "goal_verify")
@@ -469,7 +471,7 @@ async def _run_goal_plan(scid: str) -> None:
 async def _run_goal_verify_planned(scid: str) -> None:
     """planned 模式后台验收：plan_status=finalizing 时做整体收尾验收（含 verify_command），
     否则做当前子任务的进展验收。是唯一把 planned 状态推回 running/终态的地方，整体 try/except 兜底。"""
-    from . import goal_verifier, kanban
+    from . import verifier, kanban
     try:
         sch = db.get_schedule(scid)
         if not sch or sch.get("goal_status") != "verifying":
@@ -497,8 +499,9 @@ async def _run_goal_verify_planned(scid: str) -> None:
             cmd = (sch.get("verify_command") or "").strip()
             if cmd and workdir:
                 cmd_result = await _run_shell(cmd, workdir, config.GOAL_CMD_TIMEOUT)
-            done, reason = await goal_verifier.verify(
-                sch.get("prompt") or "", sch.get("stop_condition") or "", produced,
+            done, reason = await verifier.judge(
+                "nl", goal=sch.get("prompt") or "", stop_condition=sch.get("stop_condition") or "",
+                produced=produced,
                 session_id=sess.get("id"), schedule_id=scid,
                 cmd_result=cmd_result, git_diff=git_diff)
             # 收尾验收不对应任何新回合，不写/不覆盖 goal_iterations（最后一个子任务的轮次记录已定稿）
@@ -521,8 +524,8 @@ async def _run_goal_verify_planned(scid: str) -> None:
             return
         sub_goal = ((sub.get("title") or "") + "\n" + (sub.get("instruction") or "")).strip()
         sub_criteria = "完成上述子任务要求：" + (sub.get("instruction") or sub.get("title") or "")
-        done, reason = await goal_verifier.verify(
-            sub_goal, sub_criteria, produced,
+        done, reason = await verifier.judge(
+            "nl", goal=sub_goal, stop_condition=sub_criteria, produced=produced,
             session_id=sess.get("id"), schedule_id=scid, git_diff=git_diff)
         attempts = int(sub.get("attempts") or 0)
         if done:

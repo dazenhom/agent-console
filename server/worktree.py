@@ -53,6 +53,20 @@ def create(base, sid_hint) -> tuple[str, str]:
     return str(path), branch
 
 
+def provision_workdir(base: str, hint: str, isolate: bool) -> tuple[str, str, int, str, str]:
+    """统一隔离工作区编排：把"调 create → 判是否真隔离 → 定 worktree 元信息 → 拼降级提示"
+    这段散落在多处的逻辑收成一个入口。返回 (workdir, branch, is_worktree, worktree_base, notice)：
+    - isolate=False：不隔离，直接返回共享 base；
+    - isolate=True 且建 worktree 成功：返回隔离目录 + 分支元信息；
+    - isolate=True 但 base 非 git 仓库 / 创建失败：降级为共享 base，并给出提示文案。"""
+    if not isolate:
+        return base, "", 0, "", ""
+    path, branch = create(base, hint)
+    if branch:
+        return path, branch, 1, base, ""
+    return base, "", 0, "", "该目录不是 Git 仓库（或创建 worktree 失败），已使用共享工作区，未隔离。"
+
+
 def remove(path, base) -> None:
     """删除会话时清理 worktree 目录（不删分支）。失败只打日志，不 raise。"""
     if not path or not base:

@@ -124,15 +124,8 @@ async def create_session(payload: dict):
     effort = payload.get("effort") if payload.get("effort") in _VALID_EFFORTS else None
     engine = payload.get("engine")
     engine = engine if engine in config.VALID_ENGINES else config.DEFAULT_ENGINE
-    branch, is_wt, wt_base, notice = "", 0, "", ""
-    if payload.get("isolate"):
-        base = workdir
-        path, branch = await asyncio.to_thread(worktree.create, base, title)
-        if branch:
-            workdir, is_wt, wt_base = path, 1, base
-        else:
-            branch = ""
-            notice = "该目录不是 Git 仓库（或创建 worktree 失败），已使用共享工作区，未隔离。"
+    workdir, branch, is_wt, wt_base, notice = await asyncio.to_thread(
+        worktree.provision_workdir, workdir, title, bool(payload.get("isolate")))
     s = db.create_session(title, workdir, mode,
                           worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base,
                           engine=engine, effort=effort)
@@ -375,7 +368,8 @@ async def post_dispatch(payload: dict):
     if not request:
         raise HTTPException(status_code=400, detail="request 不能为空")
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
-    plan_id = await dispatcher.dispatch(request, payload.get("session_id"), workdir)
+    plan_id = await dispatcher.dispatch(request, payload.get("session_id"), workdir,
+                                        isolate=bool(payload.get("isolate")))
     return {"plan_id": plan_id, "subtasks": db.list_dispatch_subtasks(plan_id)}
 
 
