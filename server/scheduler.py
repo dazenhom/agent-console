@@ -302,6 +302,11 @@ async def _finish_goal(scid: str, sess: dict, status: str, reason: str) -> None:
     from . import wecom_notify
     from .session_hub import hub
     db.update_schedule(scid, goal_status=status, enabled=0)
+    # 阶段2 影子表：把对应影子记录收尾到 done/exhausted，写失败只记日志绝不影响主流程
+    try:
+        db.update_work_item_status_by_ref(scid, status)
+    except Exception as e:
+        print(f"[work_items] goal status update failed: {type(e).__name__}: {e}")
     title = (sess or {}).get("title") or "会话"
     head = "🎯 目标已达成" if status == "done" else "⏹️ 目标循环终止"
     asyncio.ensure_future(wecom_notify.notify(

@@ -108,6 +108,15 @@ async def run_arbitration(arb_id: str) -> None:
     if not arb:
         return
     question = arb.get("question") or ""
+    # 阶段2 影子表：纯附加观测，写失败只记日志绝不影响仲裁主流程
+    try:
+        db.create_work_item(
+            origin="arbiter", topology="candidates", isolation="shared",
+            verify_mode="candidates", status="running",
+            ref_id=arb_id, session_id=arb.get("session_id") or "", summary=question,
+        )
+    except Exception as e:
+        print(f"[work_items] arbiter insert failed: {type(e).__name__}: {e}")
     model_a = arb.get("model_a") or config.CLAUDE_MODEL_SUPER
     model_b = arb.get("model_b") or (config.CODEX_MODEL or (config.CODEX_MODELS[0] if config.CODEX_MODELS else ""))
     try:
@@ -142,6 +151,14 @@ async def run_arbitration(arb_id: str) -> None:
         if not verdict:
             verdict = "（仲裁生成失败：无输出）"
         db.update_arbitration(arb_id, verdict=verdict, job_final_id=job_final, status="done")
+        try:
+            db.update_work_item_status_by_ref(arb_id, "done")
+        except Exception:
+            pass
     except Exception as e:
         print(f"[arbiter] run_arbitration error: {type(e).__name__}: {e}")
         db.update_arbitration(arb_id, status="error", error=str(e))
+        try:
+            db.update_work_item_status_by_ref(arb_id, "error")
+        except Exception:
+            pass

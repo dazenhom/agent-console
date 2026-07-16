@@ -212,6 +212,16 @@ def _build_and_start(payload: dict):
         max_iterations=config.TRIAGE_GOAL_MAX_ITERATIONS,
         goal_status="running",
     )
+    # 阶段2 影子表：纯附加观测，写失败只记日志绝不影响派单主流程
+    try:
+        db.create_work_item(
+            origin="triage", topology="iterate",
+            isolation="worktree" if is_wt else "shared",
+            verify_mode="nl", status="pending",
+            ref_id=sch["id"], session_id=sess["id"], summary=goal_prompt,
+        )
+    except Exception as e:
+        print(f"[work_items] triage insert failed: {type(e).__name__}: {e}")
     return sess, sch
 
 

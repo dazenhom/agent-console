@@ -227,6 +227,19 @@ def init_db() -> None:
                 created_at REAL, updated_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_goalsub_schedule ON goal_subtasks(schedule_id, seq);
+            CREATE TABLE IF NOT EXISTS work_items (
+                id TEXT PRIMARY KEY,
+                origin TEXT,        -- goal / dispatch / arbiter / triage：来源机制
+                topology TEXT,      -- iterate / fanout / candidates：执行拓扑
+                isolation TEXT,     -- shared / worktree：工作区隔离方式
+                verify_mode TEXT,   -- none / nl / command / candidates：验收方式
+                status TEXT,        -- pending / running / verifying / done / exhausted / error
+                ref_id TEXT,        -- 指向来源表主键（schedule id / dispatch plan_id / arbitration id）
+                session_id TEXT,
+                summary TEXT,       -- 简短描述（goal/triage 的目标、dispatch 的需求、arbiter 的问题前缀）
+                created_at REAL, updated_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_workitems_origin ON work_items(origin, created_at DESC);
             """
         )
         # 兼容老库：缺列就补。双进程（80/8800）可能同时启动产生竞态——
@@ -1230,3 +1243,23 @@ def update_goal_subtask(sid: str, **fields) -> bool:
     cols = ", ".join(f"{k}=?" for k in updates)
     cur = _exec(f"UPDATE goal_subtasks SET {cols} WHERE id=?", (*updates.values(), sid))
     return cur.rowcount > 0
+
+
+# ---------- work_items（阶段2 影子表：统一观测四套机制的"发起"，纯写不读，可整表 drop 回退）----------
+def create_work_item(origin: str, topology: str, isolation: str, verify_mode: str,
+                     status: str, ref_id: str = "", session_id: str = "", summary: str = "") -> str:
+    wid = new_id()
+    now = _now()
+    _exec(
+        "INSERT INTO work_items(id,origin,topology,isolation,verify_mode,status,"
+        "ref_id,session_id,summary,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (wid, origin, topology, isolation, verify_mode, status,
+         ref_id, session_id or "", (summary or "")[:200], now, now),
+    )
+    return wid
+
+
+def update_work_item_status_by_ref(ref_id: str, status: str) -> None:
+    """按来源表主键收尾对应影子记录状态（找不到静默跳过）。
+    ref_id 全局唯一（schedule/plan/arbitration id），无需再按 origin 过滤。"""
+    _exec("UPDATE work_items SET status=?,updated_at=? WHERE ref_id=?", (status, _now(), ref_id))
