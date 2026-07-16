@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=43" />
+  <link rel="stylesheet" href="style.css?v=44" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -80,6 +80,14 @@
               <div class="dash-kicker">Work dashboard</div>
               <div class="dash-title" id="dash-title">Agent 调度台</div>
             </div>
+            <button id="goal-loop-btn" class="goal-loop-hero" title="设定目标和完成标准，Agent 自动迭代直到达成">
+              <span class="goal-loop-hero-ico">🎯</span>
+              <span class="goal-loop-hero-text">
+                <span class="goal-loop-hero-title">目标循环</span>
+                <span class="goal-loop-hero-sub">设个目标，自动迭代到达成</span>
+              </span>
+              <span class="goal-loop-hero-arrow">›</span>
+            </button>
             <div class="mini-stats" id="dashboard"></div>
 
             <!-- 智能任务看板 -->
@@ -205,8 +213,10 @@
           <div class="exp-inner">
             <div class="pane-head">管理中心</div>
             <div class="exp-grid">
+              <button id="open-goal-btn" class="manage-entry manage-entry-featured">🎯 目标循环</button>
               <button id="open-memory-btn" class="manage-entry">🧠 记忆库</button>
               <button id="open-agents-btn" class="manage-entry">🤖 子智能体</button>
+              <button id="open-skills-btn" class="manage-entry">🧩 技能</button>
               <button id="open-snippets-btn" class="manage-entry">⚡ 快捷指令</button>
               <button id="open-schedules-btn" class="manage-entry">⏰ 定时任务</button>
               <button id="open-todos-btn" class="manage-entry">✅ 待办清单</button>
@@ -354,12 +364,24 @@
     </main>
   </div>
 
+  <!-- 目标循环面板 -->
+  <div id="goal-view" class="view manage-view hidden">
+    <header class="topbar">
+      <button id="goal-back" class="icon-btn" aria-label="返回">&#8592;</button>
+      <div class="topbar-title">目标循环</div>
+      <button id="goal-new" class="mini-btn">+ 新目标</button>
+    </header>
+    <main class="manage-body">
+      <div id="goal-body"></div>
+    </main>
+  </div>
+
   <!-- 浮层容器：toast 通知 + 模态确认框 -->
   <div id="memo-banner-root"></div>
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=65"></script>
+  <script src="app.js?v=66"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

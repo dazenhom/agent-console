@@ -1498,6 +1498,16 @@
       setMemoBadge(data.count || 0);
       return;
     }
+    // 目标循环状态变更（达成/终止）：目标视图开着就就地刷新，并给一条 toast
+    if (data.type === "goal_update") {
+      const done = data.goal_status === "done";
+      toast(done ? "🎯 目标已达成" : "⏹️ 目标循环终止", done ? "success" : "info", 5000);
+      if (!$("goal-view").classList.contains("hidden")) {
+        if (_goalCurrentId && _goalCurrentId === data.schedule_id) loadGoalDetail(_goalCurrentId);
+        else if (!_goalCurrentId) showGoalList();
+      }
+      return;
+    }
     if (data.type !== "session_update") return;
     const s = state.sessions.find((x) => x.id === data.session_id);
     if (s) {
@@ -2096,7 +2106,7 @@
   function openManage(kind) {
     manage.kind = kind;
     closeDrawer();
-    const titles = { memory: "记忆库", agent: "子智能体", snippets: "快捷指令", schedule: "定时任务", todos: "待办清单", memos: "备忘录", reports: "日报记录", artifacts: "产出物", jobs: "后台任务" };
+    const titles = { memory: "记忆库", agent: "子智能体", skills: "技能", snippets: "快捷指令", schedule: "定时任务", todos: "待办清单", memos: "备忘录", reports: "日报记录", artifacts: "产出物", jobs: "后台任务" };
     $("manage-title").textContent = titles[kind] || kind;
     $("app-view").classList.add("hidden");
     $("manage-view").classList.remove("hidden");
@@ -2107,6 +2117,7 @@
     $("app-view").classList.remove("hidden");
   }
   $("open-memory-btn").onclick = () => openManage("memory");  $("open-agents-btn").onclick = () => openManage("agent");
+  $("open-skills-btn").onclick = () => openManage("skills");
   $("open-snippets-btn").onclick = () => openManage("snippets");
   $("open-schedules-btn").onclick = () => openManage("schedule");
   $("open-todos-btn").onclick = () => openManage("todos");
@@ -2371,6 +2382,242 @@
   $("dispatch-back").onclick = closeDispatchView;
   $("dispatch-new").onclick = openDispatchInput;
 
+  // ---------------- 目标循环（H2）：列表 + 详情两态，仿智能分派/背对背仲裁 ----------------
+  const GOAL_STATUS_LABEL = {
+    running: ["等待下一轮", ""],
+    producing: ["执行中", "tag-run"],
+    verifying: ["验收中", "tag-run"],
+    done: ["已完成", "tag-good"],
+    exhausted: ["已耗尽停止", "tag-warn"],
+  };
+  function fmtGoalStatus(status) {
+    return GOAL_STATUS_LABEL[status] || [status || "-", ""];
+  }
+  let _goalPollTimer = null;
+  let _goalCurrentId = null;  // 详情态正在看的目标循环 id（列表态为 null），用于 goal_update 就地刷新
+  function stopGoalPoll() { if (_goalPollTimer) { clearTimeout(_goalPollTimer); _goalPollTimer = null; } }
+  function openGoalView() {
+    stopGoalPoll();
+    $("app-view").classList.add("hidden");
+    $("goal-view").classList.remove("hidden");
+    showGoalList();
+  }
+  function closeGoalView() {
+    stopGoalPoll();
+    $("goal-view").classList.add("hidden");
+    $("app-view").classList.remove("hidden");
+  }
+
+  async function showGoalList() {
+    stopGoalPoll();
+    _goalCurrentId = null;
+    const body = $("goal-body");
+    body.innerHTML = '<div class="entity-loading">加载中…</div>';
+    try {
+      const all = await api("/api/schedules");
+      const items = all.filter((s) => s.kind === "goal");
+      body.innerHTML = "";
+      if (!items.length) {
+        body.innerHTML = '<div class="entity-empty"><div class="empty-emoji">🎯</div><div>还没有目标循环</div><div class="empty-sub">点右上角「+ 新目标」，设一个完成标准让 Agent 自迭代到达成</div></div>';
+        return;
+      }
+      const ul = el("ul", "entity-list");
+      for (const it of items) {
+        const sess = state.sessions.find((x) => x.id === it.session_id);
+        const [label, cls] = fmtGoalStatus(it.goal_status);
+        const li = el("li");
+        const head = el("div", "e-head");
+        head.appendChild(el("span", "e-name", escapeHtml((it.prompt || "").slice(0, 60) || "（无标题）")));
+        head.appendChild(el("span", "e-tag " + cls, escapeHtml(label)));
+        if (!it.enabled) head.appendChild(el("span", "e-tag tag-warn", "已停用"));
+        li.appendChild(head);
+        li.appendChild(el("div", "e-desc",
+          `会话：${escapeHtml(sess ? sess.title : "(已删除)")} · 迭代 ${it.iter_count || 0}/${it.max_iterations || 10}`));
+        li.style.cursor = "pointer";
+        li.onclick = () => openGoalDetail(it.id);
+        ul.appendChild(li);
+      }
+      body.appendChild(ul);
+    } catch (e) {
+      body.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function openGoalDetail(id) {
+    stopGoalPoll();
+    $("goal-view").classList.remove("hidden");
+    $("app-view").classList.add("hidden");
+    $("goal-body").innerHTML = '<div class="entity-loading">加载中…</div>';
+    await loadGoalDetail(id);
+  }
+
+  async function loadGoalDetail(id) {
+    _goalCurrentId = id;
+    try {
+      const [all, jobs] = await Promise.all([
+        api("/api/schedules"),
+        api("/api/jobs?kind=goal_verify&limit=200"),
+      ]);
+      const sch = all.find((s) => s.id === id);
+      if (!sch) {
+        $("goal-body").innerHTML = '<div class="entity-empty">该目标循环已被删除</div>';
+        return;
+      }
+      const rounds = jobs.filter((j) => j.schedule_id === id).reverse();
+      renderGoalDetail(sch, rounds);
+      if (["running", "producing", "verifying"].includes(sch.goal_status) && sch.enabled) {
+        _goalPollTimer = setTimeout(() => loadGoalDetail(id), 6000);
+      }
+    } catch (e) {
+      $("goal-body").innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderGoalDetail(sch, rounds) {
+    const body = $("goal-body");
+    const sess = state.sessions.find((x) => x.id === sch.session_id);
+    const [label, cls] = fmtGoalStatus(sch.goal_status);
+    const isTerminal = sch.goal_status === "done" || sch.goal_status === "exhausted";
+    body.innerHTML = `
+      <div class="goal-meta-row">
+        <span class="e-tag ${cls}">${escapeHtml(label)}</span>
+        <span class="e-tag">${sch.enabled ? "启用" : "已停用"}</span>
+        <span class="e-tag">迭代 ${sch.iter_count || 0}/${sch.max_iterations || 10}</span>
+      </div>
+      <div class="goal-field"><div class="goal-field-label">🎯 目标</div><div class="goal-text">${escapeHtml(sch.prompt || "")}</div></div>
+      <div class="goal-field"><div class="goal-field-label">✅ 完成标准</div><div class="goal-text">${escapeHtml(sch.stop_condition || "")}</div></div>
+      <div class="goal-field"><div class="goal-field-label">💬 最新反馈</div><div class="goal-text">${escapeHtml(sch.last_feedback || "（暂无）")}</div></div>
+      <div class="goal-field"><div class="goal-field-label">📍 所在会话</div><div class="goal-text goal-session-link" id="goal-session-link">${escapeHtml(sess ? sess.title : "(已删除)")}</div></div>
+      <div class="goal-actions">
+        ${sess ? '<button class="btn-sm" id="goal-goto-session">查看会话</button>' : ""}
+        <button class="btn-sm" id="goal-edit">编辑</button>
+        ${!isTerminal ? `<button class="btn-sm danger" id="goal-stop">${sch.enabled ? "终止" : "重新启动"}</button>` : ""}
+        <button class="btn-sm danger" id="goal-delete">删除</button>
+      </div>
+      <div class="goal-rounds-head">每轮进展（${rounds.length}）</div>
+      <ul class="entity-list goal-rounds"></ul>`;
+    const ul = body.querySelector(".goal-rounds");
+    if (!rounds.length) {
+      ul.innerHTML = '<li class="e-empty-row">还没有完成任何一轮验收</li>';
+    } else {
+      rounds.forEach((j, i) => {
+        const li = el("li");
+        const bad = j.status === "error" || j.status === "timeout";
+        const doneMatch = /done=(True|False)/.exec(j.output || "");
+        const roundDone = doneMatch && doneMatch[1] === "True";
+        const head = el("div", "e-head");
+        head.appendChild(el("span", "e-name", `第 ${i + 1} 轮 · ${fmtTime(j.started_at)}`));
+        head.appendChild(el("span", "e-tag " + (bad ? "tag-warn" : roundDone ? "tag-good" : ""),
+          escapeHtml(bad ? (j.status || "异常") : roundDone ? "达成" : "继续迭代")));
+        li.appendChild(head);
+        const reason = (j.output || j.error || "").replace(/^done=(True|False),\s*reason=/, "");
+        if (reason) li.appendChild(el("div", "e-desc", escapeHtml(reason)));
+        ul.appendChild(li);
+      });
+    }
+    if (sess) body.querySelector("#goal-goto-session").onclick = () => { closeGoalView(); switchSession(sess.id); };
+    body.querySelector("#goal-edit").onclick = () => openGoalForm(sch);
+    const stopBtn = body.querySelector("#goal-stop");
+    if (stopBtn) stopBtn.onclick = async () => {
+      const turningOn = !sch.enabled;
+      const yes = await confirmDialog(turningOn ? "重新启动这个目标循环？将从第 1 轮重新开始迭代。" : "确定终止这个目标循环？",
+        { okText: turningOn ? "重新启动" : "终止", danger: !turningOn });
+      if (!yes) return;
+      try {
+        await api(`/api/schedules/${sch.id}`, { method: "PUT", body: JSON.stringify({ enabled: turningOn }) });
+        toast(turningOn ? "已重新启动" : "已终止", "success");
+        loadGoalDetail(sch.id);
+      } catch (e) { toast("操作失败：" + e.message, "error"); }
+    };
+    body.querySelector("#goal-delete").onclick = async () => {
+      const yes = await confirmDialog("确定删除这个目标循环？（会话本身不受影响）", { okText: "删除", danger: true });
+      if (!yes) return;
+      try {
+        await api(`/api/schedules/${sch.id}`, { method: "DELETE" });
+        toast("已删除", "success");
+        showGoalList();
+      } catch (e) { toast("删除失败：" + e.message, "error"); }
+    };
+  }
+
+  function openGoalForm(existing) {
+    stopGoalPoll();
+    const root = $("modal-root");
+    root.innerHTML = "";
+    const d = existing || { session_id: state.sessionId || (state.sessions[0] || {}).id || "", prompt: "", stop_condition: "", max_iterations: 10, verify_command: "", exec_mode: "solo" };
+    const opts = state.sessions.map((s) => `<option value="${escapeAttr(s.id)}" ${s.id === d.session_id ? "selected" : ""}>${escapeHtml(s.title)}</option>`).join("");
+    const mode = d.exec_mode === "team" ? "team" : "solo";
+    const card = el("div", "modal-card");
+    card.innerHTML = `<div class="modal-title">${existing ? "编辑目标循环" : "新目标循环"}</div>
+      <div class="entity-form" style="gap:12px">
+        <label>在哪个会话里执行
+          <select id="gf-session">${opts}</select>
+        </label>
+        <label>目标（每轮迭代都会带着这个目标去推进）
+          <textarea id="gf-prompt" class="form-input tall" rows="3" placeholder="例：把 web 前端的目标循环入口做成列表+详情两态">${escapeHtml(d.prompt || "")}</textarea>
+        </label>
+        <label>完成标准（自然语言，独立小模型据此验收每轮产出）
+          <textarea id="gf-stop" class="form-input tall" rows="3" placeholder="例：node --check 通过，且样式与现有页面一致">${escapeHtml(d.stop_condition || "")}</textarea>
+        </label>
+        <label>验收命令（可选，每轮在会话工作区里跑，退出码+输出作为客观信号喂给验收员）
+          <input id="gf-verify" class="form-input" type="text" placeholder="例：python3 -m py_compile server/*.py" value="${escapeAttr(d.verify_command || "")}" />
+        </label>
+        <label>执行模式
+          <select id="gf-mode">
+            <option value="solo" ${mode === "solo" ? "selected" : ""}>solo — 单 Agent 裸执行（默认）</option>
+            <option value="team" ${mode === "team" ? "selected" : ""}>team — 走 /console-dev 四角流水线</option>
+          </select>
+        </label>
+        <label>最大迭代轮数（1-100）
+          <input id="gf-maxiter" class="form-input" type="number" min="1" max="100" value="${escapeAttr(String(d.max_iterations || 10))}" />
+        </label>
+      </div>
+      <div class="form-err" id="gf-err"></div>
+      <div class="modal-actions">
+        <button class="modal-cancel" type="button">取消</button>
+        <button class="modal-ok" type="button">${existing ? "保存" : "创建"}</button>
+      </div>`;
+    root.appendChild(card);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => root.classList.add("show"));
+    const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
+    card.querySelector(".modal-cancel").onclick = () => { close(); if (existing) loadGoalDetail(existing.id); };
+    root.onclick = (e) => { if (e.target === root) { close(); if (existing) loadGoalDetail(existing.id); } };
+    card.querySelector(".modal-ok").onclick = async () => {
+      const errEl = card.querySelector("#gf-err");
+      const body = {
+        session_id: card.querySelector("#gf-session").value,
+        prompt: card.querySelector("#gf-prompt").value.trim(),
+        kind: "goal",
+        stop_condition: card.querySelector("#gf-stop").value.trim(),
+        verify_command: card.querySelector("#gf-verify").value.trim(),
+        exec_mode: card.querySelector("#gf-mode").value,
+        max_iterations: parseInt(card.querySelector("#gf-maxiter").value, 10),
+      };
+      if (!body.prompt) { errEl.textContent = "目标不能为空"; return; }
+      if (!body.stop_condition) { errEl.textContent = "完成标准不能为空"; return; }
+      try {
+        if (existing) {
+          await api(`/api/schedules/${existing.id}`, { method: "PUT", body: JSON.stringify(body) });
+          toast("已保存", "success");
+          close();
+          loadGoalDetail(existing.id);
+        } else {
+          const created = await api("/api/schedules", { method: "POST", body: JSON.stringify(body) });
+          toast("已创建", "success");
+          close();
+          openGoalDetail(created.id);
+        }
+      } catch (e) { errEl.textContent = e.message || "保存失败"; }
+    };
+  }
+
+  $("open-goal-btn").onclick = openGoalView;
+  const goalLoopHero = $("goal-loop-btn");
+  if (goalLoopHero) goalLoopHero.onclick = openGoalView;
+  $("goal-back").onclick = closeGoalView;
+  $("goal-new").onclick = () => openGoalForm(null);
+
   // SwanLab iframe 面板
   const SWANLAB_DEFAULT = "@Speech_Model/zhihangxu_ct_exp";
   function openSwanlab() {
@@ -2411,7 +2658,7 @@
   };
   $("manage-new").onclick = () => showManageForm(null);
 
-  const apiBase = () => manage.kind === "memory" ? "/api/memory" : manage.kind === "snippets" ? "/api/snippets" : "/api/agents";
+  const apiBase = () => manage.kind === "memory" ? "/api/memory" : manage.kind === "snippets" ? "/api/snippets" : manage.kind === "skills" ? "/api/skills" : "/api/agents";
 
   async function showManageList() {
     $("manage-form").classList.add("hidden");
@@ -2433,7 +2680,7 @@
       const items = await api(apiBase());
       listEl.innerHTML = "";
       if (!items.length) {
-        const kindMap = { memory: ["记忆", "🧠"], agent: ["子智能体", "🤖"], snippets: ["快捷指令", "⚡"] };
+        const kindMap = { memory: ["记忆", "🧠"], agent: ["子智能体", "🤖"], skills: ["技能", "🧩"], snippets: ["快捷指令", "⚡"] };
         const [kindName, emoji] = kindMap[manage.kind] || ["项目", "📋"];
         listEl.innerHTML = `<div class="entity-empty"><div class="empty-emoji">${emoji}</div>` +
           `<div>还没有${kindName}</div><div class="empty-sub">点右上角「+ 新建」创建第一个</div></div>`;
@@ -2641,6 +2888,7 @@
     }
     form.innerHTML = manage.kind === "memory" ? memoryFormHtml(data, isNew)
       : manage.kind === "snippets" ? snippetFormHtml(data, isNew)
+      : manage.kind === "skills" ? skillFormHtml(data, isNew)
       : agentFormHtml(data, isNew);
     form.querySelector(".cancel").onclick = (e) => { e.preventDefault(); showManageList(); };
     form.onsubmit = (e) => { e.preventDefault(); submitManageForm(name, isNew); };
@@ -2679,8 +2927,26 @@
       </div>`;
   }
 
-  function agentFormHtml(d, isNew) {
+  function skillFormHtml(d, isNew) {
     return `
+      <label>名称（创建后不可改）
+        <input id="f-name" value="${escapeAttr(d.name)}" ${isNew ? "" : "disabled"} placeholder="例：devops-team" />
+      </label>
+      <label>描述（何时触发此技能）
+        <input id="f-desc" value="${escapeAttr(d.description)}" placeholder="一句话说明用途与触发场景" />
+      </label>
+      <label>正文（SKILL.md 主体，网页里发 /名称 即注入为 prompt）
+        <textarea id="f-body" class="tall" placeholder="技能的编排指令 / 提示词…">${escapeHtml(d.body || "")}</textarea>
+      </label>
+      ${!isNew && d.files && d.files.length ? `<div class="agents-sub">其他文件：${escapeHtml(d.files.join(", "))}</div>` : ""}
+      <div class="form-err" id="f-err"></div>
+      <div class="form-actions">
+        <button type="button" class="cancel">取消</button>
+        <button type="submit" class="save">保存</button>
+      </div>`;
+  }
+
+  function agentFormHtml(d, isNew) {    return `
       <label>名称（创建后不可改）
         <input id="f-name" value="${escapeAttr(d.name)}" ${isNew ? "" : "disabled"} placeholder="例：code-reviewer" />
       </label>
@@ -2716,6 +2982,11 @@
       if (isNew) { path = apiBase(); method = "POST"; }
       else { path = `${apiBase()}/${encodeURIComponent(origName)}`; method = "PUT"; }
     } else if (manage.kind === "memory") {
+      payload = { description: v("f-desc"), body: $("f-body").value };
+      if (isNew) { payload.name = v("f-name"); if (!payload.name) { errEl.textContent = "名称不能为空"; return; } }
+      if (isNew) { path = apiBase(); method = "POST"; }
+      else { path = `${apiBase()}/${encodeURIComponent(origName)}`; method = "PUT"; }
+    } else if (manage.kind === "skills") {
       payload = { description: v("f-desc"), body: $("f-body").value };
       if (isNew) { payload.name = v("f-name"); if (!payload.name) { errEl.textContent = "名称不能为空"; return; } }
       if (isNew) { path = apiBase(); method = "POST"; }
