@@ -72,6 +72,13 @@ async def _run_loop():
                         pass
                 nxt = compute_next_run(sch["kind"], sch.get("interval_min"), sch.get("at_hhmm"), after=now)
                 db.update_schedule(sch["id"], last_run=now, next_run=nxt)
+            # dispatch 扇出的完成判定：与 schedule 遍历并列、共享同一 30s 节奏（dispatch 没有独立
+            # schedule 记录，直接以 dispatch_subtasks 表为准）。内部只 ensure_future 起后台判定，
+            # 不在本 tick await 任何会话/验收跑完，绝不阻塞其余调度处理。
+            try:
+                await _tick_fanout()
+            except Exception:
+                pass
         except Exception:
             pass
         await asyncio.sleep(TICK_SEC)
@@ -580,6 +587,95 @@ async def _run_goal_verify_planned(scid: str) -> None:
         if iteration and iteration.get("status") == "producing":
             db.update_goal_iteration(iteration["id"], status="error",
                                      feedback=f"[verify异常:{type(e).__name__}]", ended_at=time.time())
+
+
+# ---------- dispatch 扇出的完成判定：与 goal loop 同构的「验收 + 收尾」 ----------
+# dispatch 把一个需求拆成 N 个子任务，各起一个 fire-and-forget 子会话去干活，本节补上判定：
+#   dispatched ─[子会话跑完]→ verifying(先落库) + ensure_future 后台判定
+#   verifying  ─[后台判定完成]→ done / failed（MVP 不重试，判定完直接终态）
+#   error 保留原义：仅在 dispatcher 建子会话本身失败时打，本节不改其行为。
+# 每个 plan 的所有子任务都到终态（done/failed/error）后，聚合收尾对应 work_item：
+#   全 done → done，否则（有 failed/error）→ exhausted。
+# 与 _run_goal_verify 一致，判定是 fire-and-forget（后台 ensure_future），绝不在 tick 主体 await。
+
+async def _tick_fanout() -> None:
+    """扫描所有还有未终结子任务的 dispatch plan，逐个推进子任务状态。每 tick 只推进一步。
+    转换先写库再动作（先落 verifying 再起后台任务），防重复触发；本函数不 await 任何会话/验收。"""
+    from .session_hub import hub
+    for plan_id in db.list_active_dispatch_plans():
+        for sub in db.list_dispatch_subtasks(plan_id):
+            if sub.get("status") != "dispatched":
+                continue
+            sid = sub.get("child_session_id") or ""
+            # 无子会话（不应发生）或子会话还在跑 → 跳过，下个 tick 再看
+            if not sid or hub.is_running(sid):
+                continue
+            # 子会话已空闲 → 转 verifying（先落库再起后台判定，防重复触发）
+            db.update_dispatch_subtask(sub["id"], status="verifying")
+            asyncio.ensure_future(_run_dispatch_verify(sub["id"]))
+
+
+async def _run_dispatch_verify(subtask_id: str) -> None:
+    """后台判定单个 dispatch 子任务是否完成，是唯一把 status 从 verifying 推向 done/failed 的地方。
+    模式完全参考 _run_goal_verify：读子会话最新产出 → verifier.judge('nl',...) → 落 verdict/feedback。
+    MVP 不重试：判定完直接 done 或 failed。整体 try/except 兜底，异常也落 failed，绝不卡在 verifying。
+    无论走哪条分支，finally 都做一次 plan 级聚合收尾（幂等）。"""
+    from . import verifier, kanban
+    sub = None
+    try:
+        sub = db.get_dispatch_subtask(subtask_id)
+        if not sub or sub.get("status") != "verifying":
+            return
+        sess = db.get_session(sub.get("child_session_id") or "")
+        if not sess:
+            db.update_dispatch_subtask(subtask_id, status="failed", verdict="failed",
+                                       feedback="子会话不存在，无法判定")
+            return
+        # 读子会话最新产出片段（与 goal 验收同款取法）
+        produced = ""
+        if sess.get("claude_session_id"):
+            p = kanban._session_jsonl_path(sess["claude_session_id"], sess.get("workdir"))
+            if p:
+                produced = kanban._extract_recent_text(p)
+        # worktree 子任务再追加 git diff --stat 作为代码改动上下文
+        git_diff = ""
+        if sess.get("is_worktree") and sess.get("workdir"):
+            git_diff = await _git_diff_stat(sess["workdir"])
+        goal = ((sub.get("title") or "") + "\n" + (sub.get("instruction") or "")).strip()
+        stop = "完成上述子任务要求：" + (sub.get("instruction") or sub.get("title") or "")
+        done, reason = await verifier.judge(
+            "nl", goal=goal, stop_condition=stop, produced=produced,
+            session_id=sess.get("id"), git_diff=git_diff)
+        db.update_dispatch_subtask(subtask_id, status=("done" if done else "failed"),
+                                   verdict=("done" if done else "failed"), feedback=reason)
+    except Exception as e:
+        db.update_dispatch_subtask(subtask_id, status="failed", verdict="failed",
+                                   feedback=f"[verify异常:{type(e).__name__}]")
+    finally:
+        try:
+            plan_id = (sub or db.get_dispatch_subtask(subtask_id) or {}).get("plan_id") or ""
+            _maybe_finalize_fanout(plan_id)
+        except Exception:
+            pass
+
+
+def _maybe_finalize_fanout(plan_id: str) -> None:
+    """plan 下所有 subtask 都到终态（done/failed/error）后，聚合收尾对应 work_item：
+    全 done → done，否则（有 failed/error）→ exhausted。未全终结则什么都不做。
+    work_items 只作观测：这里只写它、不读它的字段做业务判断。全程吞异常不影响主流程。"""
+    if not plan_id:
+        return
+    try:
+        subs = db.list_dispatch_subtasks(plan_id)
+        if not subs:
+            return
+        terminal = ("done", "failed", "error")
+        if any((s.get("status") not in terminal) for s in subs):
+            return
+        status = "done" if all(s.get("status") == "done" for s in subs) else "exhausted"
+        db.update_work_item_status_by_ref(plan_id, status)
+    except Exception as e:
+        print(f"[work_items] dispatch finalize failed: {type(e).__name__}: {e}")
 
 
 

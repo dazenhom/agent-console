@@ -194,7 +194,9 @@ def init_db() -> None:
                 category TEXT,          -- plan / deep / dev / codex
                 engine TEXT, model TEXT,
                 child_session_id TEXT,
-                status TEXT,            -- dispatched / error
+                status TEXT,            -- dispatched / verifying / done / failed / error
+                verdict TEXT DEFAULT '',   -- 完成判定结果：done / failed
+                feedback TEXT DEFAULT '',  -- 验收反馈文本
                 created_at REAL, updated_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_dispatch_plan ON dispatch_subtasks(plan_id);
@@ -311,6 +313,10 @@ def init_db() -> None:
         _add_col("goal_subtasks", "work_item_id TEXT DEFAULT ''")
         _add_col("dispatch_subtasks", "work_item_id TEXT DEFAULT ''")
         _add_col("arbitrations", "work_item_id TEXT DEFAULT ''")
+        # 第五步：dispatch 完成判定——给子任务补验收结果/反馈两列。status 取值扩展为
+        # dispatched → verifying → done/failed（error 保留：仅建子会话本身失败）。
+        _add_col("dispatch_subtasks", "verdict TEXT DEFAULT ''")
+        _add_col("dispatch_subtasks", "feedback TEXT DEFAULT ''")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")
@@ -1078,6 +1084,21 @@ def list_dispatch_subtasks(plan_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_dispatch_subtask(sid: str) -> dict | None:
+    rows = _query("SELECT * FROM dispatch_subtasks WHERE id=?", (sid,))
+    return dict(rows[0]) if rows else None
+
+
+def list_active_dispatch_plans() -> list[str]:
+    """还有未终结子任务（status in dispatched/verifying）的 plan_id 列表，
+    供调度 tick 发现待推进的 dispatch 扇出。仅只读，不做任何决策依据用途之外的读写。"""
+    rows = _query(
+        "SELECT DISTINCT plan_id FROM dispatch_subtasks"
+        " WHERE status IN ('dispatched','verifying') ORDER BY plan_id"
+    )
+    return [r[0] for r in rows]
+
+
 def list_dispatch_plans(limit: int = 20) -> list[dict]:
     """按 plan_id 聚合：每个 plan 取最早 created_at、子任务数、首个子任务标题作为汇总。"""
     rows = _query(
@@ -1100,7 +1121,8 @@ def list_dispatch_plans(limit: int = 20) -> list[dict]:
 
 
 def update_dispatch_subtask(sid: str, **fields) -> bool:
-    allowed = {"child_session_id", "status", "engine", "model", "category", "updated_at"}
+    allowed = {"child_session_id", "status", "engine", "model", "category",
+               "verdict", "feedback", "updated_at"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False
