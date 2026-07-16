@@ -4,14 +4,13 @@
 复用 claude_runner._child_env() 剔除编排态环境变量（否则 403）。
 每个 todo 卡片带 mtime 缓存：jsonl 没变就复用上次的摘要，避免重复烧模型。
 """
-import asyncio
 import json
 import re
 import time
 from pathlib import Path
 
 from . import config, db
-from .claude_runner import _child_env
+from .job_store import run_logged_oneshot
 
 
 def _slug(path: str) -> str:
@@ -59,7 +58,7 @@ def _extract_recent_text(jsonl_path: Path, max_chars: int = 3000) -> str:
     return text[-max_chars:] if len(text) > max_chars else text
 
 
-async def summarize_progress(context_text: str) -> str:
+async def summarize_progress(context_text: str, session_id: str | None = None) -> str:
     """用一次性子进程概括进展。返回干净摘要；任何异常兜底成友好提示。"""
     prompt = (
         "以下是一个 AI 开发任务会话的最新对话片段。"
@@ -74,24 +73,16 @@ async def summarize_progress(context_text: str) -> str:
         "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
         "--effort", config.CLAUDE_ONESHOT_EFFORT,
     ]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, env=_child_env(),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=config.SUMMARY_TIMEOUT)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            return "进展获取超时"
-    except Exception:
+    jid, text, stderr_text, status = await run_logged_oneshot(
+        "kanban_progress", cmd, config.SUMMARY_TIMEOUT,
+        session_id=session_id, model=config.CLAUDE_MODEL_KANBAN,
+        input_summary="看板进展摘要",
+    )
+    if status == "timeout":
+        return "进展获取超时"
+    if status == "error":
         return "进展获取失败"
     # 输出里可能混有噪音行，挑出 JSON 那行解析（与 summarizer 一致）
-    text = out.decode("utf-8", errors="replace")
     result = ""
     for line in text.splitlines():
         line = line.strip()
@@ -107,10 +98,12 @@ async def summarize_progress(context_text: str) -> str:
     result = re.sub(r"\s+", " ", result).strip().strip('"“”')
     if not result:
         # 解析不到结果：把子进程 stderr 前 200 字打出来，方便定位模型/CLI 报错
-        err_text = err.decode("utf-8", errors="replace")[:200] if err else ""
+        err_text = stderr_text[:200]
         print(f"[kanban] summarize_progress: no result, stderr={err_text!r}")
         return "暂无进展信息"
-    return result[:160]
+    result = result[:160]
+    db.set_job_output(jid, result)
+    return result
 
 
 async def refresh_todo_progress(tid: str, force: bool = False) -> dict:
@@ -144,6 +137,6 @@ async def refresh_todo_progress(tid: str, force: bool = False) -> dict:
     if not context.strip():
         return {"ok": False, "reason": "会话内容为空"}
 
-    new_progress = await summarize_progress(context)
+    new_progress = await summarize_progress(context, session_id=session_id)
     db.set_todo_progress(tid, new_progress, current_mtime)
     return {"ok": True, "progress": new_progress, "progress_at": time.time(), "cached": False}

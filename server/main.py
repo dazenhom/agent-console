@@ -303,6 +303,34 @@ async def get_tasks():
     return db.list_tasks()
 
 
+@app.get("/api/jobs", dependencies=[Depends(require_auth)])
+async def get_jobs(kind: str = Query(default=None), limit: int = Query(default=50)):
+    return db.list_jobs(kind, limit)
+
+
+@app.get("/api/jobs/{jid}", dependencies=[Depends(require_auth)])
+async def get_job(jid: str):
+    from pathlib import Path as _P
+    job = db.get_job(jid)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    # 读取 log 全文（限最后 200KB），拼进 log_content 字段。安全校验：log_path 必须
+    # 解析后落在 job_logs 目录内，不允许 .. 穿越；文件不存在则 log_content 留空。
+    log_content = ""
+    log_path = job.get("log_path") or ""
+    if log_path:
+        try:
+            base = (_P(config.DB_PATH).parent / "job_logs").resolve()
+            target = _P(log_path).resolve()
+            if (target == base or target.is_relative_to(base)) and target.is_file():
+                data = target.read_bytes()[-200 * 1024:]
+                log_content = data.decode("utf-8", errors="replace")
+        except (OSError, ValueError):
+            log_content = ""
+    job["log_content"] = log_content
+    return job
+
+
 @app.get("/api/artifacts", dependencies=[Depends(require_auth)])
 async def get_artifacts(session_id: str = Query(default=None)):
     return db.list_artifacts(session_id)

@@ -157,6 +157,22 @@ def init_db() -> None:
                 created_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
+            CREATE TABLE IF NOT EXISTS job_runs (
+                id TEXT PRIMARY KEY,
+                kind TEXT,           -- triage / goal_verify / kanban_progress
+                session_id TEXT,
+                schedule_id TEXT,
+                status TEXT,         -- running / success / timeout / error
+                model TEXT,
+                input_summary TEXT,
+                output TEXT,         -- 解析后的结论（分诊/验收/摘要文本），由调用方补写
+                error TEXT,
+                log_path TEXT,       -- job_logs/<id>.log 绝对路径
+                started_at REAL,
+                ended_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_jobruns_started ON job_runs(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_jobruns_kind ON job_runs(kind);
             """
         )
         # 兼容老库：缺列就补。双进程（80/8800）可能同时启动产生竞态——
@@ -338,6 +354,7 @@ def reconcile_stale_running() -> None:
     启动时把它们归位：会话置 idle，未结束的任务置 error。"""
     _exec("UPDATE sessions SET status='idle' WHERE status='running'")
     _exec("UPDATE tasks SET status='error', ended_at=? WHERE status='running'", (_now(),))
+    _exec("UPDATE job_runs SET status='error', error='进程重启中断', ended_at=? WHERE status='running'", (_now(),))
 
 
 # ---------- messages ----------
@@ -414,6 +431,45 @@ def update_task(tid: str, **fields) -> bool:
     cols = ", ".join(f"{k}=?" for k in updates)
     cur = _exec(f"UPDATE tasks SET {cols} WHERE id=?", (*updates.values(), tid))
     return cur.rowcount > 0
+
+
+# ---------- job_runs（一次性子进程运行记录：triage / goal_verify / kanban_progress）----------
+def start_job(kind: str, session_id: str | None = None, schedule_id: str | None = None,
+              model: str = "", input_summary: str = "") -> str:
+    jid = new_id()
+    _exec(
+        "INSERT INTO job_runs(id,kind,session_id,schedule_id,status,model,input_summary,started_at)"
+        " VALUES(?,?,?,?,?,?,?,?)",
+        (jid, kind, session_id, schedule_id, "running", model, input_summary, _now()),
+    )
+    return jid
+
+
+def finish_job(jid: str, status: str, output: str = "", error: str = "", log_path: str = "") -> None:
+    _exec(
+        "UPDATE job_runs SET status=?,output=?,error=?,log_path=?,ended_at=? WHERE id=?",
+        (status, output, error, log_path, _now(), jid),
+    )
+
+
+def set_job_output(jid: str, output: str) -> None:
+    _exec("UPDATE job_runs SET output=? WHERE id=?", (output, jid))
+
+
+def list_jobs(kind: str | None = None, limit: int = 50) -> list[dict]:
+    if kind:
+        rows = _query(
+            "SELECT * FROM job_runs WHERE kind=? ORDER BY started_at DESC LIMIT ?",
+            (kind, limit),
+        )
+    else:
+        rows = _query("SELECT * FROM job_runs ORDER BY started_at DESC LIMIT ?", (limit,))
+    return [dict(r) for r in rows]
+
+
+def get_job(jid: str) -> dict | None:
+    rows = _query("SELECT * FROM job_runs WHERE id=?", (jid,))
+    return dict(rows[0]) if rows else None
 
 
 # ---------- snippets ----------

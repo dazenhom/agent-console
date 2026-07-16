@@ -7,12 +7,11 @@
 避免"自己判自己完成"的乐观偏差。任何不确定（超时/异常/无输出/首行非 DONE）一律当
 CONTINUE——绝不误判完成，宁可多迭代一轮也不提前收工。
 """
-import asyncio
 import json
 import re
 
-from . import config
-from .claude_runner import _child_env
+from . import config, db
+from .job_store import run_logged_oneshot
 
 
 def _build_prompt(goal: str, stop_condition: str, produced: str) -> str:
@@ -33,7 +32,8 @@ def _build_prompt(goal: str, stop_condition: str, produced: str) -> str:
     )
 
 
-async def verify(goal: str, stop_condition: str, produced: str) -> tuple[bool, str]:
+async def verify(goal: str, stop_condition: str, produced: str,
+                 session_id: str | None = None, schedule_id: str | None = None) -> tuple[bool, str]:
     """返回 (done, reason)。done=True 表示判定达成；任何异常/超时/无输出都返回 (False, 说明)。"""
     prompt = _build_prompt(goal, stop_condition, produced)
     cmd = [
@@ -41,24 +41,16 @@ async def verify(goal: str, stop_condition: str, produced: str) -> tuple[bool, s
         "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
         "--effort", config.CLAUDE_ONESHOT_EFFORT,
     ]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, env=_child_env(),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=config.GOAL_VERIFY_TIMEOUT)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            return False, "验收超时，按未完成继续"
-    except Exception as e:
-        return False, f"验收进程异常（{type(e).__name__}），按未完成继续"
+    jid, text, stderr_text, status = await run_logged_oneshot(
+        "goal_verify", cmd, config.GOAL_VERIFY_TIMEOUT,
+        session_id=session_id, schedule_id=schedule_id,
+        model=config.CLAUDE_MODEL_KANBAN, input_summary=(goal or "")[:120],
+    )
+    if status == "timeout":
+        return False, "验收超时，按未完成继续"
+    if status == "error":
+        return False, "验收进程异常，按未完成继续"
     # 挑出 JSON 那行解析（与 kanban.summarize_progress 一致）
-    text = out.decode("utf-8", errors="replace")
     result = ""
     for line in text.splitlines():
         line = line.strip()
@@ -72,7 +64,7 @@ async def verify(goal: str, stop_condition: str, produced: str) -> tuple[bool, s
             result = (data.get("result") or "").strip()
             break
     if not result:
-        err_text = err.decode("utf-8", errors="replace")[:200] if err else ""
+        err_text = stderr_text[:200]
         print(f"[goal_verifier] no result, stderr={err_text!r}")
         return False, "验收无输出，按未完成继续"
     lines = result.splitlines()
@@ -83,4 +75,5 @@ async def verify(goal: str, stop_condition: str, produced: str) -> tuple[bool, s
     reason = re.sub(r"\s+", " ", " ".join(lines[1:])).strip()[:200]
     if not reason:
         reason = "已达成完成标准" if done else "尚未达成，继续迭代"
+    db.set_job_output(jid, f"done={done}, reason={reason}")
     return done, reason

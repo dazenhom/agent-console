@@ -174,7 +174,8 @@ async def _run_goal_verify(scid: str) -> None:
             if p:
                 produced = kanban._extract_recent_text(p)
         done, reason = await goal_verifier.verify(sch.get("prompt") or "",
-                                                  sch.get("stop_condition") or "", produced)
+                                                  sch.get("stop_condition") or "", produced,
+                                                  session_id=sess.get("id"), schedule_id=scid)
         iter_count = int(sch.get("iter_count") or 0)
         max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
         if done:

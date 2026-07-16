@@ -17,7 +17,7 @@ import re
 from datetime import date, datetime
 
 from . import config, db, worktree
-from .claude_runner import _child_env
+from .job_store import run_logged_oneshot
 
 _VALID_CATEGORIES = {"bugfix", "test", "chore", "investigate", "other"}
 _VALID_ACTIONS = {"auto", "triage", "ignore"}
@@ -75,27 +75,18 @@ async def run_triage(day_data: dict, todos: list) -> list:
         "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
         "--effort", config.CLAUDE_ONESHOT_EFFORT,
     ]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, env=_child_env(),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=config.TRIAGE_TIMEOUT)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            print("[triage] run_triage: timeout")
-            return []
-    except Exception as e:
-        print(f"[triage] run_triage: subprocess error {type(e).__name__}")
+    jid, text, stderr_text, status = await run_logged_oneshot(
+        "triage", cmd, config.TRIAGE_TIMEOUT,
+        model=config.CLAUDE_MODEL_KANBAN, input_summary="每日分诊",
+    )
+    if status == "timeout":
+        print("[triage] run_triage: timeout")
+        return []
+    if status == "error":
+        print("[triage] run_triage: subprocess error")
         return []
 
     # 挑出 JSON 那行取 result（与 kanban.summarize_progress 一致）
-    text = out.decode("utf-8", errors="replace")
     result = ""
     for line in text.splitlines():
         line = line.strip()
@@ -109,7 +100,7 @@ async def run_triage(day_data: dict, todos: list) -> list:
             result = (data.get("result") or "").strip()
             break
     if not result:
-        err_text = err.decode("utf-8", errors="replace")[:200] if err else ""
+        err_text = stderr_text[:200]
         print(f"[triage] run_triage: no result, stderr={err_text!r}")
         return []
 
@@ -158,6 +149,10 @@ async def run_triage(day_data: dict, todos: list) -> list:
         })
         if len(items) >= config.TRIAGE_MAX_ITEMS:
             break
+    # 补写分诊结论：解析出的各项标题 + 建议动作，供事后追溯
+    summary = "; ".join(f"{it['title']}({it['action']},conf={it['confidence']})" for it in items) \
+        or "无可跟进事项"
+    db.set_job_output(jid, summary)
     return items
 
 
