@@ -1996,7 +1996,7 @@
   function openManage(kind) {
     manage.kind = kind;
     closeDrawer();
-    const titles = { memory: "记忆库", agent: "子智能体", snippets: "快捷指令", schedule: "定时任务", todos: "待办清单", memos: "备忘录", reports: "日报记录", artifacts: "产出物" };
+    const titles = { memory: "记忆库", agent: "子智能体", snippets: "快捷指令", schedule: "定时任务", todos: "待办清单", memos: "备忘录", reports: "日报记录", artifacts: "产出物", jobs: "后台任务" };
     $("manage-title").textContent = titles[kind] || kind;
     $("app-view").classList.add("hidden");
     $("manage-view").classList.remove("hidden");
@@ -2012,6 +2012,7 @@
   $("open-todos-btn").onclick = () => openManage("todos");
   $("open-memos-btn").onclick = () => openManage("memos");
   $("open-reports-btn").onclick = () => openManage("reports");
+  $("open-jobs-btn").onclick = () => openManage("jobs");
   const openArtifactsBtn = document.getElementById('open-artifacts-btn');
   if (openArtifactsBtn) openArtifactsBtn.onclick = () => openManage('artifacts');
 
@@ -2067,6 +2068,7 @@
     if (manage.kind === "todos") { $("manage-new").classList.remove("hidden"); return showTodoList(); }
     if (manage.kind === "memos") { $("manage-new").classList.remove("hidden"); return showMemoList(); }
     if (manage.kind === "reports") { $("manage-new").classList.add("hidden"); return showReportList(); }
+    if (manage.kind === "jobs") { $("manage-new").classList.add("hidden"); return showJobList(); }
     if (manage.kind === "artifacts") {
       const newBtn = document.getElementById('manage-new');
       if (newBtn) newBtn.classList.add('hidden');
@@ -2831,7 +2833,85 @@
     root.onclick = (e) => { if (e.target === root) close(); };
   }
 
-  // ---------------- 渲染 ----------------
+  // ---------------- 后台任务（一次性子进程运行记录）----------------
+  const JOB_KIND_LABEL = { triage: "分诊", goal_verify: "目标验收", kanban_progress: "看板进展" };
+  function fmtJobTime(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  async function showJobList() {
+    const listEl = $("manage-list");
+    listEl.innerHTML = '<div class="entity-loading">加载中…</div>';
+    try {
+      const items = await api("/api/jobs");
+      listEl.innerHTML = "";
+      if (!items.length) {
+        listEl.innerHTML = '<div class="entity-empty"><div class="empty-emoji">🩺</div><div>暂无后台任务记录</div></div>';
+        return;
+      }
+      for (const it of items) {
+        const li = el("li");
+        const bad = it.status === "error" || it.status === "timeout";
+        if (bad) li.classList.add("error");
+        const head = el("div", "e-head");
+        head.appendChild(el("span", "e-name", escapeHtml(`${JOB_KIND_LABEL[it.kind] || it.kind} · ${fmtJobTime(it.started_at)}`)));
+        const stat = el("span", "e-tag", escapeHtml(it.status || ""));
+        if (bad) stat.style.color = "var(--red)";
+        head.appendChild(stat);
+        li.appendChild(head);
+        if (it.input_summary) li.appendChild(el("div", "e-desc", escapeHtml(it.input_summary)));
+        const detailText = it.error || it.output || "";
+        if (detailText) li.appendChild(el("div", "e-desc", escapeHtml(detailText.slice(0, 120))));
+        const viewBtn = el("button", "btn-sm", "查看日志");
+        viewBtn.onclick = () => showJobDetail(it.id);
+        li.appendChild(viewBtn);
+        listEl.appendChild(li);
+      }
+    } catch (e) {
+      listEl.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function showJobDetail(jid) {
+    let job;
+    try {
+      job = await api("/api/jobs/" + encodeURIComponent(jid));
+    } catch (e) {
+      toast("加载失败：" + e.message, "error");
+      return;
+    }
+    const root = $("modal-root");
+    root.innerHTML = "";
+    const card = el("div", "modal-card");
+    const title = el("div", "modal-title");
+    title.textContent = `${JOB_KIND_LABEL[job.kind] || job.kind} · ${job.status || ""}`;
+    const body = el("div", "modal-msg");
+    body.style.cssText = "text-align:left;white-space:pre-wrap;max-height:60vh;overflow-y:auto;font-size:0.85rem;font-family:monospace";
+    const parts = [];
+    if (job.input_summary) parts.push("【输入】" + job.input_summary);
+    if (job.output) parts.push("【结论】" + job.output);
+    if (job.error) parts.push("【错误】" + job.error);
+    parts.push("【日志】\n" + (job.log_content || "（无日志内容）"));
+    body.textContent = parts.join("\n\n");
+    const actions = el("div", "modal-actions");
+    const closeBtn = el("button", "modal-ok");
+    closeBtn.textContent = "关闭";
+    actions.appendChild(closeBtn);
+    card.append(title, body, actions);
+    root.appendChild(card);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => root.classList.add("show"));
+    const close = () => {
+      root.classList.remove("show");
+      setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200);
+    };
+    closeBtn.onclick = close;
+    root.onclick = (e) => { if (e.target === root) close(); };
+  }
+
   function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
 
   // ---------------- 产物预览 ----------------
