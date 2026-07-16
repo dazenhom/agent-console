@@ -114,6 +114,11 @@ GOAL_POLL_SEC = int(os.environ.get("GOAL_POLL_SEC", "30"))
 GOAL_MAX_ITERATIONS = int(os.environ.get("GOAL_MAX_ITERATIONS", "10"))
 GOAL_MAX_COST_USD = float(os.environ.get("GOAL_MAX_COST_USD", "5"))
 GOAL_VERIFY_TIMEOUT = float(os.environ.get("GOAL_VERIFY_TIMEOUT", "60"))
+# 新版 planned 目标循环：先把目标拆成有序子任务，每轮只推进一个子任务并单独验收。
+# 单个子任务验收未过时最多重试多少轮，超过则标记 skipped 跳过、继续下一个（避免卡死在某个子任务）。
+GOAL_SUBTASK_MAX_ATTEMPTS = int(os.environ.get("GOAL_SUBTASK_MAX_ATTEMPTS", "3"))
+# 可执行验收命令（verify_command）的子进程超时（秒）：跑测试/构建可能较久，默认给到 300s
+GOAL_CMD_TIMEOUT = float(os.environ.get("GOAL_CMD_TIMEOUT", "300"))
 
 # ---- Triage 自动分流（H3）----
 # 秘书生成晚报后，用便宜模型（CLAUDE_MODEL_KANBAN）对当日会话/任务做一次性分诊：

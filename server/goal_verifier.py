@@ -14,11 +14,14 @@ from . import config, db
 from .job_store import run_logged_oneshot
 
 
-def _build_prompt(goal: str, stop_condition: str, produced: str) -> str:
+def _build_prompt(goal: str, stop_condition: str, produced: str,
+                  cmd_result: str = "", git_diff: str = "") -> str:
     goal = (goal or "").strip()[:1500]
     stop_condition = (stop_condition or "").strip()[:800]
     produced = (produced or "").strip()[:3000] or "（本轮无可读产出）"
-    return (
+    cmd_result = (cmd_result or "").strip()[:2000]
+    git_diff = (git_diff or "").strip()[:1500]
+    parts = [
         "你是一个严格的验收员。下面是一个 AI 开发任务的【目标】【完成标准】和【本轮产出片段】。"
         "请判断当前是否已经真正达成完成标准。\n"
         "输出格式：\n"
@@ -28,14 +31,23 @@ def _build_prompt(goal: str, stop_condition: str, produced: str) -> str:
         "- 从第二行起，简述判断理由；若为 CONTINUE，请给出下一步应该做什么的具体指示。\n\n"
         f"【目标】\n{goal}\n\n"
         f"【完成标准】\n{stop_condition}\n\n"
-        f"【本轮产出片段】\n{produced}\n"
-    )
+        f"【本轮产出片段】\n{produced}\n",
+    ]
+    if cmd_result:
+        # 客观信号：验收命令的退出码与输出尾部，比自然语言产出更可信，优先据此判定
+        parts.append(f"\n【验收命令执行结果（退出码 0 通常表示通过）】\n{cmd_result}\n")
+    if git_diff:
+        parts.append(f"\n【本轮代码改动（git diff --stat）】\n{git_diff}\n")
+    return "".join(parts)
 
 
 async def verify(goal: str, stop_condition: str, produced: str,
-                 session_id: str | None = None, schedule_id: str | None = None) -> tuple[bool, str]:
-    """返回 (done, reason)。done=True 表示判定达成；任何异常/超时/无输出都返回 (False, 说明)。"""
-    prompt = _build_prompt(goal, stop_condition, produced)
+                 session_id: str | None = None, schedule_id: str | None = None,
+                 cmd_result: str = "", git_diff: str = "") -> tuple[bool, str]:
+    """返回 (done, reason)。done=True 表示判定达成；任何异常/超时/无输出都返回 (False, 说明)。
+
+    cmd_result / git_diff 为可选的客观上下文（验收命令输出、代码改动 stat），有则拼进 prompt。"""
+    prompt = _build_prompt(goal, stop_condition, produced, cmd_result=cmd_result, git_diff=git_diff)
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
         "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",

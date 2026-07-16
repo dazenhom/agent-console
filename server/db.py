@@ -198,6 +198,35 @@ def init_db() -> None:
                 created_at REAL, updated_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_dispatch_plan ON dispatch_subtasks(plan_id);
+            CREATE TABLE IF NOT EXISTS goal_iterations (
+                id TEXT PRIMARY KEY,
+                schedule_id TEXT,
+                iter_no INTEGER,
+                prompt TEXT,             -- 本轮派发给会话的完整指令（目标+完成标准+上轮反馈）
+                task_id TEXT DEFAULT '', -- 关联 tasks.id：本轮 start_turn 产生的回合，用于查耗时/花费/状态
+                verify_job_id TEXT DEFAULT '', -- 关联 job_runs.id：本轮验收调用记录
+                verdict TEXT DEFAULT '',       -- 收敛判定结果：done / continue / exhausted
+                feedback TEXT DEFAULT '',      -- 验收反馈文本
+                produced_excerpt TEXT DEFAULT '', -- 喂给 verifier 的产出摘要（含命令结果/代码改动），截断存档
+                status TEXT DEFAULT 'producing', -- producing / verifying / done / continue / exhausted / error
+                started_at REAL,
+                ended_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_goaliter_schedule ON goal_iterations(schedule_id, iter_no);
+            CREATE TABLE IF NOT EXISTS goal_subtasks (
+                id TEXT PRIMARY KEY,
+                schedule_id TEXT,
+                seq INTEGER,
+                title TEXT, instruction TEXT,
+                category TEXT,                 -- plan / deep / dev
+                status TEXT DEFAULT 'pending', -- pending / running / done / skipped / error
+                attempts INTEGER DEFAULT 0,    -- 该子任务已派发验收的轮次数
+                last_feedback TEXT DEFAULT '', -- 最近一轮验收反馈（未过时喂给下轮）
+                verify_job_id TEXT DEFAULT '', -- 关联 job_runs.id：最近一次验收记录
+                task_id TEXT DEFAULT '',       -- 关联 tasks.id：最近一轮 start_turn 回合
+                created_at REAL, updated_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_goalsub_schedule ON goal_subtasks(schedule_id, seq);
             """
         )
         # 兼容老库：缺列就补。双进程（80/8800）可能同时启动产生竞态——
@@ -252,6 +281,17 @@ def init_db() -> None:
         _add_col("schedules", "iter_count INTEGER DEFAULT 0")
         _add_col("schedules", "goal_status TEXT DEFAULT ''")
         _add_col("schedules", "last_feedback TEXT DEFAULT ''")
+        # 可执行验收（B）：会话 workdir 下跑的验证命令；执行模式（C）：solo 裸 prompt / team 走 /console-dev 流水线
+        _add_col("schedules", "verify_command TEXT DEFAULT ''")
+        _add_col("schedules", "exec_mode TEXT DEFAULT 'solo'")
+        # 目标拆解为子任务（A）：goal_mode=flat 走整体自迭代（旧行为）；planned 先拆成有序子任务，
+        # 每轮只推进一个。plan_status 记拆解生命周期（''→planning→planned→finalizing→finalized/plan_failed），
+        # active_subtask_id 记当前正在执行/验收的子任务，供跨 tick 的 producing/verifying 关联回本轮子任务。
+        _add_col("schedules", "goal_mode TEXT DEFAULT 'flat'")
+        _add_col("schedules", "plan_status TEXT DEFAULT ''")
+        _add_col("schedules", "active_subtask_id TEXT DEFAULT ''")
+        # 老库 goal_iterations 补 produced_excerpt 列（新库已在 CREATE TABLE 里带上）
+        _add_col("goal_iterations", "produced_excerpt TEXT DEFAULT ''")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")
@@ -573,14 +613,15 @@ def get_schedule(sid: str) -> dict | None:
 
 
 def create_schedule(session_id: str, prompt: str, kind: str, interval_min, at_hhmm, next_run: float,
-                    stop_condition: str = "", max_iterations: int = 10, goal_status: str = "") -> dict:
+                    stop_condition: str = "", max_iterations: int = 10, goal_status: str = "",
+                    verify_command: str = "", exec_mode: str = "solo", goal_mode: str = "flat") -> dict:
     sid = new_id()
     _exec(
         "INSERT INTO schedules(id,session_id,prompt,kind,interval_min,at_hhmm,enabled,next_run,last_run,created_at,"
-        "stop_condition,max_iterations,iter_count,goal_status,last_feedback)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "stop_condition,max_iterations,iter_count,goal_status,last_feedback,verify_command,exec_mode,goal_mode)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, session_id, prompt, kind, interval_min, at_hhmm, 1, next_run, None, _now(),
-         stop_condition, max_iterations, 0, goal_status, ""),
+         stop_condition, max_iterations, 0, goal_status, "", verify_command, exec_mode, goal_mode),
     )
     return get_schedule(sid)
 
@@ -622,6 +663,12 @@ def reconcile_goal_schedules() -> None:
     _exec(
         "UPDATE schedules SET goal_status='running' WHERE kind='goal' AND goal_status IN ('producing','verifying')"
     )
+    # planned 模式：拆解(planning)/收尾验收(finalizing)的后台任务同样随进程消失，复位到可重跑的态
+    #   planning → ''（下个 tick 重新拆解）；finalizing → planned（回到子任务收尾判定，重跑最终验收）
+    _exec("UPDATE schedules SET plan_status='' WHERE kind='goal' AND plan_status='planning'")
+    _exec("UPDATE schedules SET plan_status='planned' WHERE kind='goal' AND plan_status='finalizing'")
+    # 子任务卡在 running（其 start_turn 回合随进程消失）→ 复位 pending，下轮重新派发
+    _exec("UPDATE goal_subtasks SET status='pending' WHERE status='running'")
 
 
 def has_active_goal(session_id: str) -> bool:
@@ -1041,4 +1088,145 @@ def update_dispatch_subtask(sid: str, **fields) -> bool:
     updates["updated_at"] = _now()
     cols = ", ".join(f"{k}=?" for k in updates)
     cur = _exec(f"UPDATE dispatch_subtasks SET {cols} WHERE id=?", (*updates.values(), sid))
+    return cur.rowcount > 0
+
+
+# ---------- goal_iterations（目标循环每轮迭代历史：派发指令/子任务/验收判定）----------
+def latest_task_id(session_id: str) -> str | None:
+    """该会话最近一条 tasks 记录的 id，用于把刚发起的迭代回合关联进本轮历史。"""
+    rows = _query("SELECT id FROM tasks WHERE session_id=? ORDER BY started_at DESC LIMIT 1", (session_id,))
+    return rows[0][0] if rows else None
+
+
+def get_latest_job(schedule_id: str, kind: str) -> dict | None:
+    """该 schedule 最近一条指定 kind 的一次性子进程记录，用于把验收调用关联进本轮历史。"""
+    rows = _query(
+        "SELECT * FROM job_runs WHERE schedule_id=? AND kind=? ORDER BY started_at DESC LIMIT 1",
+        (schedule_id, kind),
+    )
+    return dict(rows[0]) if rows else None
+
+
+def create_goal_iteration(schedule_id: str, iter_no: int, prompt: str, task_id: str = "") -> dict:
+    gid = new_id()
+    now = _now()
+    _exec(
+        "INSERT INTO goal_iterations(id,schedule_id,iter_no,prompt,task_id,status,started_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (gid, schedule_id, iter_no, prompt, task_id, "producing", now),
+    )
+    return get_goal_iteration(gid)
+
+
+def get_goal_iteration(gid: str) -> dict | None:
+    rows = _query("SELECT * FROM goal_iterations WHERE id=?", (gid,))
+    return dict(rows[0]) if rows else None
+
+
+def get_goal_iteration_by_no(schedule_id: str, iter_no: int) -> dict | None:
+    rows = _query(
+        "SELECT * FROM goal_iterations WHERE schedule_id=? AND iter_no=? ORDER BY started_at DESC LIMIT 1",
+        (schedule_id, iter_no),
+    )
+    return dict(rows[0]) if rows else None
+
+
+def update_goal_iteration(gid: str, **fields) -> bool:
+    allowed = {"task_id", "verify_job_id", "verdict", "feedback", "produced_excerpt", "status", "ended_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    cols = ", ".join(f"{k}=?" for k in updates)
+    cur = _exec(f"UPDATE goal_iterations SET {cols} WHERE id=?", (*updates.values(), gid))
+    return cur.rowcount > 0
+
+
+def list_goal_iterations(schedule_id: str) -> list[dict]:
+    """某个目标循环的完整轮次历史（详情态用），按轮次升序，附带该轮回合的耗时/花费/状态。"""
+    rows = _query(
+        "SELECT * FROM goal_iterations WHERE schedule_id=? ORDER BY iter_no ASC, started_at ASC",
+        (schedule_id,),
+    )
+    result = [dict(r) for r in rows]
+    for d in result:
+        if d.get("task_id"):
+            trows = _query(
+                "SELECT status,duration_ms,cost_usd,num_turns,started_at,ended_at FROM tasks WHERE id=?",
+                (d["task_id"],),
+            )
+            d["task"] = dict(trows[0]) if trows else None
+        else:
+            d["task"] = None
+    return result
+
+
+def list_goal_loops(limit: int = 50) -> list[dict]:
+    """目标循环历史列表态：所有 kind=goal 的 schedule，附带已记录的轮次数。"""
+    rows = _query(
+        "SELECT * FROM schedules WHERE kind='goal' ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    result = [dict(r) for r in rows]
+    for d in result:
+        c = _query("SELECT COUNT(*) FROM goal_iterations WHERE schedule_id=?", (d["id"],))
+        d["iteration_count"] = c[0][0] if c else 0
+    return result
+
+
+def get_goal_loop_detail(schedule_id: str) -> dict | None:
+    """目标循环详情态：schedule 本体 + 完整轮次历史 + (planned 模式) 子任务清单。"""
+    sch = get_schedule(schedule_id)
+    if not sch:
+        return None
+    sch["iterations"] = list_goal_iterations(schedule_id)
+    sch["subtasks"] = list_goal_subtasks(schedule_id)
+    return sch
+
+
+# ---------- goal_subtasks（planned 目标循环：目标拆解出的有序子任务）----------
+def replace_goal_subtasks(schedule_id: str, subtasks: list[dict]) -> None:
+    """整体重置某目标循环的子任务清单（拆解成功后写入，或重启循环时清空传 []）。"""
+    _exec("DELETE FROM goal_subtasks WHERE schedule_id=?", (schedule_id,))
+    now = _now()
+    for seq, st in enumerate(subtasks):
+        _exec(
+            "INSERT INTO goal_subtasks(id,schedule_id,seq,title,instruction,category,status,"
+            "attempts,last_feedback,verify_job_id,task_id,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (new_id(), schedule_id, seq, (st.get("title") or "")[:200], st.get("instruction") or "",
+             st.get("category") or "", "pending", 0, "", "", "", now, now),
+        )
+
+
+def list_goal_subtasks(schedule_id: str) -> list[dict]:
+    rows = _query(
+        "SELECT * FROM goal_subtasks WHERE schedule_id=? ORDER BY seq ASC, created_at ASC",
+        (schedule_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+def get_goal_subtask(sid: str) -> dict | None:
+    rows = _query("SELECT * FROM goal_subtasks WHERE id=?", (sid,))
+    return dict(rows[0]) if rows else None
+
+
+def next_pending_goal_subtask(schedule_id: str) -> dict | None:
+    """下一个待执行子任务（按 seq 升序取第一个 pending），没有则 None。"""
+    rows = _query(
+        "SELECT * FROM goal_subtasks WHERE schedule_id=? AND status='pending'"
+        " ORDER BY seq ASC, created_at ASC LIMIT 1",
+        (schedule_id,),
+    )
+    return dict(rows[0]) if rows else None
+
+
+def update_goal_subtask(sid: str, **fields) -> bool:
+    allowed = {"status", "attempts", "last_feedback", "verify_job_id", "task_id"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    updates["updated_at"] = _now()
+    cols = ", ".join(f"{k}=?" for k in updates)
+    cur = _exec(f"UPDATE goal_subtasks SET {cols} WHERE id=?", (*updates.values(), sid))
     return cur.rowcount > 0

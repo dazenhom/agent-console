@@ -671,9 +671,12 @@ def _validate_schedule(payload: dict) -> dict:
         exec_mode = payload.get("exec_mode") or "solo"
         if exec_mode not in ("solo", "team"):
             raise HTTPException(status_code=400, detail="exec_mode 仅支持 solo / team")
+        goal_mode = payload.get("goal_mode") or "flat"
+        if goal_mode not in ("flat", "planned"):
+            raise HTTPException(status_code=400, detail="goal_mode 仅支持 flat / planned")
         return {"kind": kind, "interval_min": None, "at_hhmm": None,
                 "stop_condition": stop_condition, "max_iterations": max_iterations,
-                "verify_command": verify_command, "exec_mode": exec_mode}
+                "verify_command": verify_command, "exec_mode": exec_mode, "goal_mode": goal_mode}
     if kind == "interval":
         try:
             interval_min = int(payload.get("interval_min"))
@@ -712,7 +715,8 @@ async def schedules_create(payload: dict):
         return db.create_schedule(session_id, prompt, "goal", None, None, nxt,
                                   stop_condition=norm["stop_condition"],
                                   max_iterations=norm["max_iterations"], goal_status="running",
-                                  verify_command=norm["verify_command"], exec_mode=norm["exec_mode"])
+                                  verify_command=norm["verify_command"], exec_mode=norm["exec_mode"],
+                                  goal_mode=norm["goal_mode"])
     nxt = scheduler.compute_next_run(norm["kind"], norm["interval_min"], norm["at_hhmm"])
     return db.create_schedule(session_id, prompt, norm["kind"], norm["interval_min"], norm["at_hhmm"], nxt)
 
@@ -738,8 +742,12 @@ async def schedules_update(sid: str, payload: dict):
                 "kind": "goal", "interval_min": None, "at_hhmm": None,
                 "stop_condition": norm["stop_condition"], "max_iterations": norm["max_iterations"],
                 "verify_command": norm["verify_command"], "exec_mode": norm["exec_mode"],
+                "goal_mode": norm["goal_mode"],
                 "goal_status": "running", "iter_count": 0, "last_feedback": "",
+                # planned 相关状态全部复位，旧子任务清空——下个 tick 会按新目标重新拆解
+                "plan_status": "", "active_subtask_id": "",
             })
+            db.replace_goal_subtasks(sid, [])
             fields["next_run"] = scheduler.compute_next_run("goal", None, None)
         else:
             fields.update({"kind": norm["kind"], "interval_min": norm["interval_min"],
@@ -752,6 +760,10 @@ async def schedules_update(sid: str, payload: dict):
             fields["goal_status"] = "running"
             fields["iter_count"] = 0
             fields["last_feedback"] = ""
+            # planned 循环重启也要复位拆解态并清子任务，才能按当前目标重新拆
+            fields["plan_status"] = ""
+            fields["active_subtask_id"] = ""
+            db.replace_goal_subtasks(sid, [])
             fields["next_run"] = scheduler.compute_next_run("goal", None, None)
         elif not sch.get("next_run"):
             fields["next_run"] = scheduler.compute_next_run(sch["kind"], sch.get("interval_min"), sch.get("at_hhmm"))
@@ -772,6 +784,14 @@ async def schedules_iterations(sid: str):
     if not db.get_schedule(sid):
         raise HTTPException(status_code=404, detail="定时任务不存在")
     return db.list_goal_iterations(sid)
+
+
+@app.get("/api/schedules/{sid}/subtasks", dependencies=[Depends(require_auth)])
+async def schedules_subtasks(sid: str):
+    """planned 目标循环拆解出的子任务清单及各自执行/验收状态，只读。"""
+    if not db.get_schedule(sid):
+        raise HTTPException(status_code=404, detail="定时任务不存在")
+    return db.list_goal_subtasks(sid)
 
 
 # ---------------- 目标循环历史（H2 goal loop：列表态 + 详情态）----------------

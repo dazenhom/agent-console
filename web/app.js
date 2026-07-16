@@ -2486,6 +2486,8 @@
       </div>
       <div class="goal-field"><div class="goal-field-label">🎯 目标</div><div class="goal-text">${escapeHtml(sch.prompt || "")}</div></div>
       <div class="goal-field"><div class="goal-field-label">✅ 完成标准</div><div class="goal-text">${escapeHtml(sch.stop_condition || "")}</div></div>
+      ${sch.verify_command ? `<div class="goal-field"><div class="goal-field-label">🧪 验收命令</div><div class="goal-text">${escapeHtml(sch.verify_command)}</div></div>` : ""}
+      <div class="goal-field"><div class="goal-field-label">⚙️ 执行模式</div><div class="goal-text">${sch.exec_mode === "team" ? "team（/console-dev 四角流水线）" : "solo（单 Agent）"}</div></div>
       <div class="goal-field"><div class="goal-field-label">💬 最新反馈</div><div class="goal-text">${escapeHtml(sch.last_feedback || "（暂无）")}</div></div>
       <div class="goal-field"><div class="goal-field-label">📍 所在会话</div><div class="goal-text goal-session-link" id="goal-session-link">${escapeHtml(sess ? sess.title : "(已删除)")}</div></div>
       <div class="goal-actions">
