@@ -143,6 +143,16 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str) ->
     不中断整个循环；子会话回合用 fire-and-forget 起跑，避免一个卡住其余子任务的建立。
     """
     from .session_hub import hub
+
+    async def _fire(child_session_id: str, instruction: str, subtask_id: str):
+        """后台跑 start_turn 并兜住其执行期异常：不然会被 asyncio 打成
+        "Task exception was never retrieved"，子任务却永远卡在 dispatched。"""
+        try:
+            await hub.start_turn(child_session_id, instruction)
+        except Exception as e:
+            print(f"[dispatcher] start_turn error: {type(e).__name__}: {e}")
+            db.update_dispatch_subtask(subtask_id, status="error")
+
     subtasks = await run_planner(request)
     plan_id = db.new_id()
     for seq, st in enumerate(subtasks):
@@ -151,14 +161,14 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str) ->
             child = db.create_session(
                 title=st["title"][:80], workdir=workdir, mode=model, engine=engine,
             )
-            db.create_dispatch_subtask(
+            subtask = db.create_dispatch_subtask(
                 plan_id=plan_id, parent_session_id=parent_session_id, seq=seq,
                 title=st["title"], instruction=st["instruction"], category=category,
                 engine=engine, model=model, child_session_id=child["id"],
                 status="dispatched",
             )
             # 后台起跑，不 await 阻塞后续子任务的建立
-            asyncio.ensure_future(hub.start_turn(child["id"], st["instruction"]))
+            asyncio.ensure_future(_fire(child["id"], st["instruction"], subtask["id"]))
         except Exception as e:
             print(f"[dispatcher] dispatch subtask #{seq} error: {type(e).__name__}: {e}")
             db.create_dispatch_subtask(
