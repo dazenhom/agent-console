@@ -214,6 +214,8 @@
               <button id="open-reports-btn" class="manage-entry">📋 日报记录</button>
               <button id="open-jobs-btn" class="manage-entry">🩺 后台任务</button>
               <button id="open-artifacts-btn" class="manage-entry">📦 产出物</button>
+              <button id="open-arb-btn" class="manage-entry">⚖ 背对背仲裁</button>
+              <button id="open-dispatch-btn" class="manage-entry">🧭 智能分派</button>
               <button id="open-swanlab-btn" class="manage-entry">📊 SwanLab</button>
               <button id="secretary-trigger-btn" class="manage-entry">🤖 立即生成日报</button>
               <button id="notify-toggle" class="manage-entry">🔔 完成提醒：关</button>
@@ -280,6 +282,8 @@
         <div class="detail-actions">
           <button id="act-resume" class="act-btn">▷ Resume</button>
           <button id="act-archive" class="act-btn">🗄 Archive</button>
+          <button id="act-arbitrate" class="act-btn">⚖ 背对背仲裁</button>
+          <button id="act-dispatch" class="act-btn">🧭 分派子任务</button>
         </div>
       </section>
     </div>
@@ -326,12 +330,36 @@
     </iframe>
   </div>
 
+  <!-- 背对背仲裁面板 -->
+  <div id="arb-view" class="view manage-view hidden">
+    <header class="topbar">
+      <button id="arb-back" class="icon-btn" aria-label="返回">&#8592;</button>
+      <div class="topbar-title">背对背仲裁</div>
+      <button id="arb-new" class="mini-btn">+ 新问题</button>
+    </header>
+    <main class="manage-body">
+      <div id="arb-body"></div>
+    </main>
+  </div>
+
+  <!-- 智能分派面板 -->
+  <div id="dispatch-view" class="view manage-view hidden">
+    <header class="topbar">
+      <button id="dispatch-back" class="icon-btn" aria-label="返回">&#8592;</button>
+      <div class="topbar-title">智能分派</div>
+      <button id="dispatch-new" class="mini-btn">+ 新需求</button>
+    </header>
+    <main class="manage-body">
+      <div id="dispatch-body"></div>
+    </main>
+  </div>
+
   <!-- 浮层容器：toast 通知 + 模态确认框 -->
   <div id="memo-banner-root"></div>
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=63"></script>
+  <script src="app.js?v=64"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

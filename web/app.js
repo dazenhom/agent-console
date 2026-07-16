@@ -110,6 +110,8 @@
     closeMonitor();
     $("app-view").classList.add("hidden");
     $("manage-view").classList.add("hidden");
+    $("arb-view").classList.add("hidden");
+    $("dispatch-view").classList.add("hidden");
     $("login-view").classList.remove("hidden");
   }
   $("logout-btn").onclick = logout;
@@ -2016,6 +2018,211 @@
   const openArtifactsBtn = document.getElementById('open-artifacts-btn');
   if (openArtifactsBtn) openArtifactsBtn.onclick = () => openManage('artifacts');
 
+  // ---------------- 背对背仲裁 + 智能分派：文本输入弹窗 ----------------
+  // 复用 modal-root 风格（同 confirmDialog），返回 Promise<string|null>。
+  function promptText(title, placeholder, okText = "确定") {
+    return new Promise((resolve) => {
+      const root = $("modal-root");
+      root.innerHTML = "";
+      const card = el("div", "modal-card");
+      card.innerHTML = `<div class="modal-title">${escapeHtml(title)}</div>
+        <div class="entity-form" style="gap:12px">
+          <textarea id="pt-input" class="form-input tall" rows="4" placeholder="${escapeAttr(placeholder)}"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="modal-cancel" type="button">取消</button>
+          <button class="modal-ok" type="button">${escapeHtml(okText)}</button>
+        </div>`;
+      root.appendChild(card);
+      root.classList.remove("hidden");
+      requestAnimationFrame(() => root.classList.add("show"));
+      const close = (val) => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); resolve(val); };
+      setTimeout(() => { const t = $("pt-input"); if (t) t.focus(); }, 50);
+      card.querySelector(".modal-cancel").onclick = () => close(null);
+      card.querySelector(".modal-ok").onclick = () => { const v = ($("pt-input").value || "").trim(); if (v) close(v); };
+      root.onclick = (e) => { if (e.target === root) close(null); };
+    });
+  }
+
+  // ---------------- 背对背双执行 + 综合仲裁 ----------------
+  let _arbPollTimer = null;
+  function openArbView() {
+    stopArbPoll();
+    $("app-view").classList.add("hidden");
+    $("arb-view").classList.remove("hidden");
+    showArbList();
+  }
+  function closeArbView() {
+    stopArbPoll();
+    $("arb-view").classList.add("hidden");
+    $("app-view").classList.remove("hidden");
+  }
+  function stopArbPoll() { if (_arbPollTimer) { clearTimeout(_arbPollTimer); _arbPollTimer = null; } }
+
+  async function showArbList() {
+    stopArbPoll();
+    const body = $("arb-body");
+    body.innerHTML = '<div class="entity-loading">加载中…</div>';
+    try {
+      const items = await api("/api/arbitrations");
+      body.innerHTML = "";
+      if (!items.length) {
+        body.innerHTML = '<div class="entity-empty"><div class="empty-emoji">⚖</div><div>还没有仲裁记录</div><div class="empty-sub">点右上角「+ 新问题」发起第一次</div></div>';
+        return;
+      }
+      const ul = el("ul", "entity-list");
+      for (const it of items) {
+        const li = el("li");
+        const head = el("div", "e-head");
+        head.appendChild(el("span", "e-name", escapeHtml((it.question || "").slice(0, 60) || "（无标题）")));
+        const stat = el("span", "e-tag", escapeHtml(it.status || ""));
+        if (it.status === "error") stat.style.color = "var(--red)";
+        head.appendChild(stat);
+        li.appendChild(head);
+        li.appendChild(el("div", "e-desc", escapeHtml(fmtTime(it.created_at))));
+        li.style.cursor = "pointer";
+        li.onclick = () => openArbDetail(it.id);
+        ul.appendChild(li);
+      }
+      body.appendChild(ul);
+    } catch (e) {
+      body.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function openArbitrationInput() {
+    const question = await promptText("背对背仲裁", "输入要交给两位工程师背对背作答的问题…", "开始");
+    if (!question) return;
+    try {
+      const r = await api("/api/arbitrate", { method: "POST", body: JSON.stringify({ question, session_id: state.sessionId || null }) });
+      openArbView();
+      openArbDetail(r.id);
+    } catch (e) { toast("发起失败：" + e.message, "error"); }
+  }
+
+  function openArbDetail(id) {
+    $("arb-view").classList.remove("hidden");
+    $("app-view").classList.add("hidden");
+    pollArbitration(id);
+  }
+
+  async function pollArbitration(id) {
+    stopArbPoll();
+    try {
+      const data = await api("/api/arbitrations/" + encodeURIComponent(id));
+      renderArbitration(data);
+      if (data.status === "running") {
+        _arbPollTimer = setTimeout(() => pollArbitration(id), 3000);
+      }
+    } catch (e) {
+      $("arb-body").innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderArbitration(data) {
+    const body = $("arb-body");
+    const running = data.status === "running";
+    const col = (title, sub, text, waiting) => {
+      const placeholder = waiting ? '<div class="arb-waiting">生成中…</div>' : `<div class="arb-text">${escapeHtml(text || "（无内容）")}</div>`;
+      return `<div class="arb-col">
+        <div class="arb-col-title">${escapeHtml(title)}</div>
+        <div class="arb-col-sub">${escapeHtml(sub || "")}</div>
+        ${placeholder}
+      </div>`;
+    };
+    body.innerHTML = `
+      <div class="arb-question">❓ ${escapeHtml(data.question || "")}</div>
+      <div class="arb-columns">
+        ${col("方案 A（Claude）", data.model_a, data.result_a, running && !data.result_a)}
+        ${col("方案 B（Codex）", data.model_b, data.result_b, running && !data.result_b)}
+        ${col("综合仲裁结论", data.arbiter_model, data.verdict, running && !data.verdict)}
+      </div>
+      ${data.status === "error" ? `<div class="form-err">仲裁失败：${escapeHtml(data.error || "")}</div>` : ""}`;
+  }
+
+  $("open-arb-btn").onclick = openArbView;
+  $("arb-back").onclick = closeArbView;
+  $("arb-new").onclick = openArbitrationInput;
+
+  // ---------------- 角色化动态调度（智能分派） ----------------
+  let _dispatchPollTimer = null;
+  function stopDispatchPoll() { if (_dispatchPollTimer) { clearTimeout(_dispatchPollTimer); _dispatchPollTimer = null; } }
+  function closeDispatchView() {
+    stopDispatchPoll();
+    $("dispatch-view").classList.add("hidden");
+    $("app-view").classList.remove("hidden");
+  }
+
+  async function openDispatchInput() {
+    const request = await promptText("智能分派", "描述一个较大的需求，会自动拆解成子任务并派给最合适的引擎/模型…", "分派");
+    if (!request) return;
+    $("dispatch-view").classList.remove("hidden");
+    $("app-view").classList.add("hidden");
+    $("dispatch-body").innerHTML = '<div class="entity-loading">规划并分派中…</div>';
+    try {
+      const data = await api("/api/dispatch", { method: "POST", body: JSON.stringify({ request, session_id: state.sessionId || null }) });
+      renderDispatchPlan(data);
+      // 子会话在各自后台跑，轮询几次刷新状态徽章
+      if (data.plan_id) pollDispatch(data.plan_id, 0);
+    } catch (e) {
+      $("dispatch-body").innerHTML = `<div class="entity-empty">分派失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function pollDispatch(planId, tries) {
+    stopDispatchPoll();
+    if (tries >= 20) return;
+    _dispatchPollTimer = setTimeout(async () => {
+      try {
+        const subtasks = await api("/api/dispatch/" + encodeURIComponent(planId));
+        renderDispatchPlan({ plan_id: planId, subtasks });
+        const anyRunning = subtasks.some((s) => s.session_status === "running");
+        if (anyRunning) pollDispatch(planId, tries + 1);
+      } catch (e) { /* 静默：下次进入面板再刷 */ }
+    }, 3000);
+  }
+
+  function _dispatchFriendlyName(engine, model) {
+    if (engine === "codex") return "Codex";
+    const m = (model || "").toLowerCase();
+    if (m.includes("opus")) return "Opus 4.8";
+    if (m.includes("sonnet")) return "Sonnet 5";
+    return model || "Claude";
+  }
+
+  function renderDispatchPlan(data) {
+    const body = $("dispatch-body");
+    const subtasks = data.subtasks || [];
+    if (!subtasks.length) {
+      body.innerHTML = '<div class="entity-empty"><div class="empty-emoji">🧭</div><div>没有拆解出子任务</div><div class="empty-sub">换个更具体的需求再试</div></div>';
+      return;
+    }
+    body.innerHTML = "";
+    const ul = el("ul", "entity-list");
+    for (const st of subtasks) {
+      const li = el("li");
+      if (st.status === "error") li.classList.add("error");
+      const head = el("div", "e-head");
+      head.appendChild(el("span", "e-name", escapeHtml(st.title || "（无标题）")));
+      const badge = el("span", "dispatch-badge dispatch-" + (st.category || "dev"), escapeHtml("派给：" + _dispatchFriendlyName(st.engine, st.model)));
+      head.appendChild(badge);
+      li.appendChild(head);
+      if (st.instruction) li.appendChild(el("div", "e-desc", escapeHtml(st.instruction.slice(0, 160))));
+      const statusText = st.status === "error" ? "建立失败" : ("子会话：" + (st.session_status || "待启动"));
+      li.appendChild(el("div", "e-desc", escapeHtml(statusText)));
+      if (st.child_session_id) {
+        li.style.cursor = "pointer";
+        li.onclick = () => { closeDispatchView(); switchSession(st.child_session_id); };
+      }
+      ul.appendChild(li);
+    }
+    body.appendChild(ul);
+  }
+
+  $("open-dispatch-btn").onclick = openDispatchInput;
+  $("dispatch-back").onclick = closeDispatchView;
+  $("dispatch-new").onclick = openDispatchInput;
+
   // SwanLab iframe 面板
   const SWANLAB_DEFAULT = "@Speech_Model/zhihangxu_ct_exp";
   function openSwanlab() {
@@ -3791,6 +3998,9 @@
       await loadSessions();
     } catch (e) { toast("归档失败：" + e.message, "error"); }
   };
+  // 背对背仲裁 / 分派子任务：详情操作区入口（复用 Experimental 面板里的实现）
+  $("act-arbitrate").onclick = openArbitrationInput;
+  $("act-dispatch").onclick = openDispatchInput;
 
   // ---------------- 按住说话（录音 → 后端 ASR）----------------
   // 约束：getUserMedia 需要安全上下文（HTTPS 或 localhost）。HTTP + 内网 IP 下浏览器禁用麦克风。

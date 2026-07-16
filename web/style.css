@@ -598,6 +598,23 @@ body.hub-resizing {
 .btn-sm.danger { border-color: var(--red); color: var(--red); }
 .btn-sm.danger:hover { background: #fdecec; }
 
+/* 背对背仲裁：三栏方案 / 结论 */
+.arb-question { font-size: 15px; font-weight: 600; margin-bottom: 14px; word-break: break-word; }
+.arb-columns { display: flex; gap: 12px; flex-wrap: wrap; }
+.arb-col { flex: 1; min-width: 200px; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; }
+.arb-col-title { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+.arb-col-sub { font-size: 11px; color: var(--muted-2); margin-bottom: 8px; }
+.arb-text { font-size: 13px; color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.arb-waiting { font-size: 13px; color: var(--muted); font-style: italic; }
+@media (max-width: 600px) { .arb-columns { flex-direction: column; } }
+
+/* 智能分派：角色徽章（deep=紫 / dev=蓝 / codex=绿 / plan=灰） */
+.dispatch-badge { font-size: 10.5px; padding: 3px 8px; border-radius: 7px; font-weight: 600; letter-spacing: .3px; white-space: nowrap; }
+.dispatch-badge.dispatch-deep { background: #f0e8fe; color: #7c3aed; }
+.dispatch-badge.dispatch-dev { background: var(--accent-soft); color: var(--accent); }
+.dispatch-badge.dispatch-codex { background: var(--green-soft); color: var(--green); }
+.dispatch-badge.dispatch-plan { background: var(--gray-soft); color: var(--muted); }
+
 /* 表单 */
 .entity-form { display: flex; flex-direction: column; gap: 14px; max-width: 720px; }
 .entity-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
