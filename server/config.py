@@ -128,6 +128,13 @@ TRIAGE_MAX_ITEMS = int(os.environ.get("TRIAGE_MAX_ITEMS", "8"))
 TRIAGE_TIMEOUT = float(os.environ.get("TRIAGE_TIMEOUT", "90"))
 TRIAGE_GOAL_MAX_ITERATIONS = int(os.environ.get("TRIAGE_GOAL_MAX_ITERATIONS", "3"))
 
+# ---- 背对背双执行 + 综合仲裁 ----
+# 同一问题背对背交给 Claude（工程师A）+ Codex（工程师B）各出一版方案，再用更强的
+# Claude 模型综合仲裁。三次都是一次性子进程（run_logged_oneshot），互不干扰会话上下文。
+# 方案生成/仲裁可能较长，超时给足；ARBITER_MODEL 是仲裁用的强模型。
+ARBITRATION_TIMEOUT = float(os.environ.get("ARBITRATION_TIMEOUT", "600"))
+ARBITER_MODEL = os.environ.get("ARBITER_MODEL", "claude-opus-4-8[1m]")
+
 # ---- 会话标题异步刷新 ----
 # 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
 # 之后每 TITLE_EVERY_N 回合刷一次；用户手动改名（title_auto=0）后不再自动覆盖。

@@ -173,6 +173,31 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_jobruns_started ON job_runs(started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_jobruns_kind ON job_runs(kind);
+            CREATE TABLE IF NOT EXISTS arbitrations (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                question TEXT,
+                status TEXT,          -- running / done / error
+                engine_a TEXT, model_a TEXT, result_a TEXT, job_a_id TEXT,
+                engine_b TEXT, model_b TEXT, result_b TEXT, job_b_id TEXT,
+                arbiter_model TEXT, verdict TEXT, job_final_id TEXT,
+                error TEXT,
+                created_at REAL, updated_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_arb_created ON arbitrations(created_at DESC);
+            CREATE TABLE IF NOT EXISTS dispatch_subtasks (
+                id TEXT PRIMARY KEY,
+                plan_id TEXT,
+                parent_session_id TEXT,
+                seq INTEGER,
+                title TEXT, instruction TEXT,
+                category TEXT,          -- plan / deep / dev / codex
+                engine TEXT, model TEXT,
+                child_session_id TEXT,
+                status TEXT,            -- dispatched / error
+                created_at REAL, updated_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dispatch_plan ON dispatch_subtasks(plan_id);
             """
         )
         # 兼容老库：缺列就补。双进程（80/8800）可能同时启动产生竞态——
@@ -355,6 +380,8 @@ def reconcile_stale_running() -> None:
     _exec("UPDATE sessions SET status='idle' WHERE status='running'")
     _exec("UPDATE tasks SET status='error', ended_at=? WHERE status='running'", (_now(),))
     _exec("UPDATE job_runs SET status='error', error='进程重启中断', ended_at=? WHERE status='running'", (_now(),))
+    # 背对背仲裁：跑到一半随进程消失的置为 error，避免前端永久轮询"running"
+    _exec("UPDATE arbitrations SET status='error', error='服务重启中断', updated_at=? WHERE status='running'", (_now(),))
 
 
 # ---------- messages ----------
@@ -898,3 +925,91 @@ def list_artifacts(session_id=None, limit=100) -> list:
         )
     return [dict(r) for r in rows]
 
+
+# ---------- arbitrations（背对背双执行 + 综合仲裁）----------
+def create_arbitration(**fields) -> dict:
+    aid = new_id()
+    now = _now()
+    fields.setdefault("status", "running")
+    fields["id"] = aid
+    fields["created_at"] = now
+    fields["updated_at"] = now
+    cols = ",".join(fields.keys())
+    ph = ",".join("?" * len(fields))
+    _exec(f"INSERT INTO arbitrations({cols}) VALUES({ph})", tuple(fields.values()))
+    return get_arbitration(aid)
+
+
+def get_arbitration(aid: str) -> dict | None:
+    rows = _query("SELECT * FROM arbitrations WHERE id=?", (aid,))
+    return dict(rows[0]) if rows else None
+
+
+def list_arbitrations(limit: int = 50) -> list[dict]:
+    rows = _query("SELECT * FROM arbitrations ORDER BY created_at DESC LIMIT ?", (limit,))
+    return [dict(r) for r in rows]
+
+
+def update_arbitration(aid: str, **fields) -> bool:
+    allowed = {"status", "result_a", "job_a_id", "result_b", "job_b_id",
+               "verdict", "job_final_id", "error", "updated_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    updates["updated_at"] = _now()
+    cols = ", ".join(f"{k}=?" for k in updates)
+    cur = _exec(f"UPDATE arbitrations SET {cols} WHERE id=?", (*updates.values(), aid))
+    return cur.rowcount > 0
+
+
+# ---------- dispatch_subtasks（角色化动态调度）----------
+def create_dispatch_subtask(**fields) -> dict:
+    sid = new_id()
+    now = _now()
+    fields["id"] = sid
+    fields["created_at"] = now
+    fields["updated_at"] = now
+    cols = ",".join(fields.keys())
+    ph = ",".join("?" * len(fields))
+    _exec(f"INSERT INTO dispatch_subtasks({cols}) VALUES({ph})", tuple(fields.values()))
+    return dict(_query("SELECT * FROM dispatch_subtasks WHERE id=?", (sid,))[0])
+
+
+def list_dispatch_subtasks(plan_id: str) -> list[dict]:
+    rows = _query(
+        "SELECT * FROM dispatch_subtasks WHERE plan_id=? ORDER BY seq ASC, created_at ASC",
+        (plan_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+def list_dispatch_plans(limit: int = 20) -> list[dict]:
+    """按 plan_id 聚合：每个 plan 取最早 created_at、子任务数、首个子任务标题作为汇总。"""
+    rows = _query(
+        "SELECT plan_id, MIN(created_at) AS created_at, COUNT(*) AS subtask_count,"
+        " MIN(seq) AS min_seq"
+        " FROM dispatch_subtasks GROUP BY plan_id ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    result = []
+    for r in rows:
+        d = dict(r)
+        # 取该 plan 里 seq 最小那条的标题当汇总标题
+        head = _query(
+            "SELECT title FROM dispatch_subtasks WHERE plan_id=? ORDER BY seq ASC, created_at ASC LIMIT 1",
+            (d["plan_id"],),
+        )
+        d["title"] = head[0][0] if head else ""
+        result.append(d)
+    return result
+
+
+def update_dispatch_subtask(sid: str, **fields) -> bool:
+    allowed = {"child_session_id", "status", "engine", "model", "category", "updated_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    updates["updated_at"] = _now()
+    cols = ", ".join(f"{k}=?" for k in updates)
+    cur = _exec(f"UPDATE dispatch_subtasks SET {cols} WHERE id=?", (*updates.values(), sid))
+    return cur.rowcount > 0

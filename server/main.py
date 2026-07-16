@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler, worktree
+from . import config, db, memory_store, agent_store, asr_client, session_import, wecom_notify, scheduler, worktree, arbiter, dispatcher
 from .claude_runner import runner
 from .session_hub import hub, Subscriber, _runner_for
 
@@ -329,6 +329,64 @@ async def get_job(jid: str):
             log_content = ""
     job["log_content"] = log_content
     return job
+
+
+# ---------------- 背对背双执行 + 综合仲裁 ----------------
+@app.post("/api/arbitrate", dependencies=[Depends(require_auth)])
+async def post_arbitrate(payload: dict):
+    question = (payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question 不能为空")
+    model_a = config.CLAUDE_MODEL_SUPER
+    model_b = config.CODEX_MODEL or (config.CODEX_MODELS[0] if config.CODEX_MODELS else "")
+    arb = db.create_arbitration(
+        session_id=payload.get("session_id"), question=question, status="running",
+        engine_a="claude", model_a=model_a,
+        engine_b="codex", model_b=model_b,
+        arbiter_model=config.ARBITER_MODEL,
+    )
+    asyncio.ensure_future(arbiter.run_arbitration(arb["id"]))
+    return {"id": arb["id"]}
+
+
+@app.get("/api/arbitrations", dependencies=[Depends(require_auth)])
+async def get_arbitrations():
+    return db.list_arbitrations()
+
+
+@app.get("/api/arbitrations/{arb_id}", dependencies=[Depends(require_auth)])
+async def get_arbitration(arb_id: str):
+    arb = db.get_arbitration(arb_id)
+    if not arb:
+        raise HTTPException(status_code=404, detail="仲裁记录不存在")
+    return arb
+
+
+# ---------------- 角色化动态调度 ----------------
+@app.post("/api/dispatch", dependencies=[Depends(require_auth)])
+async def post_dispatch(payload: dict):
+    request = (payload.get("request") or "").strip()
+    if not request:
+        raise HTTPException(status_code=400, detail="request 不能为空")
+    workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
+    plan_id = await dispatcher.dispatch(request, payload.get("session_id"), workdir)
+    return {"plan_id": plan_id, "subtasks": db.list_dispatch_subtasks(plan_id)}
+
+
+@app.get("/api/dispatch/plans", dependencies=[Depends(require_auth)])
+async def get_dispatch_plans():
+    return db.list_dispatch_plans()
+
+
+@app.get("/api/dispatch/{plan_id}", dependencies=[Depends(require_auth)])
+async def get_dispatch_plan(plan_id: str):
+    subtasks = db.list_dispatch_subtasks(plan_id)
+    # 附带每个子会话的当前 status，供前端展示进度
+    for st in subtasks:
+        csid = st.get("child_session_id")
+        sess = db.get_session(csid) if csid else None
+        st["session_status"] = sess.get("status") if sess else None
+    return subtasks
 
 
 @app.get("/api/artifacts", dependencies=[Depends(require_auth)])
