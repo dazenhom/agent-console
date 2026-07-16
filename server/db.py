@@ -335,6 +335,35 @@ def list_sessions(include_archived: bool = False, archived_only: bool = False) -
             link_map[lr[0]] = lr[1]
     for d in result:
         d["linked_todo_count"] = link_map.get(d["id"], 0)
+    # 批量补 dispatch_plan_id / dispatch_plan_title（该会话若是某调度批次的子会话），
+    # 供前端把同批次子会话折叠成一组，避免 N+1
+    plan_of_sid = {}   # session_id -> plan_id
+    title_of_plan = {}  # plan_id -> 批次标题（取 seq 最小的子任务标题）
+    if sids:
+        placeholders = ",".join("?" * len(sids))
+        sub_rows = _query(
+            f"SELECT child_session_id, plan_id FROM dispatch_subtasks"
+            f" WHERE child_session_id IN ({placeholders}) AND child_session_id != ''",
+            tuple(sids),
+        )
+        for sr in sub_rows:
+            plan_of_sid[sr[0]] = sr[1]
+        plan_ids = list(set(plan_of_sid.values()))
+        if plan_ids:
+            pph = ",".join("?" * len(plan_ids))
+            title_rows = _query(
+                f"SELECT plan_id, title, seq FROM dispatch_subtasks"
+                f" WHERE plan_id IN ({pph}) ORDER BY plan_id, seq ASC",
+                tuple(plan_ids),
+            )
+            for tr in title_rows:
+                # ORDER BY seq ASC，同 plan_id 的第一条即 seq 最小者
+                if tr[0] not in title_of_plan:
+                    title_of_plan[tr[0]] = tr[1]
+    for d in result:
+        pid = plan_of_sid.get(d["id"])
+        d["dispatch_plan_id"] = pid
+        d["dispatch_plan_title"] = title_of_plan.get(pid) if pid else None
     return result
 
 
