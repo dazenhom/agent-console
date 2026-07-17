@@ -45,10 +45,10 @@ CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() 
 # 模型档位 → tclaude 模型 ID。空字符串 = 不传 model 让 CLI 用默认。
 # 合法值见 `tclaude -- --model bogus` 的报错列表：
 #   claude-sonnet-4-6 / claude-sonnet-4-6[1m] / claude-opus-4-8[1m] /
-#   claude-opus-4-7[1m] / claude-opus-4-6[1m] / claude-haiku-4-5 / claude-hy3-preview
+#   claude-opus-4-7[1m] / claude-opus-4-6[1m] / claude-haiku-4-5 / claude-hy3
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
-# 看板进展摘要专用模型：用 hy preview（tclaude 提供的预览档模型），概括质量更好。
-CLAUDE_MODEL_KANBAN = os.environ.get("CLAUDE_MODEL_KANBAN", "claude-hy3-preview")
+# 看板进展摘要专用模型：用 hy3（tclaude 提供的档位模型），概括质量更好。
+CLAUDE_MODEL_KANBAN = os.environ.get("CLAUDE_MODEL_KANBAN", "claude-hy3")
 CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-5")
 CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-4-8[1m]")
 # 前端可选的完整模型列表（mode 直接存模型 ID）。GLM 5.2 放首位作为默认。
@@ -58,7 +58,7 @@ CLAUDE_MODELS = [
     "claude-opus-4-8", "claude-opus-4-8[1m]",
     "claude-opus-4-7", "claude-opus-4-7[1m]",
     "claude-opus-4-6", "claude-opus-4-6[1m]",
-    "claude-haiku-4-5", "claude-hy3-preview", "opusplan",
+    "claude-haiku-4-5", "claude-hy3", "opusplan",
     "claude-sonnet-5", "claude-sonnet-5[1m]",
     "claude-deepseek-v4-pro", "claude-deepseek-v4-pro[1m]",
     "claude-deepseek-v4-flash", "claude-deepseek-v4-flash[1m]",
@@ -91,12 +91,12 @@ CODEX_BYPASS = os.environ.get("CODEX_BYPASS", "true").lower() == "true"
 CODEX_SKIP_GIT_CHECK = os.environ.get("CODEX_SKIP_GIT_CHECK", "true").lower() == "true"
 CODEX_TURN_TIMEOUT = int(os.environ.get("CODEX_TURN_TIMEOUT", "3600"))
 CODEX_MODEL = os.environ.get("CODEX_MODEL", "")
-# 前端可选的 codex 模型列表（codex 会话的 mode 直接存模型 ID）。gpt-5.5 放首位作为默认。
+# 前端可选的 codex 模型列表（codex 会话的 mode 直接存模型 ID）。gpt-5.6 放首位作为默认。
 CODEX_MODELS = [
-    "gpt-5.5", "gpt-5.4", "gpt-5.3-codex",
+    "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex",
     "gpt-5.1-codex", "gpt-5.1-codex-mini", "hy3-preview-ioa",
 ]
-CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.5")
+CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.6")
 # 会话底层 Agent 引擎：claude（tclaude）或 codex（tcodex）。新会话默认 claude。
 VALID_ENGINES = {"claude", "codex"}
 DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
