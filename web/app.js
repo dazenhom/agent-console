@@ -660,7 +660,7 @@
     const parts = String(workdir).replace(/\/$/, "").split("/");
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : workdir;
   }
-  const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","hy3-preview-ioa"];
+  const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","hy3-preview-ioa"];
   const CLAUDE_MODELS = [
     "claude-glm-5.2","claude-glm-5.2[1m]",
     "claude-sonnet-4-6","claude-sonnet-4-6[1m]",
@@ -714,7 +714,6 @@
       "claude-deepseek-v4-flash[1m]": "DeepSeek V4 Flash 长文",
       // codex 模型
       "gpt-5.6-sol": "GPT-5.6 Sol",
-      "gpt-5.5": "GPT-5.5",
       "gpt-5.4": "GPT-5.4",
       "gpt-5.3-codex": "GPT-5.3 Codex",
       "gpt-5.1-codex": "GPT-5.1 Codex",
@@ -1988,10 +1987,12 @@
 
   async function loadHistory() {
     const chat = $("chat");
+    const reqSid = state.sessionId;   // 快照：请求返回后若已切换会话则丢弃结果
     chat.innerHTML = `<div class="chat-skel">${skeleton(3)}</div>`;
     state._histGroups = {};
     try {
       const msgs = await api(`/api/sessions/${state.sessionId}/messages`);
+      if (reqSid !== state.sessionId) return;   // 用户已切走，勿覆盖新会话正文
       chat.innerHTML = "";
       if (!msgs.length) {
         state.histMsgs = [];
@@ -2025,6 +2026,7 @@
         scrollBottom(true);
       }
     } catch (e) {
+      if (reqSid !== state.sessionId) return;   // 用户已切走，勿覆盖新会话正文
       state.pendingHighlight = null;
       chat.innerHTML = "";
       toast("加载历史失败：" + e.message, "error");
