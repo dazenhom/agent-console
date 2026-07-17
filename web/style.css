@@ -638,6 +638,13 @@ body.hub-resizing {
 .entity-list .e-tag.tag-good { background: var(--green-soft); color: var(--green); }
 .entity-list .e-tag.tag-run { background: var(--accent-soft); color: var(--accent); }
 .goal-meta-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+/* 目标循环「当前进展」横条：正在迭代时点亮，展示第 N 轮 + 阶段文案 */
+.goal-progress-bar { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 9px 12px; margin-bottom: 16px; }
+.goal-progress-bar .goal-progress-sub { color: var(--muted); font-weight: 500; }
+/* 进行中标签：柔和呼吸动画，用于当前轮/未完成阶段 */
+.entity-list .e-tag.tag-progress { background: var(--accent-soft); color: var(--accent); animation: goalPulse 1.4s ease-in-out infinite; }
+@keyframes goalPulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
 .goal-field { margin-bottom: 14px; }
 .goal-field-label { font-size: 12.5px; color: var(--muted-2); font-weight: 600; margin-bottom: 4px; }
 .goal-text { font-size: 14px; color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.5; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; }

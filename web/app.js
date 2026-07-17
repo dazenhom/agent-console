@@ -1509,6 +1509,20 @@
       }
       return;
     }
+    // 目标循环阶段实时进展（进新一轮/转验收/复位）：正打开该 goal 详情就就地刷新（推送为主，轮询兜底）
+    if (data.type === "goal_progress") {
+      if (!$("goal-view").classList.contains("hidden") && _goalCurrentId && _goalCurrentId === data.schedule_id) {
+        loadGoalDetail(_goalCurrentId);
+      }
+      return;
+    }
+    // 背对背仲裁阶段实时进展（A/B 各自完成/进入仲裁/收尾）：正打开该仲裁详情就重新拉取渲染
+    if (data.type === "arbitration_progress") {
+      if (!$("arb-view").classList.contains("hidden") && _arbCurrentId && _arbCurrentId === data.arb_id) {
+        pollArbitration(_arbCurrentId);
+      }
+      return;
+    }
     if (data.type !== "session_update") return;
     const s = state.sessions.find((x) => x.id === data.session_id);
     if (s) {
@@ -2236,6 +2250,7 @@
 
   // ---------------- 背对背双执行 + 综合仲裁 ----------------
   let _arbPollTimer = null;
+  let _arbCurrentId = null;  // 详情态正在看的仲裁 id，用于 arbitration_progress 就地刷新
   function openArbView() {
     stopArbPoll();
     $("app-view").classList.add("hidden");
@@ -2251,6 +2266,7 @@
 
   async function showArbList() {
     stopArbPoll();
+    _arbCurrentId = null;
     const body = $("arb-body");
     body.innerHTML = '<div class="entity-loading">加载中…</div>';
     try {
@@ -2298,6 +2314,7 @@
 
   async function pollArbitration(id) {
     stopArbPoll();
+    _arbCurrentId = id;
     try {
       const data = await api("/api/arbitrations/" + encodeURIComponent(id));
       renderArbitration(data);
@@ -2311,9 +2328,18 @@
 
   function renderArbitration(data) {
     const body = $("arb-body");
-    const running = data.status === "running";
-    const col = (title, sub, text, waiting) => {
-      const placeholder = waiting ? '<div class="arb-waiting">生成中…</div>' : `<div class="arb-text">${escapeHtml(text || "（无内容）")}</div>`;
+    const stage = data.stage || "";
+    // A/B 尚在生成阶段（含旧记录 stage 为空的 running 态）：两卡各自"生成中"，结果到位即显示
+    const abPhase = ["", "pending", "running_ab", "a_done", "b_done"].includes(stage);
+    const aWaiting = !data.result_a && abPhase ? "方案 A 生成中…" : "";
+    const bWaiting = !data.result_b && abPhase ? "方案 B 生成中…" : "";
+    // 仲裁结论卡：未出结论时——仲裁阶段显示"综合仲裁中…"，否则（A/B 还没都好）显示"等待方案 A/B 完成…"
+    let finalWaiting = "";
+    if (!data.verdict && stage !== "done") {
+      finalWaiting = stage === "arbitrating" ? "综合仲裁中…" : "等待方案 A/B 完成…";
+    }
+    const col = (title, sub, text, waitingText) => {
+      const placeholder = waitingText ? `<div class="arb-waiting">${escapeHtml(waitingText)}</div>` : `<div class="arb-text">${escapeHtml(text || "（无内容）")}</div>`;
       return `<div class="arb-col">
         <div class="arb-col-title">${escapeHtml(title)}</div>
         <div class="arb-col-sub">${escapeHtml(sub || "")}</div>
@@ -2323,9 +2349,9 @@
     body.innerHTML = `
       <div class="arb-question">❓ ${escapeHtml(data.question || "")}</div>
       <div class="arb-columns">
-        ${col("方案 A（Claude）", data.model_a, data.result_a, running && !data.result_a)}
-        ${col("方案 B（Codex）", data.model_b, data.result_b, running && !data.result_b)}
-        ${col("综合仲裁结论", data.arbiter_model, data.verdict, running && !data.verdict)}
+        ${col("方案 A（Claude）", data.model_a, data.result_a, aWaiting)}
+        ${col("方案 B（Codex）", data.model_b, data.result_b, bWaiting)}
+        ${col("综合仲裁结论", data.arbiter_model, data.verdict, finalWaiting)}
       </div>
       ${data.status === "error" ? `<div class="form-err">仲裁失败：${escapeHtml(data.error || "")}</div>` : ""}`;
   }
@@ -2578,18 +2604,11 @@
   async function loadGoalDetail(id) {
     _goalCurrentId = id;
     try {
-      const [all, jobs] = await Promise.all([
-        api("/api/schedules"),
-        api("/api/jobs?kind=goal_verify&limit=200"),
-      ]);
-      const sch = all.find((s) => s.id === id);
-      if (!sch) {
-        $("goal-body").innerHTML = '<div class="entity-empty">该目标循环已被删除</div>';
-        return;
-      }
-      const rounds = jobs.filter((j) => j.schedule_id === id).reverse();
-      renderGoalDetail(sch, rounds);
+      // 直接拉 /api/goals/{id}：返回体即 schedule 本体 + iterations（每轮迭代历史）+ subtasks（planned 子任务）
+      const sch = await api("/api/goals/" + encodeURIComponent(id));
+      renderGoalDetail(sch);
       if (["running", "producing", "verifying"].includes(sch.goal_status) && sch.enabled) {
+        // 有了 goal_progress 推送后，这个轮询只作弱网兜底，间隔保持不变
         _goalPollTimer = setTimeout(() => loadGoalDetail(id), 6000);
       }
     } catch (e) {
@@ -2597,12 +2616,35 @@
     }
   }
 
-  function renderGoalDetail(sch, rounds) {
+  // 目标循环「当前进展」横条的阶段文案：running/producing 都在生成，verifying 在验收，终态用状态标签本身
+  function goalPhaseText(status) {
+    if (status === "running" || status === "producing") return "生成中…";
+    if (status === "verifying") return "验收中…";
+    return fmtGoalStatus(status)[0];
+  }
+
+  function renderGoalDetail(sch) {
     const body = $("goal-body");
+    const rounds = sch.iterations || [];
+    const subtasks = sch.subtasks || [];
     const sess = state.sessions.find((x) => x.id === sch.session_id);
     const [label, cls] = fmtGoalStatus(sch.goal_status);
     const isTerminal = sch.goal_status === "done" || sch.goal_status === "exhausted";
+    // 当前进展横条：非终态时点亮，planned 模式带上当前子任务标题
+    let progressBar = "";
+    if (!isTerminal) {
+      let sub = "";
+      if (sch.active_subtask_id) {
+        const st = subtasks.find((x) => x.id === sch.active_subtask_id);
+        if (st && st.title) sub = ` · ${escapeHtml(st.title)}`;
+      }
+      progressBar = `<div class="goal-progress-bar">
+        <span>第 ${sch.iter_count || 0}/${sch.max_iterations || 10} 轮 · ${escapeHtml(goalPhaseText(sch.goal_status))}</span>
+        <span class="goal-progress-sub">${sub}</span>
+      </div>`;
+    }
     body.innerHTML = `
+      ${progressBar}
       <div class="goal-meta-row">
         <span class="e-tag ${cls}">${escapeHtml(label)}</span>
         <span class="e-tag">${sch.enabled ? "启用" : "已停用"}</span>
@@ -2626,17 +2668,23 @@
     if (!rounds.length) {
       ul.innerHTML = '<li class="e-empty-row">还没有完成任何一轮验收</li>';
     } else {
-      rounds.forEach((j, i) => {
+      // rounds 按 iter_no 升序（后端已排好）。producing/verifying 是当前进行中的一轮，终态轮用 verdict/feedback
+      rounds.forEach((it) => {
         const li = el("li");
-        const bad = j.status === "error" || j.status === "timeout";
-        const doneMatch = /done=(True|False)/.exec(j.output || "");
-        const roundDone = doneMatch && doneMatch[1] === "True";
+        const inProgress = it.status === "producing" || it.status === "verifying";
+        const bad = it.status === "error";
+        const roundDone = it.verdict === "done";
         const head = el("div", "e-head");
-        head.appendChild(el("span", "e-name", `第 ${i + 1} 轮 · ${fmtTime(j.started_at)}`));
-        head.appendChild(el("span", "e-tag " + (bad ? "tag-warn" : roundDone ? "tag-good" : ""),
-          escapeHtml(bad ? (j.status || "异常") : roundDone ? "达成" : "继续迭代")));
+        head.appendChild(el("span", "e-name", `第 ${it.iter_no} 轮 · ${fmtTime(it.started_at)}`));
+        let tag, tagCls;
+        if (inProgress) { tag = it.status === "verifying" ? "验收中" : "执行中"; tagCls = "tag-progress"; }
+        else if (bad) { tag = "异常"; tagCls = "tag-warn"; }
+        else if (roundDone) { tag = "达成"; tagCls = "tag-good"; }
+        else if (it.verdict === "exhausted") { tag = "已耗尽"; tagCls = "tag-warn"; }
+        else { tag = "继续迭代"; tagCls = ""; }
+        head.appendChild(el("span", "e-tag " + tagCls, escapeHtml(tag)));
         li.appendChild(head);
-        const reason = (j.output || j.error || "").replace(/^done=(True|False),\s*reason=/, "");
+        const reason = inProgress ? goalPhaseText(sch.goal_status) : (it.feedback || "");
         if (reason) li.appendChild(el("div", "e-desc", escapeHtml(reason)));
         ul.appendChild(li);
       });
