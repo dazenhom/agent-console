@@ -1509,10 +1509,11 @@
       }
       return;
     }
-    // 目标循环阶段实时进展（进新一轮/转验收/复位）：正打开该 goal 详情就就地刷新（推送为主，轮询兜底）
+    // 目标循环阶段实时进展（进新一轮/转验收/复位）：详情态就地刷新该目标，列表态刷新整个列表（推送为主，轮询兜底）
     if (data.type === "goal_progress") {
-      if (!$("goal-view").classList.contains("hidden") && _goalCurrentId && _goalCurrentId === data.schedule_id) {
-        loadGoalDetail(_goalCurrentId);
+      if (!$("goal-view").classList.contains("hidden")) {
+        if (_goalCurrentId && _goalCurrentId === data.schedule_id) loadGoalDetail(_goalCurrentId);
+        else if (!_goalCurrentId) showGoalList();
       }
       return;
     }
@@ -2251,6 +2252,7 @@
   // ---------------- 背对背双执行 + 综合仲裁 ----------------
   let _arbPollTimer = null;
   let _arbCurrentId = null;  // 详情态正在看的仲裁 id，用于 arbitration_progress 就地刷新
+  const _arbWaitStart = {};  // 各仲裁首次被看到处于 running 态的本地时间戳，用于纯前端自算「已用时」（避免依赖服务器/浏览器时钟一致性）
   function openArbView() {
     stopArbPoll();
     $("app-view").classList.add("hidden");
@@ -2329,10 +2331,19 @@
   function renderArbitration(data) {
     const body = $("arb-body");
     const stage = data.stage || "";
-    // A/B 尚在生成阶段（含旧记录 stage 为空的 running 态）：两卡各自"生成中"，结果到位即显示
+    // 纯前端自算「已用时」：首次看到 running 态记下本地时间戳，收尾后清掉（不依赖 created_at / 时钟对齐）
+    const aid = data.id || _arbCurrentId;
+    if (data.status === "running") {
+      if (aid && !_arbWaitStart[aid]) _arbWaitStart[aid] = Date.now();
+    } else if (aid) {
+      delete _arbWaitStart[aid];
+    }
+    const elapsed = (aid && _arbWaitStart[aid]) ? Math.max(0, Math.round((Date.now() - _arbWaitStart[aid]) / 1000)) : 0;
+    const elapsedSuffix = elapsed ? `（已用时 ${elapsed}s）` : "";
+    // A/B 尚在生成阶段（含旧记录 stage 为空的 running 态）：两卡各自"并行作答中"，结果到位即显示
     const abPhase = ["", "pending", "running_ab", "a_done", "b_done"].includes(stage);
-    const aWaiting = !data.result_a && abPhase ? "方案 A 生成中…" : "";
-    const bWaiting = !data.result_b && abPhase ? "方案 B 生成中…" : "";
+    const aWaiting = !data.result_a && abPhase ? `方案 A 并行作答中…${elapsedSuffix}` : "";
+    const bWaiting = !data.result_b && abPhase ? `方案 B 并行作答中…${elapsedSuffix}` : "";
     // 仲裁结论卡：未出结论时——仲裁阶段显示"综合仲裁中…"，否则（A/B 还没都好）显示"等待方案 A/B 完成…"
     let finalWaiting = "";
     if (!data.verdict && stage !== "done") {
@@ -2608,8 +2619,8 @@
       const sch = await api("/api/goals/" + encodeURIComponent(id));
       renderGoalDetail(sch);
       if (["running", "producing", "verifying"].includes(sch.goal_status) && sch.enabled) {
-        // 有了 goal_progress 推送后，这个轮询只作弱网兜底，间隔保持不变
-        _goalPollTimer = setTimeout(() => loadGoalDetail(id), 6000);
+        // goal_progress 推送为实时刷新主力，这个轮询只作 WS 断线时的兜底
+        _goalPollTimer = setTimeout(() => loadGoalDetail(id), 3000);
       }
     } catch (e) {
       $("goal-body").innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
@@ -2643,8 +2654,17 @@
         <span class="goal-progress-sub">${sub}</span>
       </div>`;
     }
+    // producing 阶段：把关联会话的实时活动摆到详情最上方，并给一个跳到该会话实时视图的入口
+    let producingLine = "";
+    if (sch.goal_status === "producing") {
+      const act = sess
+        ? (sess.status === "running" ? (sess.activity || "运行中…") : (sess.activity || sess.summary || "空闲"))
+        : "(会话已删除)";
+      producingLine = `<div class="goal-field"><div class="goal-field-label">🚀 正在执行</div><div class="goal-text${sess ? " goal-session-link" : ""}"${sess ? ' id="goal-producing-jump"' : ""}>${escapeHtml(act)}</div></div>`;
+    }
     body.innerHTML = `
       ${progressBar}
+      ${producingLine}
       <div class="goal-meta-row">
         <span class="e-tag ${cls}">${escapeHtml(label)}</span>
         <span class="e-tag">${sch.enabled ? "启用" : "已停用"}</span>
@@ -2690,6 +2710,7 @@
       });
     }
     if (sess) body.querySelector("#goal-goto-session").onclick = () => { closeGoalView(); switchSession(sess.id); };
+    if (sess) { const pj = body.querySelector("#goal-producing-jump"); if (pj) pj.onclick = () => { closeGoalView(); switchSession(sess.id); }; }
     body.querySelector("#goal-edit").onclick = () => openGoalForm(sch);
     const stopBtn = body.querySelector("#goal-stop");
     if (stopBtn) stopBtn.onclick = async () => {
