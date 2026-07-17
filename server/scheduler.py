@@ -243,10 +243,33 @@ async def _git_diff_stat(cwd: str) -> str:
         return ""
 
 
+async def _gather_verify_context(sess: dict, verify_command: str | None = None) -> tuple[str, str, str]:
+    """读取会话本轮验收上下文，返回 (produced, cmd_result, git_diff)。三处后台验收共用：
+      produced    最新产出片段（会话 jsonl 尾部文本）
+      cmd_result  仅当传入 verify_command 时在会话工作区跑一遍（退出码+输出尾部），否则空串
+      git_diff    worktree 会话取 git diff --stat，否则空串
+    只读上下文，不做任何判定/落库。"""
+    from . import kanban
+    produced = ""
+    if sess.get("claude_session_id"):
+        p = kanban._session_jsonl_path(sess["claude_session_id"], sess.get("workdir"))
+        if p:
+            produced = kanban._extract_recent_text(p)
+    workdir = sess.get("workdir") or ""
+    cmd_result = ""
+    cmd = (verify_command or "").strip()
+    if cmd and workdir:
+        cmd_result = await _run_shell(cmd, workdir, config.GOAL_CMD_TIMEOUT)
+    git_diff = ""
+    if sess.get("is_worktree") and workdir:
+        git_diff = await _git_diff_stat(workdir)
+    return produced, cmd_result, git_diff
+
+
 async def _run_goal_verify(scid: str) -> None:
     """后台验收本轮产出，是唯一把状态推回 running/done 的地方。
     整体 try/except 兜底：任何异常都复位 running，绝不让状态卡死在 verifying。"""
-    from . import verifier, kanban
+    from . import verifier
     try:
         sch = db.get_schedule(scid)
         if not sch or sch.get("goal_status") != "verifying":
@@ -255,22 +278,9 @@ async def _run_goal_verify(scid: str) -> None:
         if not sess:
             db.update_schedule(scid, enabled=0)
             return
-        # 读本轮产出片段
-        produced = ""
-        if sess.get("claude_session_id"):
-            p = kanban._session_jsonl_path(sess["claude_session_id"], sess.get("workdir"))
-            if p:
-                produced = kanban._extract_recent_text(p)
-        # 可执行验收（B）：配了 verify_command 就在会话工作区跑一遍，退出码+输出尾部作为客观信号；
-        # worktree 会话再追加 git diff --stat 展示本轮代码改动。都是喂给 verifier 的富上下文。
-        workdir = sess.get("workdir") or ""
-        cmd_result = ""
-        cmd = (sch.get("verify_command") or "").strip()
-        if cmd and workdir:
-            cmd_result = await _run_shell(cmd, workdir, config.GOAL_CMD_TIMEOUT)
-        git_diff = ""
-        if sess.get("is_worktree") and workdir:
-            git_diff = await _git_diff_stat(workdir)
+        # 读本轮验收上下文：产出片段 + 可执行验收命令结果（配了 verify_command 才跑）+ worktree 改动
+        produced, cmd_result, git_diff = await _gather_verify_context(
+            sess, verify_command=sch.get("verify_command"))
         done, reason = await verifier.judge("nl",
                                             goal=sch.get("prompt") or "",
                                             stop_condition=sch.get("stop_condition") or "",
@@ -500,7 +510,7 @@ async def _run_goal_plan(scid: str) -> None:
 async def _run_goal_verify_planned(scid: str) -> None:
     """planned 模式后台验收：plan_status=finalizing 时做整体收尾验收（含 verify_command），
     否则做当前子任务的进展验收。是唯一把 planned 状态推回 running/终态的地方，整体 try/except 兜底。"""
-    from . import verifier, kanban
+    from . import verifier
     try:
         sch = db.get_schedule(scid)
         if not sch or sch.get("goal_status") != "verifying":
@@ -509,25 +519,14 @@ async def _run_goal_verify_planned(scid: str) -> None:
         if not sess:
             db.update_schedule(scid, enabled=0)
             return
-        # 读本轮产出片段 + worktree 代码改动
-        produced = ""
-        if sess.get("claude_session_id"):
-            p = kanban._session_jsonl_path(sess["claude_session_id"], sess.get("workdir"))
-            if p:
-                produced = kanban._extract_recent_text(p)
-        workdir = sess.get("workdir") or ""
-        git_diff = ""
-        if sess.get("is_worktree") and workdir:
-            git_diff = await _git_diff_stat(workdir)
         iter_count = int(sch.get("iter_count") or 0)
         max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
 
         # ---- 收尾整体验收：所有子任务已处理，用 verify_command + verifier 对总目标最终判定 ----
         if (sch.get("plan_status") or "") == "finalizing":
-            cmd_result = ""
-            cmd = (sch.get("verify_command") or "").strip()
-            if cmd and workdir:
-                cmd_result = await _run_shell(cmd, workdir, config.GOAL_CMD_TIMEOUT)
+            # 收尾整体验收才跑 verify_command；子任务级验收不跑（见下方分支）
+            produced, cmd_result, git_diff = await _gather_verify_context(
+                sess, verify_command=sch.get("verify_command"))
             done, reason = await verifier.judge(
                 "nl", goal=sch.get("prompt") or "", stop_condition=sch.get("stop_condition") or "",
                 produced=produced,
@@ -542,7 +541,8 @@ async def _run_goal_verify_planned(scid: str) -> None:
                                    f"子任务已全部执行，但整体验收未通过：{reason}")
             return
 
-        # ---- 子任务级进展验收 ----
+        # ---- 子任务级进展验收（不跑 verify_command，仅 produced + worktree 改动）----
+        produced, _cmd_result, git_diff = await _gather_verify_context(sess)
         sub_id = sch.get("active_subtask_id") or ""
         sub = db.get_goal_subtask(sub_id) if sub_id else None
         job = db.get_latest_job(scid, "goal_verify")
@@ -627,7 +627,7 @@ async def _run_dispatch_verify(subtask_id: str) -> None:
     模式完全参考 _run_goal_verify：读子会话最新产出 → verifier.judge('nl',...) → 落 verdict/feedback。
     MVP 不重试：判定完直接 done 或 failed。整体 try/except 兜底，异常也落 failed，绝不卡在 verifying。
     无论走哪条分支，finally 都做一次 plan 级聚合收尾（幂等）。"""
-    from . import verifier, kanban, arbiter
+    from . import verifier, arbiter
     sub = None
     try:
         sub = db.get_dispatch_subtask(subtask_id)
@@ -638,16 +638,8 @@ async def _run_dispatch_verify(subtask_id: str) -> None:
             db.update_dispatch_subtask(subtask_id, status="failed", verdict="failed",
                                        feedback="子会话不存在，无法判定")
             return
-        # 读子会话最新产出片段（与 goal 验收同款取法）
-        produced = ""
-        if sess.get("claude_session_id"):
-            p = kanban._session_jsonl_path(sess["claude_session_id"], sess.get("workdir"))
-            if p:
-                produced = kanban._extract_recent_text(p)
-        # worktree 子任务再追加 git diff --stat 作为代码改动上下文
-        git_diff = ""
-        if sess.get("is_worktree") and sess.get("workdir"):
-            git_diff = await _git_diff_stat(sess["workdir"])
+        # 读子会话验收上下文（不跑 verify_command，丢弃 cmd_result）
+        produced, _cmd_result, git_diff = await _gather_verify_context(sess)
         goal = ((sub.get("title") or "") + "\n" + (sub.get("instruction") or "")).strip()
         stop = "完成上述子任务要求：" + (sub.get("instruction") or sub.get("title") or "")
         # 困难任务走背对背双评委仲裁验收（两位评委都 DONE 才算完成），否则沿用单 judge。
