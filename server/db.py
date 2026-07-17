@@ -544,6 +544,14 @@ def list_tasks(limit: int = 30) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_latest_task(session_id: str) -> dict | None:
+    """该会话最近一条 tasks 记录（含 status），用于判断回合是否真正结束。
+    fire-and-forget 的 start_turn 从写 status='running' 到 task 注册进 hub._turns 有窗口，
+    调用方据此避开"还没起跑就被误判成已跑完"的时序竞态。"""
+    rows = _query("SELECT * FROM tasks WHERE session_id=? ORDER BY started_at DESC LIMIT 1", (session_id,))
+    return dict(rows[0]) if rows else None
+
+
 def update_task(tid: str, **fields) -> bool:
     allowed = {"resolved_model", "summary", "status"}
     updates = {k: v for k, v in fields.items() if k in allowed}

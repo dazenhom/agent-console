@@ -610,6 +610,13 @@ async def _tick_fanout() -> None:
             # 无子会话（不应发生）或子会话还在跑 → 跳过，下个 tick 再看
             if not sid or hub.is_running(sid):
                 continue
+            # 时序竞态防护：start_turn 是 fire-and-forget，从写 status='running' 到把 task
+            # 注册进 hub._turns 之间有事件循环让出点，此刻 is_running 仍为 False，直接转 verifying
+            # 会把"还没起跑"误判成"已跑完"。故再查最近一条 task：为空或仍 running 说明回合还没
+            # 真正结束（没起跑 / 正在跑），留给下一拍；只有终态 task 才继续。
+            task = db.get_latest_task(sid)
+            if not task or task.get("status") == "running":
+                continue
             # 子会话已空闲 → 转 verifying（先落库再起后台判定，防重复触发）
             db.update_dispatch_subtask(sub["id"], status="verifying")
             asyncio.ensure_future(_run_dispatch_verify(sub["id"]))
