@@ -497,12 +497,17 @@ class SessionHub:
         return "以下是之前对话的近期摘录，请据此继续：\n\n" + excerpt + "\n\n" + user_text
 
     def _build_title_convo(self, sid: str) -> str:
-        """拼一段用于起标题的对话摘录：首条用户消息 + 最近若干轮，去重限长。"""
+        """拼一段用于起标题的对话摘录：首条用户消息 + 最近若干轮，去重限长。
+
+        长会话（用户回合数超过 TITLE_ANCHOR_MAX_TURNS）话题多半已漂移，此时不再锚定
+        首条消息，只放大最近窗口，让标题跟上会话最近在讨论什么。"""
         msgs = db.list_messages(sid)
         users = [m for m in msgs if m["role"] == "user"]
+        long_convo = len(users) > config.TITLE_ANCHOR_MAX_TURNS
         parts = []
         seed = ""
-        if users:
+        raw_first = ""
+        if users and not long_convo:
             raw_first = str((users[0].get("content") or {}).get("text", ""))
             # skill 前言（编排指令）很长且固定，会污染标题；超阈值则剥掉前言只取附加需求。
             # 附加需求拼在最后一个 \n\n 之后，故从末尾切；前半段够长才算 skill body。
@@ -515,9 +520,9 @@ class SessionHub:
                 seed = raw_first[:120]
             if seed.strip():
                 parts.append("用户：" + seed)
-        recent = [m for m in msgs if m["role"] in ("user", "assistant")][-6:]
+        recent = [m for m in msgs if m["role"] in ("user", "assistant")][-8 if long_convo else -6:]
         seen = set()
-        if users:
+        if users and not long_convo:
             if seed:
                 seen.add(seed)
             seen.add(raw_first[:120])  # 始终阻止原始首条经 recent 重新混入
