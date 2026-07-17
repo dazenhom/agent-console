@@ -2149,14 +2149,23 @@
 
   // ---------------- 背对背仲裁 + 智能分派：文本输入弹窗 ----------------
   // 复用 modal-root 风格（同 confirmDialog），返回 Promise<string|null>。
-  function promptText(title, placeholder, okText = "确定") {
+  function promptText(title, placeholder, okText = "确定", checkboxLabel = "") {
+    // checkboxLabel 非空时额外渲染一个勾选框，并以 { text, checked } 形式 resolve；
+    // 否则保持旧行为，直接 resolve 文本字符串（背对背仲裁等调用方依赖此签名）。
     return new Promise((resolve) => {
       const root = $("modal-root");
       root.innerHTML = "";
       const card = el("div", "modal-card");
+      const cbHtml = checkboxLabel
+        ? `<label class="checkbox-label" style="margin-top:2px">
+             <input type="checkbox" id="pt-checkbox" />
+             <span>${escapeHtml(checkboxLabel)}</span>
+           </label>`
+        : "";
       card.innerHTML = `<div class="modal-title">${escapeHtml(title)}</div>
         <div class="entity-form" style="gap:12px">
           <textarea id="pt-input" class="form-input tall" rows="4" placeholder="${escapeAttr(placeholder)}"></textarea>
+          ${cbHtml}
         </div>
         <div class="modal-actions">
           <button class="modal-cancel" type="button">取消</button>
@@ -2168,7 +2177,12 @@
       const close = (val) => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); resolve(val); };
       setTimeout(() => { const t = $("pt-input"); if (t) t.focus(); }, 50);
       card.querySelector(".modal-cancel").onclick = () => close(null);
-      card.querySelector(".modal-ok").onclick = () => { const v = ($("pt-input").value || "").trim(); if (v) close(v); };
+      card.querySelector(".modal-ok").onclick = () => {
+        const v = ($("pt-input").value || "").trim();
+        if (!v) return;
+        if (checkboxLabel) close({ text: v, checked: !!($("pt-checkbox") && $("pt-checkbox").checked) });
+        else close(v);
+      };
       root.onclick = (e) => { if (e.target === root) close(null); };
     });
   }
@@ -2333,13 +2347,15 @@
   }
 
   async function openDispatchInput() {
-    const request = await promptText("智能分派", "描述一个较大的需求，会自动拆解成子任务并派给最合适的引擎/模型…", "分派");
-    if (!request) return;
+    const res = await promptText("智能分派", "描述一个较大的需求，会自动拆解成子任务并派给最合适的引擎/模型…", "分派", "困难任务（验收走背对背仲裁验证）");
+    if (!res) return;
+    const request = res.text;
+    const needArbitration = !!res.checked;
     $("dispatch-view").classList.remove("hidden");
     $("app-view").classList.add("hidden");
     $("dispatch-body").innerHTML = '<div class="entity-loading">规划并分派中…</div>';
     try {
-      const data = await api("/api/dispatch", { method: "POST", body: JSON.stringify({ request, session_id: state.sessionId || null }) });
+      const data = await api("/api/dispatch", { method: "POST", body: JSON.stringify({ request, session_id: state.sessionId || null, need_arbitration: needArbitration }) });
       renderDispatchPlan(data);
       // 子会话在各自后台跑，轮询几次刷新状态徽章
       if (data.plan_id) pollDispatch(data.plan_id, 0);
@@ -2397,6 +2413,8 @@
       head.appendChild(el("span", "e-name", escapeHtml(st.title || "（无标题）")));
       const badge = el("span", "dispatch-badge dispatch-" + (st.category || "dev"), escapeHtml("派给：" + _dispatchFriendlyName(st.engine, st.model)));
       head.appendChild(badge);
+      // 困难任务标记：验收走背对背双评委仲裁，用徽章提示用户该子任务走高规格验证。
+      if (st.need_arbitration) head.appendChild(el("span", "e-tag tag-run", "⚖仲裁验证"));
       // 完成判定徽章：verifying/done/failed/error 各自成态；dispatched 阶段不显示，交给下方 session_status。
       const sm = DISPATCH_STATUS_LABEL[st.status];
       if (sm) head.appendChild(el("span", "e-tag " + sm[1], escapeHtml(sm[0])));
