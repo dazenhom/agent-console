@@ -1314,6 +1314,18 @@ def create_work_item(origin: str, topology: str, isolation: str, verify_mode: st
     return wid
 
 
+def create_work_item_safe(origin: str, topology: str, isolation: str, verify_mode: str,
+                          status: str, ref_id: str = "", session_id: str = "", summary: str = "") -> str:
+    """create_work_item 的容错包装：work_items 纯观测，写失败绝不影响主流程——
+    异常只记日志并返回空串。四处发起点统一走这里，免得各自重复 try/except。"""
+    try:
+        return create_work_item(origin, topology, isolation, verify_mode, status,
+                                ref_id=ref_id, session_id=session_id, summary=summary)
+    except Exception as e:
+        print(f"[work_items] {origin} insert failed: {type(e).__name__}: {e}")
+        return ""
+
+
 def update_work_item_status_by_ref(ref_id: str, status: str) -> None:
     """按来源表主键收尾对应影子记录状态（找不到静默跳过）。
     ref_id 全局唯一（schedule/plan/arbitration id），无需再按 origin 过滤。"""

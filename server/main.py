@@ -765,16 +765,13 @@ async def schedules_create(payload: dict):
                                  verify_command=norm["verify_command"], exec_mode=norm["exec_mode"],
                                  goal_mode=norm["goal_mode"])
         # 阶段2 影子表：纯附加观测，写失败只记日志绝不影响建循环主流程
-        try:
-            sess = db.get_session(session_id)
-            db.create_work_item(
-                origin="goal", topology="iterate",
-                isolation="worktree" if (sess and sess.get("is_worktree")) else "shared",
-                verify_mode="command" if norm["verify_command"] else "nl",
-                status="pending", ref_id=sch["id"], session_id=session_id, summary=prompt,
-            )
-        except Exception as e:
-            print(f"[work_items] goal insert failed: {type(e).__name__}: {e}")
+        sess = db.get_session(session_id)
+        db.create_work_item_safe(
+            origin="goal", topology="iterate",
+            isolation="worktree" if (sess and sess.get("is_worktree")) else "shared",
+            verify_mode="command" if norm["verify_command"] else "nl",
+            status="pending", ref_id=sch["id"], session_id=session_id, summary=prompt,
+        )
         return sch
     nxt = scheduler.compute_next_run(norm["kind"], norm["interval_min"], norm["at_hhmm"])
     return db.create_schedule(session_id, prompt, norm["kind"], norm["interval_min"], norm["at_hhmm"], nxt)

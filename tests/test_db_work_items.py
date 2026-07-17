@@ -85,3 +85,25 @@ def test_list_work_items_respects_limit(temp_db):
             verify_mode="nl", status="pending", ref_id=f"r{i}",
         )
     assert len(temp_db.list_work_items(limit=2)) == 2
+
+
+def test_create_work_item_safe_returns_wid_on_success(temp_db):
+    wid = temp_db.create_work_item_safe(
+        origin="goal", topology="iterate", isolation="shared",
+        verify_mode="nl", status="pending", ref_id="safe-ok",
+    )
+    assert wid
+    assert temp_db.get_work_item(wid)["ref_id"] == "safe-ok"
+
+
+def test_create_work_item_safe_swallows_exception(temp_db, monkeypatch):
+    # 底层 create_work_item 抛异常时，safe 版本吞掉异常并返回空串，绝不上抛（work_items 纯观测）。
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db exploded")
+    monkeypatch.setattr(temp_db, "create_work_item", _boom)
+    wid = temp_db.create_work_item_safe(
+        origin="arbiter", topology="candidates", isolation="shared",
+        verify_mode="candidates", status="running", ref_id="safe-fail",
+    )
+    assert wid == ""
+

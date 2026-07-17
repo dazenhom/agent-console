@@ -208,16 +208,12 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
     subtasks = await run_planner(request)
     plan_id = db.new_id()
     # 阶段2 影子表：纯附加观测，写失败只记日志绝不影响扇出主流程
-    work_item_id = ""
-    try:
-        work_item_id = db.create_work_item(
-            origin="dispatch", topology="fanout",
-            isolation="worktree" if isolate else "shared",
-            verify_mode="none", status="running",
-            ref_id=plan_id, session_id=parent_session_id or "", summary=request,
-        ) or ""
-    except Exception as e:
-        print(f"[work_items] dispatch insert failed: {type(e).__name__}: {e}")
+    work_item_id = db.create_work_item_safe(
+        origin="dispatch", topology="fanout",
+        isolation="worktree" if isolate else "shared",
+        verify_mode="none", status="running",
+        ref_id=plan_id, session_id=parent_session_id or "", summary=request,
+    )
     for seq, st in enumerate(subtasks):
         engine, model, category = _route(st)
         try:
