@@ -16,9 +16,13 @@ from .job_store import run_logged_oneshot
 
 
 async def _run_claude_oneshot(prompt: str, model: str, effort: str = "high",
-                              kind: str = "arbitration") -> tuple[str, str]:
+                              kind: str = "arbitration",
+                              cwd: str | None = None) -> tuple[str, str]:
     """一次性调用 tclaude，返回 (job_id, 答案文本)。解析方式与 goal_verifier.verify 一致：
-    从 stdout 逐行挑出 type=result 的 JSON 取 result 文本。失败/超时/无输出返回空文本。"""
+    从 stdout 逐行挑出 type=result 的 JSON 取 result 文本。失败/超时/无输出返回空文本。
+
+    cwd 透传给 run_logged_oneshot 作为子进程工作目录（None 时沿用默认，向后兼容）：
+    背对背验收隔离 worktree 子任务时须传 worktree 目录，评委才能核实到正确的产出位置。"""
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
         "--model", model, "--output-format", "json",
@@ -26,7 +30,7 @@ async def _run_claude_oneshot(prompt: str, model: str, effort: str = "high",
     ]
     jid, text, stderr_text, status = await run_logged_oneshot(
         kind, cmd, config.ARBITRATION_TIMEOUT,
-        model=model, input_summary=prompt[:120],
+        model=model, input_summary=prompt[:120], cwd=cwd,
     )
     if status in ("timeout", "error"):
         return jid, ""
@@ -47,12 +51,16 @@ async def _run_claude_oneshot(prompt: str, model: str, effort: str = "high",
     return jid, result
 
 
-async def _run_codex_oneshot(prompt: str, model: str) -> tuple[str, str]:
+async def _run_codex_oneshot(prompt: str, model: str,
+                             cwd: str | None = None) -> tuple[str, str]:
     """一次性调用 tcodex exec，返回 (job_id, 答案文本)。
 
     命令拼法与 codex_runner._build_cmd 一致（无 resume）；stdout 是 JSONL 事件流，
     最终答案来自 item.completed 事件里 item.type == 'agent_message' 的 text 字段
-    （见 codex_runner._read_stdout 的解析逻辑）。取所有 agent_message 拼接，末条即最终答复。"""
+    （见 codex_runner._read_stdout 的解析逻辑）。取所有 agent_message 拼接，末条即最终答复。
+
+    cwd 透传给 run_logged_oneshot（None 时沿用默认，向后兼容）：背对背验收隔离 worktree
+    子任务时须传 worktree 目录，评委才能核实到正确的产出位置。"""
     cmd = [config.CODEX_BIN, "--", "exec", "--json"]
     if config.CODEX_SKIP_GIT_CHECK:
         cmd += ["--skip-git-repo-check"]
@@ -67,7 +75,7 @@ async def _run_codex_oneshot(prompt: str, model: str) -> tuple[str, str]:
 
     jid, text, stderr_text, status = await run_logged_oneshot(
         "arbitration_b", cmd, config.ARBITRATION_TIMEOUT,
-        model=m, input_summary=prompt[:120],
+        model=m, input_summary=prompt[:120], cwd=cwd,
     )
     if status in ("timeout", "error"):
         return jid, ""
@@ -183,21 +191,26 @@ def _parse_verdict(text: str) -> tuple[bool, str]:
 
 
 async def verify_back_to_back(goal: str, stop: str, produced: str,
-                              git_diff: str, session_id: str | None = None) -> tuple[bool, str]:
+                              git_diff: str, session_id: str | None = None,
+                              workdir: str | None = None) -> tuple[bool, str]:
     """困难 dispatch 子任务的背对背双评委验收：复用 goal_verifier 的验收 prompt，交给两位
     评委独立判定——A 走更强的 Claude（tclaude），B 走 Codex（tcodex）——再合议。
 
     合议规则：两位评委都判 DONE 才算 done（done = done_a and done_b），任一 CONTINUE / 异常 /
     超时 / 无输出都当未完成，宁可多迭代也不误判完成。返回 (done, reason)，reason 把两位评委各自
     的判断理由都写进去便于排查。与 run_arbitration 一脉相承：两路一次性子进程并发（gather
-    return_exceptions），任一路异常不拖垮另一路；不创建 arbitration 记录、不写 work_item。"""
+    return_exceptions），任一路异常不拖垮另一路；不创建 arbitration 记录、不写 work_item。
+
+    workdir 为子任务实际执行目录（隔离 worktree 时即 worktree 目录）：非空时既写进验收 prompt
+    告知评委去哪核实，也作为两位评委子进程的 cwd，避免评委在服务器默认目录下核实产出而对隔离
+    worktree 里正确完成的任务产生假阴性；None 时保持原行为。"""
     from . import goal_verifier
-    prompt = goal_verifier._build_prompt(goal, stop, produced, git_diff=git_diff)
+    prompt = goal_verifier._build_prompt(goal, stop, produced, git_diff=git_diff, workdir=workdir)
     model_b = config.CODEX_MODEL or (config.CODEX_MODELS[0] if config.CODEX_MODELS else "")
     (res_a, res_b) = await asyncio.gather(
         _run_claude_oneshot(prompt, config.CLAUDE_MODEL_SUPER, effort="high",
-                            kind="dispatch_verify_a"),
-        _run_codex_oneshot(prompt, model_b),
+                            kind="dispatch_verify_a", cwd=workdir or None),
+        _run_codex_oneshot(prompt, model_b, cwd=workdir or None),
         return_exceptions=True,
     )
     # 任一路异常/无输出按 CONTINUE(未完成) 处理，绝不误判完成

@@ -15,12 +15,13 @@ from .job_store import run_logged_oneshot
 
 
 def _build_prompt(goal: str, stop_condition: str, produced: str,
-                  cmd_result: str = "", git_diff: str = "") -> str:
+                  cmd_result: str = "", git_diff: str = "", workdir: str | None = None) -> str:
     goal = (goal or "").strip()[:1500]
     stop_condition = (stop_condition or "").strip()[:800]
     produced = (produced or "").strip()[:3000] or "（本轮无可读产出）"
     cmd_result = (cmd_result or "").strip()[:2000]
     git_diff = (git_diff or "").strip()[:1500]
+    workdir = (workdir or "").strip()
     parts = [
         "你是一个严格的验收员。下面是一个 AI 开发任务的【目标】【完成标准】和【本轮产出片段】。"
         "请判断当前是否已经真正达成完成标准。\n"
@@ -29,10 +30,16 @@ def _build_prompt(goal: str, stop_condition: str, produced: str,
         "- 只有在你有充分把握确认完成标准已全部满足时才输出 DONE；"
         "任何不确定、部分完成、或无法从产出中确认的情况，一律输出 CONTINUE。\n"
         "- 从第二行起，简述判断理由；若为 CONTINUE，请给出下一步应该做什么的具体指示。\n\n"
+    ]
+    if workdir:
+        # 隔离 worktree 等场景：明确告知评委去哪个目录核实产出，避免在错误的 cwd 下
+        # 找不到文件而产生假阴性
+        parts.append(f"【工作目录】任务在目录 {workdir} 下执行，请在该目录下核实产出。\n\n")
+    parts.append(
         f"【目标】\n{goal}\n\n"
         f"【完成标准】\n{stop_condition}\n\n"
-        f"【本轮产出片段】\n{produced}\n",
-    ]
+        f"【本轮产出片段】\n{produced}\n"
+    )
     if cmd_result:
         # 客观信号：验收命令的退出码与输出尾部，比自然语言产出更可信，优先据此判定
         parts.append(f"\n【验收命令执行结果（退出码 0 通常表示通过）】\n{cmd_result}\n")
@@ -43,11 +50,15 @@ def _build_prompt(goal: str, stop_condition: str, produced: str,
 
 async def verify(goal: str, stop_condition: str, produced: str,
                  session_id: str | None = None, schedule_id: str | None = None,
-                 cmd_result: str = "", git_diff: str = "") -> tuple[bool, str]:
+                 cmd_result: str = "", git_diff: str = "",
+                 workdir: str | None = None) -> tuple[bool, str]:
     """返回 (done, reason)。done=True 表示判定达成；任何异常/超时/无输出都返回 (False, 说明)。
 
-    cmd_result / git_diff 为可选的客观上下文（验收命令输出、代码改动 stat），有则拼进 prompt。"""
-    prompt = _build_prompt(goal, stop_condition, produced, cmd_result=cmd_result, git_diff=git_diff)
+    cmd_result / git_diff 为可选的客观上下文（验收命令输出、代码改动 stat），有则拼进 prompt。
+    workdir 为任务实际执行目录（如隔离 worktree）：非空时既写进 prompt 告知评委去哪核实，
+    也作为子进程 cwd，避免评委在错误目录下核实产出而假阴性；None 时保持原行为。"""
+    prompt = _build_prompt(goal, stop_condition, produced, cmd_result=cmd_result,
+                           git_diff=git_diff, workdir=workdir)
     cmd = [
         config.CLAUDE_BIN, "--", "-p", prompt,
         "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
@@ -57,6 +68,7 @@ async def verify(goal: str, stop_condition: str, produced: str,
         "goal_verify", cmd, config.GOAL_VERIFY_TIMEOUT,
         session_id=session_id, schedule_id=schedule_id,
         model=config.CLAUDE_MODEL_KANBAN, input_summary=(goal or "")[:120],
+        cwd=workdir or None,
     )
     if status == "timeout":
         return False, "验收超时，按未完成继续"

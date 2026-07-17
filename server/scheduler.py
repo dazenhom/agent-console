@@ -286,7 +286,8 @@ async def _run_goal_verify(scid: str) -> None:
                                             stop_condition=sch.get("stop_condition") or "",
                                             produced=produced,
                                             session_id=sess.get("id"), schedule_id=scid,
-                                            cmd_result=cmd_result, git_diff=git_diff)
+                                            cmd_result=cmd_result, git_diff=git_diff,
+                                            workdir=sess.get("workdir") or "")
         iter_count = int(sch.get("iter_count") or 0)
         max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
         job = db.get_latest_job(scid, "goal_verify")
@@ -531,7 +532,8 @@ async def _run_goal_verify_planned(scid: str) -> None:
                 "nl", goal=sch.get("prompt") or "", stop_condition=sch.get("stop_condition") or "",
                 produced=produced,
                 session_id=sess.get("id"), schedule_id=scid,
-                cmd_result=cmd_result, git_diff=git_diff)
+                cmd_result=cmd_result, git_diff=git_diff,
+                workdir=sess.get("workdir") or "")
             # 收尾验收不对应任何新回合，不写/不覆盖 goal_iterations（最后一个子任务的轮次记录已定稿）
             db.update_schedule(scid, plan_status="finalized")
             if done:
@@ -555,7 +557,8 @@ async def _run_goal_verify_planned(scid: str) -> None:
         sub_criteria = "完成上述子任务要求：" + (sub.get("instruction") or sub.get("title") or "")
         done, reason = await verifier.judge(
             "nl", goal=sub_goal, stop_condition=sub_criteria, produced=produced,
-            session_id=sess.get("id"), schedule_id=scid, git_diff=git_diff)
+            session_id=sess.get("id"), schedule_id=scid, git_diff=git_diff,
+            workdir=sess.get("workdir") or "")
         attempts = int(sub.get("attempts") or 0)
         if done:
             db.update_goal_subtask(sub["id"], status="done", last_feedback=reason,
@@ -642,14 +645,17 @@ async def _run_dispatch_verify(subtask_id: str) -> None:
         produced, _cmd_result, git_diff = await _gather_verify_context(sess)
         goal = ((sub.get("title") or "") + "\n" + (sub.get("instruction") or "")).strip()
         stop = "完成上述子任务要求：" + (sub.get("instruction") or sub.get("title") or "")
+        # 子会话实际执行目录（隔离 worktree 时即 worktree 目录）：传给验收器当 cwd 并写进
+        # prompt，评委才能去正确目录核实产出，避免对隔离 worktree 里已完成的任务假阴性。
+        workdir = sess.get("workdir") or ""
         # 困难任务走背对背双评委仲裁验收（两位评委都 DONE 才算完成），否则沿用单 judge。
         if sub.get("need_arbitration"):
             done, reason = await arbiter.verify_back_to_back(
-                goal, stop, produced, git_diff, session_id=sess.get("id"))
+                goal, stop, produced, git_diff, session_id=sess.get("id"), workdir=workdir)
         else:
             done, reason = await verifier.judge(
                 "nl", goal=goal, stop_condition=stop, produced=produced,
-                session_id=sess.get("id"), git_diff=git_diff)
+                session_id=sess.get("id"), git_diff=git_diff, workdir=workdir)
         db.update_dispatch_subtask(subtask_id, status=("done" if done else "failed"),
                                    verdict=("done" if done else "failed"), feedback=reason)
     except Exception as e:

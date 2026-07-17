@@ -22,11 +22,15 @@ def _log_dir() -> Path:
 
 async def run_logged_oneshot(kind: str, cmd: list, timeout: float, *,
                              session_id: str | None = None, schedule_id: str | None = None,
-                             model: str = "", input_summary: str = "") -> tuple[str, str, str, str]:
+                             model: str = "", input_summary: str = "",
+                             cwd: str | None = None) -> tuple[str, str, str, str]:
     """跑一次性子进程并落库落盘，返回 (jid, stdout_text, stderr_text, status)。
 
     status 取 success/timeout/error 之一；正常结束默认 success，若调用方解析后
     认定失败可通过 db.finish_job 覆盖。stdout+stderr 全文写进 job_logs/<jid>.log。
+
+    cwd 为子进程工作目录：None 时沿用服务器进程默认 cwd（向后兼容），传入隔离
+    worktree 目录时子进程在该目录下运行，验收类调用才能核实到正确的产出位置。
     """
     jid = db.start_job(kind, session_id=session_id, schedule_id=schedule_id,
                        model=model, input_summary=input_summary)
@@ -38,7 +42,7 @@ async def run_logged_oneshot(kind: str, cmd: list, timeout: float, *,
     error = ""
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, env=_child_env(),
+            *cmd, env=_child_env(), cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )

@@ -14,12 +14,12 @@ from server import arbiter, scheduler, db, verifier, dispatcher, worktree
 
 def _stub_judges(monkeypatch, text_a=None, text_b=None, raise_a=False, raise_b=False):
     """打桩两位评委：分别返回给定文本，或抛异常（模拟超时/进程异常）。"""
-    async def fake_claude(prompt, model, effort="high", kind="arbitration"):
+    async def fake_claude(prompt, model, effort="high", kind="arbitration", cwd=None):
         if raise_a:
             raise RuntimeError("claude boom")
         return ("job-a", text_a)
 
-    async def fake_codex(prompt, model):
+    async def fake_codex(prompt, model, cwd=None):
         if raise_b:
             raise RuntimeError("codex boom")
         return ("job-b", text_b)
@@ -72,6 +72,51 @@ def test_parse_verdict_rules():
     assert arbiter._parse_verdict("")[0] is False
 
 
+def test_b2b_workdir_into_prompt_and_cwd(monkeypatch):
+    # 隔离 worktree 场景：workdir 既要写进两位评委的 prompt，也要作为 cwd 透传，
+    # 否则评委在服务器默认目录下核实产出会假阴性（真机复现的 bug）。
+    seen = {}
+
+    async def fake_claude(prompt, model, effort="high", kind="arbitration", cwd=None):
+        seen["prompt_a"], seen["cwd_a"] = prompt, cwd
+        return ("job-a", "DONE\n好")
+
+    async def fake_codex(prompt, model, cwd=None):
+        seen["prompt_b"], seen["cwd_b"] = prompt, cwd
+        return ("job-b", "DONE\n好")
+
+    monkeypatch.setattr(arbiter, "_run_claude_oneshot", fake_claude)
+    monkeypatch.setattr(arbiter, "_run_codex_oneshot", fake_codex)
+
+    wd = "/tmp/data/worktrees/hello-txt-46f307"
+    done, _reason = asyncio.run(
+        arbiter.verify_back_to_back("目标", "完成标准", "产出", git_diff="", workdir=wd)
+    )
+    assert done is True
+    assert seen["cwd_a"] == wd and seen["cwd_b"] == wd
+    assert wd in seen["prompt_a"] and wd in seen["prompt_b"]
+
+
+def test_b2b_no_workdir_backward_compatible(monkeypatch):
+    # 回归：不传 workdir 时 cwd 为 None、prompt 里不含工作目录行，行为与改动前一致。
+    seen = {}
+
+    async def fake_claude(prompt, model, effort="high", kind="arbitration", cwd=None):
+        seen["cwd_a"], seen["prompt_a"] = cwd, prompt
+        return ("job-a", "DONE\n好")
+
+    async def fake_codex(prompt, model, cwd=None):
+        seen["cwd_b"] = cwd
+        return ("job-b", "DONE\n好")
+
+    monkeypatch.setattr(arbiter, "_run_claude_oneshot", fake_claude)
+    monkeypatch.setattr(arbiter, "_run_codex_oneshot", fake_codex)
+
+    asyncio.run(arbiter.verify_back_to_back("目标", "完成标准", "产出", git_diff=""))
+    assert seen["cwd_a"] is None and seen["cwd_b"] is None
+    assert "【工作目录】" not in seen["prompt_a"]
+
+
 # ---------------- scheduler._run_dispatch_verify 分流 ----------------
 
 def _seed_verifying_subtask(need_arbitration=0):
@@ -91,8 +136,9 @@ def _seed_verifying_subtask(need_arbitration=0):
 def test_verify_routes_to_arbiter_when_need_arbitration(temp_db, monkeypatch):
     calls = {}
 
-    async def fake_b2b(goal, stop, produced, git_diff, session_id=None):
+    async def fake_b2b(goal, stop, produced, git_diff, session_id=None, workdir=None):
         calls["b2b"] = True
+        calls["workdir"] = workdir
         return True, "两评委都 DONE"
 
     async def fake_judge(*args, **kwargs):
@@ -107,6 +153,8 @@ def test_verify_routes_to_arbiter_when_need_arbitration(temp_db, monkeypatch):
 
     assert calls.get("b2b") is True
     assert "judge" not in calls
+    # 子会话 workdir（_seed_verifying_subtask 建库用的 /tmp）透传给背对背验收
+    assert calls.get("workdir") == "/tmp"
     sub = db.get_dispatch_subtask(sub_id)
     assert sub["status"] == "done"
     assert sub["verdict"] == "done"
