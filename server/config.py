@@ -153,9 +153,6 @@ TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "5"))
 # 首条 user 消息超过该字数则视为 skill 固定前言（编排指令），起标题时跳过前言只取附加需求。
 # 正常手输极少这么长；skill 前言（SKILL.md）动辄上千字。
 TITLE_SKIP_PREFIX_CHARS = int(os.environ.get("TITLE_SKIP_PREFIX_CHARS", "400"))
-# 用户消息回合数超过该阈值则视为长会话（话题多半已漂移），起标题时不再锚定首条消息，
-# 只用最近若干轮，让标题跟上会话最近在讨论什么。
-TITLE_ANCHOR_MAX_TURNS = int(os.environ.get("TITLE_ANCHOR_MAX_TURNS", "8"))
 
 # ---- 图片上传（手机拍照/截图发给 Agent）----
 # 存到会话 workdir 下的子目录，tclaude 用 Read 工具读图。
