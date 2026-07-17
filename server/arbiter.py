@@ -71,6 +71,10 @@ async def _run_codex_oneshot(prompt: str, model: str,
     m = model or config.CODEX_MODEL
     if m:
         cmd += ["-m", m]
+    # 推理深度：非空时通过 -c model_reasoning_effort=<level> 传给 codex CLI。
+    # 必须插在位置参数（prompt）之前。与 codex_runner._build_cmd 保持字面一致。
+    if config.CODEX_REASONING_EFFORT:
+        cmd += ["-c", f"model_reasoning_effort={config.CODEX_REASONING_EFFORT}"]
     cmd += [prompt]
 
     jid, text, stderr_text, status = await run_logged_oneshot(

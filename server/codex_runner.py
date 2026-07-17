@@ -18,14 +18,14 @@ JSONL 事件 → 上层消息 翻译：
 """
 import asyncio
 import json
-import logging
 import signal
 from typing import Awaitable, Callable
 
 from . import config
 from .claude_runner import _child_env, _kill_process_group, _STREAM_LIMIT
+from .logging_util import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 EventCallback = Callable[[dict], Awaitable[None]]
 
@@ -51,6 +51,10 @@ class CodexRunner:
         m = model or config.CODEX_MODEL
         if m:
             cmd += ["-m", m]
+        # 推理深度：非空时通过 -c model_reasoning_effort=<level> 传给 codex CLI。
+        # 必须插在位置参数（message）之前。
+        if config.CODEX_REASONING_EFFORT:
+            cmd += ["-c", f"model_reasoning_effort={config.CODEX_REASONING_EFFORT}"]
         cmd += [message]
         return cmd
 
