@@ -2382,6 +2382,7 @@
 
   function renderDispatchPlan(data) {
     const body = $("dispatch-body");
+    const planId = data.plan_id;
     const subtasks = data.subtasks || [];
     if (!subtasks.length) {
       body.innerHTML = '<div class="entity-empty"><div class="empty-emoji">🧭</div><div>没有拆解出子任务</div><div class="empty-sub">换个更具体的需求再试</div></div>';
@@ -2408,6 +2409,24 @@
       // done/failed 附带验收反馈文本（verdict 只是 done/failed 代码，已由徽章表达，此处展示可读反馈）。
       if ((st.status === "done" || st.status === "failed") && st.feedback) {
         li.appendChild(el("div", "e-desc", escapeHtml(st.feedback)));
+      }
+      // failed/error 是死态，给一个"重派"按钮：新起子会话重跑同一子任务，成功后回到轮询刷新。
+      if (st.status === "failed" || st.status === "error") {
+        const retryBtn = el("button", "e-tag tag-run", "重派");
+        retryBtn.style.cursor = "pointer";
+        retryBtn.onclick = async (e) => {
+          e.stopPropagation();
+          retryBtn.disabled = true;
+          try {
+            await api(`/api/dispatch/${encodeURIComponent(planId)}/subtasks/${encodeURIComponent(st.id)}/retry`, { method: "POST" });
+            toast("已重派", "success");
+            pollDispatch(planId, 0);
+          } catch (err) {
+            retryBtn.disabled = false;
+            toast("重派失败：" + err.message, "error");
+          }
+        };
+        li.appendChild(retryBtn);
       }
       if (st.child_session_id) {
         li.style.cursor = "pointer";
