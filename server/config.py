@@ -199,6 +199,9 @@ WECOM_TIMEOUT = float(os.environ.get("WECOM_TIMEOUT", "15"))
 
 # Agent 默认工作目录（它在哪个目录里干活）
 DEFAULT_WORKDIR = os.environ.get("AGENT_WORKDIR", str(BASE_DIR.parent))
+# agent-console 仓库自身根目录。会话 workdir 传 "@self" 时解析到这里，
+# 让团队开发 agent-console 时能拿到基于本仓库的 worktree 隔离。
+SELF_REPO_DIR = os.environ.get("SELF_REPO_DIR", str(BASE_DIR))
 
 # ---- Git Worktree 会话隔离 ----
 # 隔离会话的独立 worktree 目录都放这个根下，分支前缀 agent/。

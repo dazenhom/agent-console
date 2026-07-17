@@ -123,6 +123,8 @@ async def search_sessions(q: str = Query(...), scope: str = Query(default="conte
 async def create_session(payload: dict):
     title = payload.get("title", "新会话")
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
+    if workdir.strip() == "@self":
+        workdir = config.SELF_REPO_DIR
     mode = payload.get("mode") if payload.get("mode") in _VALID_MODES else None
     effort = payload.get("effort") if payload.get("effort") in _VALID_EFFORTS else None
     engine = payload.get("engine")
@@ -371,6 +373,8 @@ async def post_dispatch(payload: dict):
     if not request:
         raise HTTPException(status_code=400, detail="request 不能为空")
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
+    if workdir.strip() == "@self":
+        workdir = config.SELF_REPO_DIR
     plan_id = await dispatcher.dispatch(request, payload.get("session_id"), workdir,
                                         isolate=bool(payload.get("isolate")),
                                         need_arbitration=bool(payload.get("need_arbitration")))

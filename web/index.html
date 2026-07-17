@@ -142,6 +142,13 @@
                 <label>会话标题
                   <input id="nf-title" placeholder="例：排查训练 loss 异常" />
                 </label>
+                <label>目标
+                  <select id="nf-target">
+                    <option value="general" selected>通用工作区</option>
+                    <option value="self">本系统 agent-console 开发</option>
+                  </select>
+                </label>
+                <div class="agents-sub" id="nf-target-hint">选「本系统」会为该会话创建 agent-console 的独立 Git worktree + 分支。</div>
                 <label>工作目录（workdir）
                   <input id="nf-workdir" placeholder="留空用默认目录" />
                 </label>

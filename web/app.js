@@ -1786,17 +1786,28 @@
     const hint = $("nf-mode-price-hint");
     if (hint) hint.textContent = modePriceStr(e.target.value) || "";
   };
+  // 目标选「本系统」时强制隔离：自动勾上并禁用手动取消（走 agent-console 仓库的 worktree）
+  const nfTarget = $("nf-target");
+  if (nfTarget) nfTarget.onchange = (e) => {
+    const self = e.target.value === "self";
+    const iso = $("nf-isolate");
+    if (self) { iso.checked = true; iso.disabled = true; }
+    else { iso.disabled = false; }
+  };
   $("new-form").onsubmit = async (e) => {
     e.preventDefault();
     const title = $("nf-title").value.trim();
-    const workdir = $("nf-workdir").value.trim();
+    let workdir = $("nf-workdir").value.trim();
     const mode = $("nf-mode").value;
     const effort = $("nf-effort").value;
     const engine = $("nf-engine").value;
-    const isolate = $("nf-isolate").checked;
+    let isolate = $("nf-isolate").checked;
+    // 「本系统」：workdir 走 sentinel，后端解析到 agent-console 仓库根，并强制隔离
+    if (nfTarget && nfTarget.value === "self") { workdir = "@self"; isolate = true; }
     try {
       await createSession({ title, workdir, mode, effort, engine, isolate });
       $("new-form").reset();
+      $("nf-isolate").disabled = false;  // reset 不会清除 disabled，手动复位
       switchTab("overview");
       openDetail();
       toast("会话已创建", "success", 1600);
