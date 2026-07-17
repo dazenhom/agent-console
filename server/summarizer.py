@@ -139,8 +139,9 @@ async def _gen_title_haiku(convo: str, current_title: str = "") -> str:
             break
     # 清掉可能的引号/换行，限长
     result = re.sub(r"\s+", " ", result).strip().strip('"""')[:45]
-    # 模型判定话题仍延续时回固定标记 KEEP，转成空串让上层保留原标题
-    if result.strip().upper() == "KEEP":
+    # 模型判定话题仍延续时回固定标记 KEEP，转成空串让上层保留原标题。
+    # 先剥掉常见引号/书名号/结尾标点噪音再比对，兼容『KEEP』、KEEP。等变体（仅用于判断，不污染返回值）。
+    if re.sub(r"[\"'『』「」。.,!！]", "", result).strip().upper() == "KEEP":
         return ""
     return result
 
