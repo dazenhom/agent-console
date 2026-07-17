@@ -990,6 +990,14 @@ async def triage_to_todo(tid: str):
     return {"ok": True}
 
 
+# ---------------- Backlog 导入：mandatory-backlog.md → triage 收件箱 ----------------
+@app.post("/api/backlog/scan", dependencies=[Depends(require_auth)])
+async def backlog_scan(auto: bool = False):
+    from . import backlog_import
+    # scan_backlog 是同步函数（auto_dispatch 时内部用 asyncio.run 派单），放线程里跑避免阻塞事件循环
+    return await asyncio.to_thread(backlog_import.scan_backlog, auto_dispatch=auto)
+
+
 # ---------------- 智能任务看板：进展摘要 ----------------
 @app.post("/api/todos/{tid}/refresh_progress", dependencies=[Depends(require_auth)])
 async def todo_refresh_progress(tid: str, force: bool = False):
