@@ -2679,6 +2679,173 @@
   $("goal-back").onclick = closeGoalView;
   $("goal-new").onclick = () => openGoalForm(null);
 
+  // ---------------- 任务运行统一视图：观测四套机制（目标循环/智能分派/背对背仲裁/分流）的发起。
+  // 纯只读展示，只消费 GET /api/work_items[/{wid}]，绝不发起任何写操作。仿智能分派的列表+详情两态。
+  const WORK_ITEM_ORIGIN_LABEL = {
+    goal: "🎯 目标循环",
+    dispatch: "🧭 智能分派",
+    arbiter: "⚖ 背对背仲裁",
+    triage: "🔀 分流",
+  };
+  // work_item 聚合状态 → [徽章文案, 徽章样式类]。pending/running/done/exhausted/error 覆盖四套机制的全部落态。
+  const WORK_ITEM_STATUS_LABEL = {
+    pending: ["待启动", ""],
+    running: ["运行中", "tag-run"],
+    done: ["已完成", "tag-good"],
+    exhausted: ["已耗尽", "tag-warn"],
+    error: ["出错", "tag-warn"],
+  };
+  function fmtWorkItemStatus(status) {
+    return WORK_ITEM_STATUS_LABEL[status] || [status || "-", ""];
+  }
+
+  function openWorkItemsView() {
+    $("app-view").classList.add("hidden");
+    $("work-items-view").classList.remove("hidden");
+    showWorkItemsList();
+  }
+  function closeWorkItemsView() {
+    $("work-items-view").classList.add("hidden");
+    $("app-view").classList.remove("hidden");
+  }
+
+  async function showWorkItemsList() {
+    const body = $("work-items-body");
+    body.innerHTML = '<div class="entity-loading">加载中…</div>';
+    const origin = $("work-items-origin").value;
+    const status = $("work-items-status").value;
+    const qs = new URLSearchParams();
+    if (origin) qs.set("origin", origin);
+    if (status) qs.set("status", status);
+    qs.set("limit", "50");
+    try {
+      const items = await api("/api/work_items?" + qs.toString());
+      body.innerHTML = "";
+      if (!items.length) {
+        body.innerHTML = '<div class="entity-empty"><div class="empty-emoji">🗂</div><div>没有任务运行记录</div><div class="empty-sub">换个筛选条件，或等四套机制发起后再看</div></div>';
+        return;
+      }
+      const ul = el("ul", "entity-list");
+      for (const it of items) {
+        const [label, cls] = fmtWorkItemStatus(it.status);
+        const li = el("li");
+        if (it.status === "error") li.classList.add("error");
+        const head = el("div", "e-head");
+        head.appendChild(el("span", "e-name", escapeHtml((it.summary || "").slice(0, 60) || "（无摘要）")));
+        head.appendChild(el("span", "e-tag " + cls, escapeHtml(label)));
+        li.appendChild(head);
+        li.appendChild(el("div", "e-desc",
+          `${escapeHtml(WORK_ITEM_ORIGIN_LABEL[it.origin] || it.origin || "-")} · ${escapeHtml(it.topology || "-")} · ${escapeHtml(fmtTime(it.created_at))}`));
+        li.style.cursor = "pointer";
+        li.onclick = () => openWorkItemDetail(it.id);
+        ul.appendChild(li);
+      }
+      body.appendChild(ul);
+    } catch (e) {
+      body.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function openWorkItemDetail(wid) {
+    const body = $("work-items-body");
+    body.innerHTML = '<div class="entity-loading">加载中…</div>';
+    try {
+      const it = await api("/api/work_items/" + encodeURIComponent(wid));
+      renderWorkItemDetail(it);
+    } catch (e) {
+      body.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderWorkItemDetail(it) {
+    const body = $("work-items-body");
+    body.innerHTML = "";
+    const back = el("button", "mini-btn", "← 返回列表");
+    back.style.marginBottom = "10px";
+    back.onclick = showWorkItemsList;
+    body.appendChild(back);
+
+    const [label, cls] = fmtWorkItemStatus(it.status);
+    const ul = el("ul", "entity-list");
+    const li = el("li");
+    if (it.status === "error") li.classList.add("error");
+    const head = el("div", "e-head");
+    head.appendChild(el("span", "e-name", escapeHtml((it.summary || "").slice(0, 80) || "（无摘要）")));
+    head.appendChild(el("span", "e-tag " + cls, escapeHtml(label)));
+    li.appendChild(head);
+    li.appendChild(el("div", "e-desc",
+      `来源：${escapeHtml(WORK_ITEM_ORIGIN_LABEL[it.origin] || it.origin || "-")} · 拓扑：${escapeHtml(it.topology || "-")}`));
+    li.appendChild(el("div", "e-desc",
+      `隔离：${escapeHtml(it.isolation || "-")} · 验收：${escapeHtml(it.verify_mode || "-")}`));
+    li.appendChild(el("div", "e-desc",
+      `创建：${escapeHtml(fmtTime(it.created_at))} · 更新：${escapeHtml(fmtTime(it.updated_at))}`));
+    ul.appendChild(li);
+    body.appendChild(ul);
+
+    // 关联来源摘要：后端按 origin 尽力反查，related 为 null 表示无关联或反查失败。
+    body.appendChild(el("div", "exp-sub-head", "关联来源"));
+    renderWorkItemRelated(body, it.related);
+  }
+
+  function renderWorkItemRelated(body, related) {
+    if (!related) {
+      body.appendChild(el("div", "entity-empty", "无法关联到具体来源"));
+      return;
+    }
+    const ul = el("ul", "entity-list");
+    if (related.kind === "schedule") {
+      // 目标循环 / 分流：进度快照。
+      const [label, cls] = fmtGoalStatus(related.goal_status);
+      const li = el("li");
+      const head = el("div", "e-head");
+      head.appendChild(el("span", "e-name", "循环进度"));
+      head.appendChild(el("span", "e-tag " + cls, escapeHtml(label)));
+      if (!related.enabled) head.appendChild(el("span", "e-tag tag-warn", "已停用"));
+      li.appendChild(head);
+      li.appendChild(el("div", "e-desc",
+        `迭代 ${related.iter_count || 0}/${related.max_iterations || 10}`));
+      ul.appendChild(li);
+    } else if (related.kind === "dispatch_subtasks") {
+      // 智能分派：子任务清单，复用子任务判定状态徽章。
+      const subs = related.subtasks || [];
+      if (!subs.length) {
+        body.appendChild(el("div", "entity-empty", "没有子任务"));
+        return;
+      }
+      for (const st of subs) {
+        const li = el("li");
+        if (st.status === "error") li.classList.add("error");
+        const head = el("div", "e-head");
+        head.appendChild(el("span", "e-name", escapeHtml(st.title || "（无标题）")));
+        const sm = DISPATCH_STATUS_LABEL[st.status];
+        if (sm) head.appendChild(el("span", "e-tag " + sm[1], escapeHtml(sm[0])));
+        li.appendChild(head);
+        if (st.session_status) li.appendChild(el("div", "e-desc", escapeHtml("子会话：" + st.session_status)));
+        ul.appendChild(li);
+      }
+    } else if (related.kind === "arbitration") {
+      // 背对背仲裁：结论。
+      const li = el("li");
+      const head = el("div", "e-head");
+      head.appendChild(el("span", "e-name", "仲裁结论"));
+      head.appendChild(el("span", "e-tag", escapeHtml(related.status || "-")));
+      li.appendChild(head);
+      if (related.verdict) li.appendChild(el("div", "e-desc", escapeHtml(related.verdict)));
+      ul.appendChild(li);
+    } else {
+      body.appendChild(el("div", "entity-empty", "无法关联到具体来源"));
+      return;
+    }
+    body.appendChild(ul);
+  }
+
+  $("open-work-items-btn").onclick = openWorkItemsView;
+  $("work-items-back").onclick = closeWorkItemsView;
+  $("work-items-refresh").onclick = showWorkItemsList;
+  $("work-items-origin").onchange = showWorkItemsList;
+  $("work-items-status").onchange = showWorkItemsList;
+
+
   // SwanLab iframe 面板
   const SWANLAB_DEFAULT = "@Speech_Model/zhihangxu_ct_exp";
   function openSwanlab() {

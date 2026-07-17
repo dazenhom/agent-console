@@ -226,6 +226,7 @@
               <button id="open-artifacts-btn" class="manage-entry">📦 产出物</button>
               <button id="open-arb-btn" class="manage-entry">⚖ 背对背仲裁</button>
               <button id="open-dispatch-btn" class="manage-entry">🧭 智能分派</button>
+              <button id="open-work-items-btn" class="manage-entry">🗂 任务运行</button>
               <button id="open-swanlab-btn" class="manage-entry">📊 SwanLab</button>
               <button id="secretary-trigger-btn" class="manage-entry">🤖 立即生成日报</button>
               <button id="notify-toggle" class="manage-entry">🔔 完成提醒：关</button>
@@ -376,12 +377,41 @@
     </main>
   </div>
 
+  <!-- 任务运行统一视图（观测四套机制的发起，纯只读展示） -->
+  <div id="work-items-view" class="view manage-view hidden">
+    <header class="topbar">
+      <button id="work-items-back" class="icon-btn" aria-label="返回">&#8592;</button>
+      <div class="topbar-title">任务运行</div>
+      <select id="work-items-origin" title="按来源筛选"
+              style="margin:0 4px;padding:4px 8px;border-radius:6px;border:1px solid var(--line);font-size:13px;background:var(--bg-2);color:var(--fg)">
+        <option value="">全部来源</option>
+        <option value="goal">目标循环</option>
+        <option value="dispatch">智能分派</option>
+        <option value="arbiter">背对背仲裁</option>
+        <option value="triage">分流</option>
+      </select>
+      <select id="work-items-status" title="按状态筛选"
+              style="margin:0 4px 0 0;padding:4px 8px;border-radius:6px;border:1px solid var(--line);font-size:13px;background:var(--bg-2);color:var(--fg)">
+        <option value="">全部状态</option>
+        <option value="pending">待启动</option>
+        <option value="running">运行中</option>
+        <option value="done">已完成</option>
+        <option value="exhausted">已耗尽</option>
+        <option value="error">出错</option>
+      </select>
+      <button id="work-items-refresh" class="mini-btn">刷新</button>
+    </header>
+    <main class="manage-body">
+      <div id="work-items-body"></div>
+    </main>
+  </div>
+
   <!-- 浮层容器：toast 通知 + 模态确认框 -->
   <div id="memo-banner-root"></div>
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=68"></script>
+  <script src="app.js?v=69"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
