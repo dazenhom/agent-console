@@ -225,6 +225,38 @@ async def remove_session(sid: str):
     return {"ok": True}
 
 
+def _claimed_worktree_branches() -> set[str]:
+    """当前 sessions 表里被占用的 worktree 分支集合（含归档/秘书会话——只要记录在就算认领）。"""
+    rows = db._query(
+        "SELECT DISTINCT worktree_branch FROM sessions"
+        " WHERE worktree_branch IS NOT NULL AND worktree_branch != ''"
+    )
+    return {r["worktree_branch"] for r in rows}
+
+
+@app.get("/api/worktrees/orphans", dependencies=[Depends(require_auth)])
+async def list_worktree_orphans():
+    """列出孤儿 agent/* 分支：仓库里存在但没有任何会话记录认领的分支（会话已删、分支残留）。
+    只读维护接口，供 ops/管理员手动清理用，无前端 UI。"""
+    branches = await asyncio.to_thread(worktree.list_agent_branches, config.SELF_REPO_DIR)
+    claimed = _claimed_worktree_branches()
+    orphans = [b for b in branches if b["branch"] not in claimed]
+    return {"orphans": orphans}
+
+
+@app.delete("/api/worktrees/orphans/{branch_name:path}", dependencies=[Depends(require_auth)])
+async def delete_worktree_orphan(branch_name: str):
+    """删除一个孤儿 agent/* 分支（git branch -D）。删除前再次核实未被会话占用，防 race。"""
+    if not worktree.is_agent_branch(branch_name):
+        raise HTTPException(status_code=400, detail="分支名不合法（仅允许 agent/<name> 形态）")
+    if branch_name in _claimed_worktree_branches():
+        raise HTTPException(status_code=409, detail="该分支已被会话占用，拒绝删除")
+    ok, err = await asyncio.to_thread(worktree.delete_branch, config.SELF_REPO_DIR, branch_name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"删除分支失败：{err}")
+    return {"ok": True, "branch": branch_name}
+
+
 @app.post("/api/sessions/{sid}/archive", dependencies=[Depends(require_auth)])
 async def archive_session(sid: str):
     if not db.get_session(sid):

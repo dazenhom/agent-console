@@ -88,3 +88,60 @@ def prune(base) -> None:
         _run(["git", "-C", base, "worktree", "prune"])
     except Exception as e:
         log.warning("worktree prune 异常：%s", e)
+
+
+# 分支名白名单：只放行 create() 生成的 agent/<slug>-<hash> 形态，
+# 严防传给 git 命令的分支名夹带注入/穿越字符。
+_BRANCH_RE = re.compile(r"^agent/[A-Za-z0-9._-]+$")
+
+
+def is_agent_branch(branch: str) -> bool:
+    return bool(_BRANCH_RE.match(branch or ""))
+
+
+def list_agent_branches(base) -> list[dict]:
+    """列出仓库内所有 agent/* 分支及最后提交信息。非 git 仓库或失败返回空列表。
+    每条：{branch, last_commit_at(%cI), last_commit_hash(%h)}。"""
+    if not is_git_repo(base):
+        return []
+    try:
+        r = _run(["git", "-C", base, "branch", "--list", "agent/*",
+                  "--format=%(refname:short)"])
+    except Exception as e:
+        log.warning("list agent branches 异常：%s", e)
+        return []
+    if r.returncode != 0:
+        log.warning("list agent branches 失败：%s", r.stderr.strip())
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        br = line.strip()
+        if not br:
+            continue
+        commit_at, commit_hash = "", ""
+        try:
+            # %cI（严格 ISO 提交时间）与 %h（简写 hash）用 NUL 分隔，避免时间串里出现分隔符歧义
+            info = _run(["git", "-C", base, "log", "-1", "--format=%cI%x00%h", br])
+            if info.returncode == 0 and info.stdout.strip():
+                commit_at, _, commit_hash = info.stdout.strip().partition("\x00")
+        except Exception as e:
+            log.warning("读取分支 %s 提交信息异常：%s", br, e)
+        out.append({"branch": br, "last_commit_at": commit_at, "last_commit_hash": commit_hash})
+    return out
+
+
+def delete_branch(base, branch: str) -> tuple[bool, str]:
+    """强制删除一个 agent/* 分支（git branch -D）。分支名必须过白名单再传给 git。
+    返回 (ok, err)：成功 (True, "")，失败 (False, 原因)。"""
+    if not is_agent_branch(branch):
+        return False, "分支名不合法（仅允许 agent/<name> 形态）"
+    if not is_git_repo(base):
+        return False, "目标不是 Git 仓库"
+    try:
+        r = _run(["git", "-C", base, "branch", "-D", branch])
+    except Exception as e:
+        log.warning("delete branch %s 异常：%s", branch, e)
+        return False, str(e)
+    if r.returncode != 0:
+        return False, r.stderr.strip()
+    return True, ""
