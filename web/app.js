@@ -2613,6 +2613,7 @@
   }
 
   async function loadGoalDetail(id) {
+    stopGoalPoll();
     _goalCurrentId = id;
     try {
       // 直接拉 /api/goals/{id}：返回体即 schedule 本体 + iterations（每轮迭代历史）+ subtasks（planned 子任务）
