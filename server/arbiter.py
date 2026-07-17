@@ -115,8 +115,21 @@ def _build_arbitration_prompt(question: str, model_a: str, result_a: str,
     )
 
 
+def _broadcast_arb_stage(arb_id: str, stage: str) -> None:
+    """向 monitor 通道推一条仲裁阶段进展（fire-and-forget，异常吞掉绝不影响仲裁主流程，
+    写法与 scheduler._broadcast_goal_progress 一脉相承）。"""
+    from .session_hub import hub
+    try:
+        asyncio.ensure_future(hub.broadcast_monitor({
+            "type": "arbitration_progress", "arb_id": arb_id, "stage": stage,
+        }))
+    except Exception:
+        pass
+
+
 async def run_arbitration(arb_id: str) -> None:
-    """背对背跑 A/B 两版方案，再综合仲裁。整体 try 包裹，异常置 error。"""
+    """背对背跑 A/B 两版方案，再综合仲裁。整体 try 包裹，异常置 error。
+    全程分阶段打 stage 并广播 arbitration_progress，供前端实时点亮各卡片。"""
     arb = db.get_arbitration(arb_id)
     if not arb:
         return
@@ -137,27 +150,40 @@ async def run_arbitration(arb_id: str) -> None:
     model_a = arb.get("model_a") or config.CLAUDE_MODEL_SUPER
     model_b = arb.get("model_b") or (config.CODEX_MODEL or (config.CODEX_MODELS[0] if config.CODEX_MODELS else ""))
     try:
-        # A/B 背对背并发；任一路异常/失败都不拖垮另一路（gather 用 return_exceptions）
-        (res_a, res_b) = await asyncio.gather(
-            _run_claude_oneshot(question, model_a, effort="high", kind="arbitration_a"),
-            _run_codex_oneshot(question, model_b),
-            return_exceptions=True,
-        )
-        if isinstance(res_a, Exception):
-            job_a, text_a = "", f"（该方案生成失败：{res_a}）"
-        else:
-            job_a, text_a = res_a
-            if not text_a:
-                text_a = "（该方案生成失败：无输出）"
-        if isinstance(res_b, Exception):
-            job_b, text_b = "", f"（该方案生成失败：{res_b}）"
-        else:
-            job_b, text_b = res_b
-            if not text_b:
-                text_b = "（该方案生成失败：无输出）"
+        # 进入 A/B 背对背阶段：先落 stage 再广播，前端据此把两张方案卡切到"生成中"
+        db.update_arbitration(arb_id, stage="running_ab")
+        _broadcast_arb_stage(arb_id, "running_ab")
 
-        db.update_arbitration(arb_id, result_a=text_a, job_a_id=job_a,
-                              result_b=text_b, job_b_id=job_b)
+        # A/B 各自跑完立即单独落库 + 广播各自 stage，让前端逐卡片点亮，不必等两路都完成。
+        # 每路自带 try/except：任一路异常/无输出写占位文本，绝不拖垮另一路（沿用原降级语义）。
+        async def _run_a() -> str:
+            try:
+                job_a, text_a = await _run_claude_oneshot(
+                    question, model_a, effort="high", kind="arbitration_a")
+                if not text_a:
+                    text_a = "（该方案生成失败：无输出）"
+            except Exception as e:
+                job_a, text_a = "", f"（该方案生成失败：{e}）"
+            db.update_arbitration(arb_id, result_a=text_a, job_a_id=job_a, stage="a_done")
+            _broadcast_arb_stage(arb_id, "a_done")
+            return text_a
+
+        async def _run_b() -> str:
+            try:
+                job_b, text_b = await _run_codex_oneshot(question, model_b)
+                if not text_b:
+                    text_b = "（该方案生成失败：无输出）"
+            except Exception as e:
+                job_b, text_b = "", f"（该方案生成失败：{e}）"
+            db.update_arbitration(arb_id, result_b=text_b, job_b_id=job_b, stage="b_done")
+            _broadcast_arb_stage(arb_id, "b_done")
+            return text_b
+
+        text_a, text_b = await asyncio.gather(_run_a(), _run_b())
+
+        # 两路都完成 → 进入综合仲裁阶段
+        db.update_arbitration(arb_id, stage="arbitrating")
+        _broadcast_arb_stage(arb_id, "arbitrating")
 
         # 综合仲裁：走统一验收入口的 candidates 策略（内部仍用更强的 ARBITER_MODEL）
         from . import verifier
@@ -167,14 +193,17 @@ async def run_arbitration(arb_id: str) -> None:
         )
         if not verdict:
             verdict = "（仲裁生成失败：无输出）"
-        db.update_arbitration(arb_id, verdict=verdict, job_final_id=job_final, status="done")
+        db.update_arbitration(arb_id, verdict=verdict, job_final_id=job_final,
+                              status="done", stage="done")
+        _broadcast_arb_stage(arb_id, "done")
         try:
             db.update_work_item_status_by_ref(arb_id, "done")
         except Exception:
             pass
     except Exception as e:
         print(f"[arbiter] run_arbitration error: {type(e).__name__}: {e}")
-        db.update_arbitration(arb_id, status="error", error=str(e))
+        db.update_arbitration(arb_id, status="error", error=str(e), stage="error")
+        _broadcast_arb_stage(arb_id, "error")
         try:
             db.update_work_item_status_by_ref(arb_id, "error")
         except Exception:

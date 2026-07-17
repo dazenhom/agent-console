@@ -181,6 +181,7 @@ def init_db() -> None:
                 engine_a TEXT, model_a TEXT, result_a TEXT, job_a_id TEXT,
                 engine_b TEXT, model_b TEXT, result_b TEXT, job_b_id TEXT,
                 arbiter_model TEXT, verdict TEXT, job_final_id TEXT,
+                stage TEXT DEFAULT '',  -- 仲裁阶段进展：''/pending/running_ab/a_done/b_done/arbitrating/done/error
                 error TEXT,
                 created_at REAL, updated_at REAL
             );
@@ -316,6 +317,8 @@ def init_db() -> None:
         _add_col("goal_subtasks", "work_item_id TEXT DEFAULT ''")
         _add_col("dispatch_subtasks", "work_item_id TEXT DEFAULT ''")
         _add_col("arbitrations", "work_item_id TEXT DEFAULT ''")
+        # 背对背仲裁阶段进展：running_ab / a_done / b_done / arbitrating / done / error，供前端分卡片显示实时文案
+        _add_col("arbitrations", "stage TEXT DEFAULT ''")
         # 第五步：dispatch 完成判定——给子任务补验收结果/反馈两列。status 取值扩展为
         # dispatched → verifying → done/failed（error 保留：仅建子会话本身失败）。
         _add_col("dispatch_subtasks", "verdict TEXT DEFAULT ''")
@@ -1078,7 +1081,7 @@ def list_arbitrations(limit: int = 50) -> list[dict]:
 
 def update_arbitration(aid: str, **fields) -> bool:
     allowed = {"status", "result_a", "job_a_id", "result_b", "job_b_id",
-               "verdict", "job_final_id", "error", "work_item_id", "updated_at"}
+               "verdict", "job_final_id", "error", "work_item_id", "stage", "updated_at"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False

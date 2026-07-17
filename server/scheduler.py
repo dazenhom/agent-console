@@ -163,6 +163,7 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
         # 会话已空闲 → 转 verifying（先落库再起后台任务，防重复触发）
         db.update_schedule(scid, goal_status="verifying",
                            next_run=compute_next_run("goal", None, None, after=now))
+        _broadcast_goal_progress(scid)
         asyncio.ensure_future(_run_goal_verify(scid))
         return
 
@@ -193,6 +194,7 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
         return
     db.update_schedule(scid, goal_status="producing", iter_count=iter_count + 1,
                        last_run=now, next_run=compute_next_run("goal", None, None, after=now))
+    _broadcast_goal_progress(scid)
     # 记录本轮迭代历史：start_turn 内已同步落 tasks 记录，此刻取回即为本轮任务
     # 阶段4：顺手关联 work_item（按 schedule id 反查影子记录），拿不到就留空，不影响主流程
     try:
@@ -323,6 +325,7 @@ async def _run_goal_verify(scid: str) -> None:
                                f"已达迭代上限（{max_iter} 轮）：{reason}")
         else:
             db.update_schedule(scid, goal_status="running", last_feedback=reason)
+            _broadcast_goal_progress(scid)
     except Exception as e:
         db.update_schedule(scid, goal_status="running",
                           last_feedback=f"[verify异常:{type(e).__name__}]")
@@ -331,6 +334,26 @@ async def _run_goal_verify(scid: str) -> None:
         if iteration and iteration.get("status") == "producing":
             db.update_goal_iteration(iteration["id"], status="error",
                                      feedback=f"[verify异常:{type(e).__name__}]", ended_at=time.time())
+
+
+def _broadcast_goal_progress(scid: str) -> None:
+    """向 monitor 通道推一条目标循环阶段进展（fire-and-forget，异常吞掉绝不影响状态机主流程，
+    写法参照 _finish_goal 里的 goal_update 广播）。就地按 id 取最新 schedule 再推，
+    避免用调用处已过期的 sch 快照。"""
+    from .session_hub import hub
+    try:
+        sch = db.get_schedule(scid)
+        if not sch:
+            return
+        asyncio.ensure_future(hub.broadcast_monitor({
+            "type": "goal_progress",
+            "schedule_id": scid,
+            "goal_status": sch.get("goal_status"),
+            "iter_count": sch.get("iter_count"),
+            "active_subtask_id": sch.get("active_subtask_id"),
+        }))
+    except Exception:
+        pass
 
 
 async def _finish_goal(scid: str, sess: dict, status: str, reason: str) -> None:
@@ -428,6 +451,7 @@ async def _tick_goal_planned(sch: dict, sess: dict, now: float) -> None:
             return
         db.update_schedule(scid, goal_status="verifying",
                            next_run=compute_next_run("goal", None, None, after=now))
+        _broadcast_goal_progress(scid)
         asyncio.ensure_future(_run_goal_verify_planned(scid))
         return
 
@@ -452,6 +476,7 @@ async def _tick_goal_planned(sch: dict, sess: dict, now: float) -> None:
         # 子任务已全部处理完 → 整体收尾验收一次（用 verify_command + verifier 对总目标判定）
         db.update_schedule(scid, goal_status="verifying", plan_status="finalizing",
                            next_run=compute_next_run("goal", None, None, after=now))
+        _broadcast_goal_progress(scid)
         asyncio.ensure_future(_run_goal_verify_planned(scid))
         return
 
@@ -468,6 +493,7 @@ async def _tick_goal_planned(sch: dict, sess: dict, now: float) -> None:
     db.update_schedule(scid, goal_status="producing", active_subtask_id=nxt["id"],
                        iter_count=iter_count + 1, last_run=now,
                        next_run=compute_next_run("goal", None, None, after=now))
+    _broadcast_goal_progress(scid)
     # 阶段4：顺手关联 work_item（按 schedule id 反查），拿不到留空，不影响主流程
     try:
         _wid = db.work_item_id_for_ref(scid) or ""
@@ -594,6 +620,7 @@ async def _run_goal_verify_planned(scid: str) -> None:
             await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）：{reason}")
         else:
             db.update_schedule(scid, goal_status="running", active_subtask_id="", last_feedback=reason)
+            _broadcast_goal_progress(scid)
     except Exception as e:
         db.update_schedule(scid, goal_status="running", active_subtask_id="",
                            last_feedback=f"[verify异常:{type(e).__name__}]")
