@@ -197,6 +197,8 @@ def init_db() -> None:
                 status TEXT,            -- dispatched / verifying / done / failed / error
                 verdict TEXT DEFAULT '',   -- 完成判定结果：done / failed
                 feedback TEXT DEFAULT '',  -- 验收反馈文本
+                base_workdir TEXT DEFAULT '', -- 该子任务派发时的原始工作目录（worktree 取 repo 根，共享取 workdir），重派据此复位
+                isolate INTEGER DEFAULT 0, -- 是否 worktree 隔离，重派据此决定新会话隔离方式
                 created_at REAL, updated_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_dispatch_plan ON dispatch_subtasks(plan_id);
@@ -317,6 +319,10 @@ def init_db() -> None:
         # dispatched → verifying → done/failed（error 保留：仅建子会话本身失败）。
         _add_col("dispatch_subtasks", "verdict TEXT DEFAULT ''")
         _add_col("dispatch_subtasks", "feedback TEXT DEFAULT ''")
+        # 重派工作目录锚定：子任务自存派发时的原始工作目录与隔离选择，避免旧子会话被删/字段
+        # 为空时退回共享大目录、新会话探索到不相关项目。老库补列，历史数据该列为空（重派回退旧逻辑）。
+        _add_col("dispatch_subtasks", "base_workdir TEXT DEFAULT ''")
+        _add_col("dispatch_subtasks", "isolate INTEGER DEFAULT 0")
         # 旧库的 reports 表无 UNIQUE 约束。SQLite 不支持 ADD CONSTRAINT，
         # 改用唯一索引补上去重保护（重复 report_date+report_type 再插入会被拦）。
         _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(report_date, report_type)")

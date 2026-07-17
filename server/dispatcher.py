@@ -229,6 +229,7 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                 title=st["title"], instruction=st["instruction"], category=category,
                 engine=engine, model=model, child_session_id=child["id"],
                 status="dispatched", work_item_id=work_item_id,
+                base_workdir=(wt_base if is_wt else wd), isolate=(1 if is_wt else 0),
             )
             # 后台起跑，不 await 阻塞后续子任务的建立
             asyncio.ensure_future(_fire_subtask(child["id"], st["instruction"], subtask["id"]))
@@ -239,6 +240,7 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                 title=st.get("title", ""), instruction=st.get("instruction", ""),
                 category=category, engine=engine, model=model,
                 child_session_id="", status="error", work_item_id=work_item_id,
+                base_workdir=workdir, isolate=(1 if isolate else 0),
             )
     return plan_id
 
@@ -249,21 +251,26 @@ async def retry_subtask(subtask_id: str) -> dict | None:
     _tick_fanout 在下一次 tick 自动接管完成判定（无需额外触发）。
 
     只允许对终态 failed/error 的子任务重派，正在跑的 dispatched/verifying 不动，避免误重派。
-    沿用原子任务已存的 engine/model（不二次路由，避免同一子任务两次派发结果漂移），以及原子
-    会话的隔离选择与基准目录（从旧子会话读，不依赖 work_items）。不可重派 → 返回 None；
-    新建会话失败记 status=error 后抛出，由路由层处理。
+    沿用原子任务已存的 engine/model（不二次路由，避免同一子任务两次派发结果漂移），以及首次
+    派发时落库的隔离选择与基准目录（base_workdir/isolate；历史数据缺失则回退反查旧子会话，
+    均不依赖 work_items）。不可重派 → 返回 None；新建会话失败记 status=error 后抛出，由路由层处理。
     """
     sub = db.get_dispatch_subtask(subtask_id)
     if not sub or sub.get("status") not in ("failed", "error"):
         return None
 
-    # 隔离选择 + 基准目录沿用原子会话：worktree 会话取其 worktree_base 作 repo 根再隔离一份，
-    # 共享会话直接复用其 workdir。旧会话不存在（理论不该发生）则退回默认共享工作区。
-    old_sess = db.get_session(sub.get("child_session_id") or "") or {}
-    if old_sess.get("is_worktree"):
-        base, isolate = old_sess.get("worktree_base") or config.DEFAULT_WORKDIR, True
+    # 工作目录锚定：优先用子任务自存的 base_workdir/isolate（首次派发时落库），保证重派新会话
+    # 落回同一原始目录，不会飘到共享大目录里的不相关项目。历史存量数据没有这两字段（base_workdir
+    # 为空）→ 回退反查旧子会话：worktree 取其 worktree_base 作 repo 根再隔离一份，共享复用其
+    # workdir；旧会话不存在（理论不该发生）则退回默认共享工作区。
+    if sub.get("base_workdir"):
+        base, isolate = sub["base_workdir"], bool(sub.get("isolate"))
     else:
-        base, isolate = old_sess.get("workdir") or config.DEFAULT_WORKDIR, False
+        old_sess = db.get_session(sub.get("child_session_id") or "") or {}
+        if old_sess.get("is_worktree"):
+            base, isolate = old_sess.get("worktree_base") or config.DEFAULT_WORKDIR, True
+        else:
+            base, isolate = old_sess.get("workdir") or config.DEFAULT_WORKDIR, False
 
     engine, model = sub.get("engine") or "claude", sub.get("model") or config.CLAUDE_MODEL_STRONG
     title, instruction = sub.get("title") or "", sub.get("instruction") or ""
