@@ -660,7 +660,7 @@
     const parts = String(workdir).replace(/\/$/, "").split("/");
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : workdir;
   }
-  const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","hy3-preview-ioa"];
+  const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","hy3-preview-ioa"];
   const CLAUDE_MODELS = [
     "claude-glm-5.2","claude-glm-5.2[1m]",
     "claude-sonnet-4-6","claude-sonnet-4-6[1m]",
@@ -714,6 +714,7 @@
       "claude-deepseek-v4-flash[1m]": "DeepSeek V4 Flash 长文",
       // codex 模型
       "gpt-5.6-sol": "GPT-5.6 Sol",
+      "gpt-5.5": "GPT-5.5",
       "gpt-5.4": "GPT-5.4",
       "gpt-5.3-codex": "GPT-5.3 Codex",
       "gpt-5.1-codex": "GPT-5.1 Codex",
@@ -2112,25 +2113,28 @@
   $("refresh-tasks").onclick = loadTasks;
 
   // ---------------- 快捷指令 chip ----------------
-  async function loadSnippets() {
+  // 拉取快捷指令渲染成 chip 行：点击把 s.text 追加进指定 textarea。
+  // composer 与仲裁/分派/目标循环弹窗共用，避免各处重复取数逻辑。
+  async function renderSnippetChipsInto(barEl, textareaEl) {
+    if (!barEl || !textareaEl) return;
     try {
       const snippets = await api("/api/snippets");
-      const bar = $("snippet-bar");
-      bar.innerHTML = "";
-      if (!snippets || !snippets.length) { bar.classList.add("hidden"); return; }
+      barEl.innerHTML = "";
+      if (!snippets || !snippets.length) { barEl.classList.add("hidden"); return; }
       for (const s of snippets) {
         const chip = el("button", "snippet-chip", escapeHtml(s.label || s.id));
         chip.onclick = () => {
-          const cur = input.value.trim();
-          input.value = cur ? cur + "\n" + s.text : s.text;
-          input.focus();
-          input.dispatchEvent(new Event("input"));
+          const cur = textareaEl.value.trim();
+          textareaEl.value = cur ? cur + "\n" + s.text : s.text;
+          textareaEl.focus();
+          textareaEl.dispatchEvent(new Event("input"));
         };
-        bar.appendChild(chip);
+        barEl.appendChild(chip);
       }
-      bar.classList.remove("hidden");
+      barEl.classList.remove("hidden");
     } catch (e) { /* ignore，快捷指令非关键路径 */ }
   }
+  async function loadSnippets() { await renderSnippetChipsInto($("snippet-bar"), input); }
 
   // ---------------- 管理面板（记忆库 / 子智能体共用） ----------------
   // kind: "memory" | "agent"，决定接口路径、字段、渲染方式
@@ -2163,9 +2167,12 @@
 
   // ---------------- 背对背仲裁 + 智能分派：文本输入弹窗 ----------------
   // 复用 modal-root 风格（同 confirmDialog），返回 Promise<string|null>。
-  function promptText(title, placeholder, okText = "确定", checkboxLabel = "") {
+  function promptText(title, placeholder, okText = "确定", checkboxLabel = "", opts = {}) {
     // checkboxLabel 非空时额外渲染一个勾选框，并以 { text, checked } 形式 resolve；
     // 否则保持旧行为，直接 resolve 文本字符串（背对背仲裁等调用方依赖此签名）。
+    // opts.snippets / opts.attachments 打开时，在弹窗内渲染快捷指令 chip 行与附件按钮，
+    // 附件用弹窗局部 pending 数组（绝不碰全局 state.pendingImages，避免污染 composer 草稿），
+    // 提交时按 send() 同规则把附件路径前置到返回文本；不传 opts 时旧行为完全不变。
     return new Promise((resolve) => {
       const root = $("modal-root");
       root.innerHTML = "";
@@ -2176,9 +2183,19 @@
              <span>${escapeHtml(checkboxLabel)}</span>
            </label>`
         : "";
+      const snippetHtml = opts.snippets ? `<div id="pt-snippet-bar" class="snippet-bar hidden"></div>` : "";
+      const attachHtml = opts.attachments
+        ? `<div style="display:flex">
+             <button id="pt-attach-btn" class="img-btn" type="button" title="上传附件">&#128206;</button>
+             <input id="pt-file-input" type="file" multiple hidden />
+           </div>
+           <div id="pt-tray" class="img-tray hidden"></div>`
+        : "";
       card.innerHTML = `<div class="modal-title">${escapeHtml(title)}</div>
         <div class="entity-form" style="gap:12px">
           <textarea id="pt-input" class="form-input tall" rows="4" placeholder="${escapeAttr(placeholder)}"></textarea>
+          ${snippetHtml}
+          ${attachHtml}
           ${cbHtml}
         </div>
         <div class="modal-actions">
@@ -2190,12 +2207,28 @@
       requestAnimationFrame(() => root.classList.add("show"));
       const close = (val) => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); resolve(val); };
       setTimeout(() => { const t = $("pt-input"); if (t) t.focus(); }, 50);
+      // 快捷指令 / 附件（局部 pending，随弹窗销毁）
+      const ptPending = [];
+      if (opts.snippets) renderSnippetChipsInto(card.querySelector("#pt-snippet-bar"), card.querySelector("#pt-input"));
+      if (opts.attachments) {
+        const attachBtn = card.querySelector("#pt-attach-btn");
+        const fileInp = card.querySelector("#pt-file-input");
+        const tray = card.querySelector("#pt-tray");
+        attachBtn.onclick = () => fileInp.click();
+        fileInp.onchange = async () => {
+          const files = Array.from(fileInp.files || []);
+          fileInp.value = "";
+          for (const f of files) await uploadFileTo(f, ptPending, tray);
+        };
+      }
       card.querySelector(".modal-cancel").onclick = () => close(null);
       card.querySelector(".modal-ok").onclick = () => {
         const v = ($("pt-input").value || "").trim();
         if (!v) return;
-        if (checkboxLabel) close({ text: v, checked: !!($("pt-checkbox") && $("pt-checkbox").checked) });
-        else close(v);
+        const lines = attachmentLines(ptPending);
+        const finalText = lines ? `${lines}\n${v}` : v;
+        if (checkboxLabel) close({ text: finalText, checked: !!($("pt-checkbox") && $("pt-checkbox").checked) });
+        else close(finalText);
       };
       root.onclick = (e) => { if (e.target === root) close(null); };
     });
@@ -2248,7 +2281,7 @@
   }
 
   async function openArbitrationInput() {
-    const question = await promptText("背对背仲裁", "输入要交给两位工程师背对背作答的问题…", "开始");
+    const question = await promptText("背对背仲裁", "输入要交给两位工程师背对背作答的问题…", "开始", "", { snippets: true, attachments: true });
     if (!question) return;
     try {
       const r = await api("/api/arbitrate", { method: "POST", body: JSON.stringify({ question, session_id: state.sessionId || null }) });
@@ -2361,7 +2394,7 @@
   }
 
   async function openDispatchInput() {
-    const res = await promptText("智能分派", "描述一个较大的需求，会自动拆解成子任务并派给最合适的引擎/模型…", "分派", "困难任务（验收走背对背仲裁验证）");
+    const res = await promptText("智能分派", "描述一个较大的需求，会自动拆解成子任务并派给最合适的引擎/模型…", "分派", "困难任务（验收走背对背仲裁验证）", { snippets: true, attachments: true });
     if (!res) return;
     const request = res.text;
     const needArbitration = !!res.checked;
@@ -2649,6 +2682,12 @@
         <label>目标（每轮迭代都会带着这个目标去推进）
           <textarea id="gf-prompt" class="form-input tall" rows="3" placeholder="例：把 web 前端的目标循环入口做成列表+详情两态">${escapeHtml(d.prompt || "")}</textarea>
         </label>
+        <div id="gf-snippet-bar" class="snippet-bar hidden"></div>
+        <div style="display:flex">
+          <button id="gf-attach-btn" class="img-btn" type="button" title="上传附件">&#128206;</button>
+          <input id="gf-file-input" type="file" multiple hidden />
+        </div>
+        <div id="gf-tray" class="img-tray hidden"></div>
         <label>完成标准（自然语言，独立小模型据此验收每轮产出）
           <textarea id="gf-stop" class="form-input tall" rows="3" placeholder="例：node --check 通过，且样式与现有页面一致">${escapeHtml(d.stop_condition || "")}</textarea>
         </label>
@@ -2676,6 +2715,17 @@
     const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
     card.querySelector(".modal-cancel").onclick = () => { close(); if (existing) loadGoalDetail(existing.id); };
     root.onclick = (e) => { if (e.target === root) { close(); if (existing) loadGoalDetail(existing.id); } };
+    // 快捷指令 / 附件（局部 pending，随弹窗销毁，不碰全局 composer 草稿）
+    const gfPending = [];
+    renderSnippetChipsInto(card.querySelector("#gf-snippet-bar"), card.querySelector("#gf-prompt"));
+    const gfFileInp = card.querySelector("#gf-file-input");
+    const gfTray = card.querySelector("#gf-tray");
+    card.querySelector("#gf-attach-btn").onclick = () => gfFileInp.click();
+    gfFileInp.onchange = async () => {
+      const files = Array.from(gfFileInp.files || []);
+      gfFileInp.value = "";
+      for (const f of files) await uploadFileTo(f, gfPending, gfTray);
+    };
     card.querySelector(".modal-ok").onclick = async () => {
       const errEl = card.querySelector("#gf-err");
       const body = {
@@ -2689,6 +2739,9 @@
       };
       if (!body.prompt) { errEl.textContent = "目标不能为空"; return; }
       if (!body.stop_condition) { errEl.textContent = "完成标准不能为空"; return; }
+      // 附件路径按 send() 同规则前置到目标文本
+      const _lines = attachmentLines(gfPending);
+      if (_lines) body.prompt = `${_lines}\n${body.prompt}`;
       try {
         if (existing) {
           await api(`/api/schedules/${existing.id}`, { method: "PUT", body: JSON.stringify(body) });
@@ -4615,11 +4668,7 @@
     }
     // 有待发附件：把路径拼进消息（tclaude 用 Read 读这些文件）
     if (imgs.length) {
-      const lines = imgs.map((im) =>
-        im.kind === "image" || im.dataUrl
-          ? `图片：${im.path}`
-          : `文件：${im.name}（${im.path}）`
-      ).join("\n");
+      const lines = attachmentLines(imgs);
       text = text ? `${lines}\n${text}` : `${lines}\n请查看上面的附件。`;
     }
     // 运行中发送 → 服务端入队，不本地渲染气泡也不切运行态；靠 queue_update 广播刷新托盘。
@@ -4785,10 +4834,10 @@
     }
   }
 
-  // 上传任意文件（含图片）：图片存 dataUrl 做缩略图，其他文件只记路径+文件名
-  async function uploadOneFile(file) {
+  // 上传任意文件（含图片）到全局 UPLOAD_DIR，落库到指定 pending 数组并重渲染其 tray。
+  // composer 用全局 state.pendingImages/#img-tray；仲裁/分派/目标循环弹窗传各自局部数组/tray，互不污染。
+  async function uploadFileTo(file, pendingArr, trayEl) {
     if (!file) return;
-    if (!state.sessionId) { toast("请先选择会话", "info"); return; }
     if (file.size > 100 * 1024 * 1024) { toast("文件过大（上限 100MB）", "error"); return; }
     const isImage = (file.type || "").startsWith("image/");
     const tip = toast("上传中…", "info", 8000);
@@ -4803,33 +4852,39 @@
       const r = await api("/api/upload", {
         method: "POST",
         body: JSON.stringify({
-          session_id: state.sessionId,
+          session_id: state.sessionId || "",
           file: b64,
           mime: file.type || "application/octet-stream",
           name: file.name,
         }),
       });
-      state.pendingImages.push({
+      pendingArr.push({
         path: r.abs || r.path,
         dataUrl: isImage ? dataUrl : null,
         kind: isImage ? "image" : "file",
         name: r.name || file.name,
       });
-      renderImageTray();
+      renderTrayInto(pendingArr, trayEl);
       toast("文件已就绪，可加文字一起发送", "success", 1800);
     } catch (e) {
       toast("上传失败：" + (e.message || e), "error", 3000);
     }
   }
 
-  // 待发图片预览条：缩略图 + 删除（全量重建，保证与 state.pendingImages 一致）
-  function renderImageTray() {
-    const tray = $("img-tray");
-    if (!tray) return;
-    tray.innerHTML = "";
-    if (!state.pendingImages.length) { tray.classList.add("hidden"); return; }
-    state.pendingImages.forEach((im, idx) => {
-      const del = () => { state.pendingImages.splice(idx, 1); renderImageTray(); };
+  // composer 专用：要求已选会话，落到全局 pending + #img-tray
+  async function uploadOneFile(file) {
+    if (!file) return;
+    if (!state.sessionId) { toast("请先选择会话", "info"); return; }
+    await uploadFileTo(file, state.pendingImages, $("img-tray"));
+  }
+
+  // 待发附件预览条：缩略图 + 删除（全量重建，保证与 pending 数组一致）
+  function renderTrayInto(pendingArr, trayEl) {
+    if (!trayEl) return;
+    trayEl.innerHTML = "";
+    if (!pendingArr.length) { trayEl.classList.add("hidden"); return; }
+    pendingArr.forEach((im, idx) => {
+      const del = () => { pendingArr.splice(idx, 1); renderTrayInto(pendingArr, trayEl); };
       if (im.kind === "image" || im.dataUrl) {
         const chip = el("div", "img-chip");
         const image = document.createElement("img");
@@ -4837,7 +4892,7 @@
         const x = el("button", "img-chip-del", "×");
         x.onclick = del;
         chip.append(image, x);
-        tray.appendChild(chip);
+        trayEl.appendChild(chip);
       } else {
         const chip = el("div", "file-chip");
         const icon = el("span", null, "📄");
@@ -4847,10 +4902,22 @@
         const x = el("button", "img-chip-del", "×");
         x.onclick = del;
         chip.append(icon, nameEl, x);
-        tray.appendChild(chip);
+        trayEl.appendChild(chip);
       }
     });
-    tray.classList.remove("hidden");
+    trayEl.classList.remove("hidden");
+  }
+
+  function renderImageTray() { renderTrayInto(state.pendingImages, $("img-tray")); }
+
+  // 把待发附件按 send() 的规则拼成前置文本行（图片：<path> / 文件：<name>（<path>）），空数组返回 ""。
+  function attachmentLines(pendingArr) {
+    if (!pendingArr || !pendingArr.length) return "";
+    return pendingArr.map((im) =>
+      im.kind === "image" || im.dataUrl
+        ? `图片：${im.path}`
+        : `文件：${im.name}（${im.path}）`
+    ).join("\n");
   }
 
   function clearPendingImages() {

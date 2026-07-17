@@ -446,6 +446,8 @@ body.hub-resizing {
 
 /* 待发图片预览条 */
 .img-tray { flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 16px; overflow-x: auto; background: var(--bg-2); border-top: 1px solid var(--line-soft); }
+/* 弹窗内复用快捷指令/附件条：去掉为 composer 设计的横向内边距与分隔，贴齐 textarea */
+.modal-card .snippet-bar, .modal-card .img-tray { padding-left: 0; padding-right: 0; background: transparent; border-top: none; }
 .img-chip { position: relative; flex: 0 0 auto; }
 .img-chip img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); display: block; }
 .img-chip-del { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%; background: var(--red); color: #fff; border: none; font-size: 14px; line-height: 1; padding: 0; display: flex; align-items: center; justify-content: center; }
@@ -537,6 +539,23 @@ body.hub-resizing {
 .manage-entry:hover { background: var(--bg-3); box-shadow: var(--shadow-md); border-color: var(--accent); }
 .manage-entry.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .manage-entry:disabled { opacity: .5; }
+/* 目标循环：管理中心里加粗强调的主入口，避免和其它一次性操作混在一起不好找 */
+.manage-entry-featured { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.manage-entry-featured:hover { background: var(--accent-soft); border-color: var(--accent-hover); box-shadow: var(--shadow-md); }
+
+/* 目标循环入口：Overview 首屏顶部醒目大按钮，解决"藏在管理中心找不到"的问题 */
+.goal-loop-hero {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 14px 16px; margin-bottom: 16px; border-radius: 16px;
+  background: linear-gradient(135deg, var(--accent-soft), var(--bg-2)); border: 1px solid var(--accent);
+  box-shadow: var(--shadow); text-align: left; transition: box-shadow var(--ease), transform var(--ease);
+}
+.goal-loop-hero:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.goal-loop-hero-ico { font-size: 24px; flex: 0 0 auto; }
+.goal-loop-hero-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.goal-loop-hero-title { font-size: 15px; font-weight: 700; color: var(--accent); }
+.goal-loop-hero-sub { font-size: 12px; color: var(--muted); }
+.goal-loop-hero-arrow { font-size: 20px; color: var(--accent); flex: 0 0 auto; }
 .exp-sub-head { font-size: 16px; font-weight: 700; margin: 0 0 12px; }
 .logout-btn { background: var(--bg-2); border: 1px solid var(--line); color: var(--muted); padding: 11px 18px; border-radius: 12px; font-weight: 600; }
 .logout-btn:hover { border-color: var(--red); color: var(--red); }
@@ -614,6 +633,18 @@ body.hub-resizing {
 .dispatch-badge.dispatch-dev { background: var(--accent-soft); color: var(--accent); }
 .dispatch-badge.dispatch-codex { background: var(--green-soft); color: var(--green); }
 .dispatch-badge.dispatch-plan { background: var(--gray-soft); color: var(--muted); }
+
+/* 目标循环：状态徽章 + 目标/完成标准展示 + 每轮进展列表 */
+.entity-list .e-tag.tag-good { background: var(--green-soft); color: var(--green); }
+.entity-list .e-tag.tag-run { background: var(--accent-soft); color: var(--accent); }
+.goal-meta-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.goal-field { margin-bottom: 14px; }
+.goal-field-label { font-size: 12.5px; color: var(--muted-2); font-weight: 600; margin-bottom: 4px; }
+.goal-text { font-size: 14px; color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.5; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; }
+.goal-session-link { cursor: default; }
+.goal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 22px; }
+.goal-rounds-head { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 10px; }
+.goal-rounds .e-empty-row { list-style: none; color: var(--muted); font-size: 13px; padding: 15px 16px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; }
 
 /* 表单 */
 .entity-form { display: flex; flex-direction: column; gap: 14px; max-width: 720px; }
