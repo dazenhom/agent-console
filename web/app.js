@@ -2355,8 +2355,11 @@
       try {
         const subtasks = await api("/api/dispatch/" + encodeURIComponent(planId));
         renderDispatchPlan({ plan_id: planId, subtasks });
-        const anyRunning = subtasks.some((s) => s.session_status === "running");
-        if (anyRunning) pollDispatch(planId, tries + 1);
+        // 子会话仍在跑，或已进入/未离开完成判定流程（dispatched/verifying）都继续轮询，
+        // 直到全部落到终态（done/failed/error）。
+        const active = subtasks.some((s) =>
+          s.session_status === "running" || s.status === "dispatched" || s.status === "verifying");
+        if (active) pollDispatch(planId, tries + 1);
       } catch (e) { /* 静默：下次进入面板再刷 */ }
     }, 3000);
   }
@@ -2368,6 +2371,14 @@
     if (m.includes("sonnet")) return "Sonnet 5";
     return model || "Claude";
   }
+
+  // 子任务完成判定状态 → [徽章文案, 徽章样式类]。dispatched 不加徽章，沿用下方 session_status 展示。
+  const DISPATCH_STATUS_LABEL = {
+    verifying: ["判定中", "tag-run"],
+    done: ["已完成", "tag-good"],
+    failed: ["判定失败", "tag-warn"],
+    error: ["出错", "tag-warn"],
+  };
 
   function renderDispatchPlan(data) {
     const body = $("dispatch-body");
@@ -2385,10 +2396,19 @@
       head.appendChild(el("span", "e-name", escapeHtml(st.title || "（无标题）")));
       const badge = el("span", "dispatch-badge dispatch-" + (st.category || "dev"), escapeHtml("派给：" + _dispatchFriendlyName(st.engine, st.model)));
       head.appendChild(badge);
+      // 完成判定徽章：verifying/done/failed/error 各自成态；dispatched 阶段不显示，交给下方 session_status。
+      const sm = DISPATCH_STATUS_LABEL[st.status];
+      if (sm) head.appendChild(el("span", "e-tag " + sm[1], escapeHtml(sm[0])));
       li.appendChild(head);
       if (st.instruction) li.appendChild(el("div", "e-desc", escapeHtml(st.instruction.slice(0, 160))));
-      const statusText = st.status === "error" ? "建立失败" : ("子会话：" + (st.session_status || "待启动"));
-      li.appendChild(el("div", "e-desc", escapeHtml(statusText)));
+      // dispatched（或未知）阶段仍展示子会话运行态；已进入判定流程则用徽章表达。
+      if (!sm || st.status === "dispatched") {
+        li.appendChild(el("div", "e-desc", escapeHtml("子会话：" + (st.session_status || "待启动"))));
+      }
+      // done/failed 附带验收反馈文本（verdict 只是 done/failed 代码，已由徽章表达，此处展示可读反馈）。
+      if ((st.status === "done" || st.status === "failed") && st.feedback) {
+        li.appendChild(el("div", "e-desc", escapeHtml(st.feedback)));
+      }
       if (st.child_session_id) {
         li.style.cursor = "pointer";
         li.onclick = () => { closeDispatchView(); switchSession(st.child_session_id); };
