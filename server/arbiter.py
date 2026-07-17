@@ -9,6 +9,7 @@
 """
 import asyncio
 import json
+import re
 
 from . import config, db
 from .job_store import run_logged_oneshot
@@ -165,3 +166,52 @@ async def run_arbitration(arb_id: str) -> None:
             db.update_work_item_status_by_ref(arb_id, "error")
         except Exception:
             pass
+
+
+def _parse_verdict(text: str) -> tuple[bool, str]:
+    """把一路评委的原始答复解析成 (done, reason)。解析规则与 goal_verifier.verify 一致：
+    取首个非空行精确匹配 == "DONE" 才算完成（容忍前后空白、大小写），像 "DONE, but…" 这类
+    带尾巴的一律当 CONTINUE；从第二行起为判断理由，压平空白后截断。空文本按 CONTINUE 处理。"""
+    lines = (text or "").splitlines()
+    first = next((ln.strip() for ln in lines if ln.strip()), "")
+    done = first.upper() == "DONE"
+    reason = re.sub(r"\s+", " ", " ".join(lines[1:])).strip()[:200]
+    if not reason:
+        reason = "已达成完成标准" if done else "尚未达成或无输出，按未完成处理"
+    return done, reason
+
+
+async def verify_back_to_back(goal: str, stop: str, produced: str,
+                              git_diff: str, session_id: str | None = None) -> tuple[bool, str]:
+    """困难 dispatch 子任务的背对背双评委验收：复用 goal_verifier 的验收 prompt，交给两位
+    评委独立判定——A 走更强的 Claude（tclaude），B 走 Codex（tcodex）——再合议。
+
+    合议规则：两位评委都判 DONE 才算 done（done = done_a and done_b），任一 CONTINUE / 异常 /
+    超时 / 无输出都当未完成，宁可多迭代也不误判完成。返回 (done, reason)，reason 把两位评委各自
+    的判断理由都写进去便于排查。与 run_arbitration 一脉相承：两路一次性子进程并发（gather
+    return_exceptions），任一路异常不拖垮另一路；不创建 arbitration 记录、不写 work_item。"""
+    from . import goal_verifier
+    prompt = goal_verifier._build_prompt(goal, stop, produced, git_diff=git_diff)
+    model_b = config.CODEX_MODEL or (config.CODEX_MODELS[0] if config.CODEX_MODELS else "")
+    (res_a, res_b) = await asyncio.gather(
+        _run_claude_oneshot(prompt, config.CLAUDE_MODEL_SUPER, effort="high",
+                            kind="dispatch_verify_a"),
+        _run_codex_oneshot(prompt, model_b),
+        return_exceptions=True,
+    )
+    # 任一路异常/无输出按 CONTINUE(未完成) 处理，绝不误判完成
+    if isinstance(res_a, Exception):
+        done_a, reason_a = False, f"评委A异常：{res_a}"
+    else:
+        _job_a, text_a = res_a
+        done_a, reason_a = _parse_verdict(text_a)
+    if isinstance(res_b, Exception):
+        done_b, reason_b = False, f"评委B异常：{res_b}"
+    else:
+        _job_b, text_b = res_b
+        done_b, reason_b = _parse_verdict(text_b)
+
+    done = done_a and done_b
+    reason = (f"评委A(claude): {'DONE' if done_a else 'CONTINUE'} - {reason_a}；"
+              f"评委B(codex): {'DONE' if done_b else 'CONTINUE'} - {reason_b}")
+    return done, reason[:400]

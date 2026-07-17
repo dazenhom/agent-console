@@ -193,7 +193,7 @@ async def _fire_subtask(child_session_id: str, instruction: str, subtask_id: str
 
 
 async def dispatch(request: str, parent_session_id: str | None, workdir: str,
-                   isolate: bool = False) -> str:
+                   isolate: bool = False, need_arbitration: bool = False) -> str:
     """规划 → 路由 → 建子会话 → 后台开工。返回 plan_id。
 
     单个子任务建立失败记 status=error 跳过，不中断整个循环；子会话回合用 fire-and-forget
@@ -201,6 +201,9 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
 
     isolate=True 时每个子任务各建独立 worktree（默认 False，沿用共享父目录的旧行为），
     避免多个并行子任务在同一目录互相踩踏。
+
+    need_arbitration=True 时该 plan 下的子任务标记为困难任务，验收阶段走背对背双评委
+    仲裁（arbiter.verify_back_to_back）而非单 judge；默认 False 走原单 judge 路径。
     """
     subtasks = await run_planner(request)
     plan_id = db.new_id()
@@ -230,6 +233,7 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                 engine=engine, model=model, child_session_id=child["id"],
                 status="dispatched", work_item_id=work_item_id,
                 base_workdir=(wt_base if is_wt else wd), isolate=(1 if is_wt else 0),
+                need_arbitration=(1 if need_arbitration else 0),
             )
             # 后台起跑，不 await 阻塞后续子任务的建立
             asyncio.ensure_future(_fire_subtask(child["id"], st["instruction"], subtask["id"]))
@@ -241,6 +245,7 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                 category=category, engine=engine, model=model,
                 child_session_id="", status="error", work_item_id=work_item_id,
                 base_workdir=workdir, isolate=(1 if isolate else 0),
+                need_arbitration=(1 if need_arbitration else 0),
             )
     return plan_id
 

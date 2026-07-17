@@ -627,7 +627,7 @@ async def _run_dispatch_verify(subtask_id: str) -> None:
     模式完全参考 _run_goal_verify：读子会话最新产出 → verifier.judge('nl',...) → 落 verdict/feedback。
     MVP 不重试：判定完直接 done 或 failed。整体 try/except 兜底，异常也落 failed，绝不卡在 verifying。
     无论走哪条分支，finally 都做一次 plan 级聚合收尾（幂等）。"""
-    from . import verifier, kanban
+    from . import verifier, kanban, arbiter
     sub = None
     try:
         sub = db.get_dispatch_subtask(subtask_id)
@@ -650,9 +650,14 @@ async def _run_dispatch_verify(subtask_id: str) -> None:
             git_diff = await _git_diff_stat(sess["workdir"])
         goal = ((sub.get("title") or "") + "\n" + (sub.get("instruction") or "")).strip()
         stop = "完成上述子任务要求：" + (sub.get("instruction") or sub.get("title") or "")
-        done, reason = await verifier.judge(
-            "nl", goal=goal, stop_condition=stop, produced=produced,
-            session_id=sess.get("id"), git_diff=git_diff)
+        # 困难任务走背对背双评委仲裁验收（两位评委都 DONE 才算完成），否则沿用单 judge。
+        if sub.get("need_arbitration"):
+            done, reason = await arbiter.verify_back_to_back(
+                goal, stop, produced, git_diff, session_id=sess.get("id"))
+        else:
+            done, reason = await verifier.judge(
+                "nl", goal=goal, stop_condition=stop, produced=produced,
+                session_id=sess.get("id"), git_diff=git_diff)
         db.update_dispatch_subtask(subtask_id, status=("done" if done else "failed"),
                                    verdict=("done" if done else "failed"), feedback=reason)
     except Exception as e:

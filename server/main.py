@@ -372,7 +372,8 @@ async def post_dispatch(payload: dict):
         raise HTTPException(status_code=400, detail="request 不能为空")
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
     plan_id = await dispatcher.dispatch(request, payload.get("session_id"), workdir,
-                                        isolate=bool(payload.get("isolate")))
+                                        isolate=bool(payload.get("isolate")),
+                                        need_arbitration=bool(payload.get("need_arbitration")))
     return {"plan_id": plan_id, "subtasks": db.list_dispatch_subtasks(plan_id)}
 
 
