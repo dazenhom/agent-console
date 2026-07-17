@@ -35,6 +35,9 @@ async def lifespan(app: FastAPI):
     # 目标循环卡在 producing/verifying 的复位到 running：无条件跑（幂等 UPDATE，双进程各跑一次
     # 无害）。不能藏在 RECONCILE_ON_START 守卫下——默认 run.sh 不设该变量，否则重启后目标循环永久卡死。
     db.reconcile_goal_schedules()
+    # 同理复位卡在 verifying 的 dispatch 扇出子任务：后台判定随进程消失、_tick_fanout 只拾 dispatched，
+    # 不复位则永久卡死、plan 无法聚合收尾。幂等 UPDATE，同样不藏在 RECONCILE_ON_START 守卫下。
+    db.reconcile_dispatch_subtasks()
     # 仅在被显式要求的进程里对齐僵尸 running 状态（双端口下只让一个进程做，避免重复）。
     import os
     if os.environ.get("RECONCILE_ON_START"):

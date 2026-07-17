@@ -696,6 +696,14 @@ def reconcile_goal_schedules() -> None:
     _exec("UPDATE goal_subtasks SET status='pending' WHERE status='running'")
 
 
+def reconcile_dispatch_subtasks() -> None:
+    """进程重启后复位卡在 verifying 的 dispatch 子任务：其后台判定任务（_run_dispatch_verify）
+    随进程消失，不会自愈，而 _tick_fanout 只拾取 status='dispatched' 的记录，导致这条子任务永久
+    卡死、所属 plan 也无法触发聚合收尾。启动时复位到 dispatched：下个 tick 会在子会话已空闲时
+    重新起判定，子会话仍在运行则跳过，不会重复触发。一次性、幂等的兜底。"""
+    _exec("UPDATE dispatch_subtasks SET status='dispatched', updated_at=? WHERE status='verifying'", (_now(),))
+
+
 def has_active_goal(session_id: str) -> bool:
     """该会话是否挂着一条启用中、且未进入终态的目标循环。用于抑制 per-turn 企微通知。"""
     rows = _query(
