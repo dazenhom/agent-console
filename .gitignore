@@ -5,6 +5,9 @@ data/console.db-shm
 data/*.db
 data/*.sqlite*
 
+# ---- 隔离会话的 worktree 物理目录（linked worktree，不应进主仓库）----
+data/worktrees/
+
 # ---- 私钥/证书（run.sh 会自动生成）----
 data/certs/
 *.key
