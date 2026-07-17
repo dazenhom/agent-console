@@ -179,27 +179,29 @@ def _route(subtask: dict) -> tuple[str, str, str]:
     return "claude", config.CLAUDE_MODEL_STRONG, "dev"
 
 
+async def _fire_subtask(child_session_id: str, instruction: str, subtask_id: str):
+    """后台跑 start_turn 并兜住其执行期异常：不然会被 asyncio 打成
+    "Task exception was never retrieved"，子任务却永远卡在 dispatched。
+    dispatch() 首次扇出与 retry_subtask() 重派共用同一起跑逻辑。session_hub 延迟 import
+    打破顶层循环导入。"""
+    from .session_hub import hub
+    try:
+        await hub.start_turn(child_session_id, instruction)
+    except Exception as e:
+        print(f"[dispatcher] start_turn error: {type(e).__name__}: {e}")
+        db.update_dispatch_subtask(subtask_id, status="error")
+
+
 async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                    isolate: bool = False) -> str:
     """规划 → 路由 → 建子会话 → 后台开工。返回 plan_id。
 
-    session_hub 延迟 import 打破顶层循环导入。单个子任务建立失败记 status=error 跳过，
-    不中断整个循环；子会话回合用 fire-and-forget 起跑，避免一个卡住其余子任务的建立。
+    单个子任务建立失败记 status=error 跳过，不中断整个循环；子会话回合用 fire-and-forget
+    起跑，避免一个卡住其余子任务的建立。
 
     isolate=True 时每个子任务各建独立 worktree（默认 False，沿用共享父目录的旧行为），
     避免多个并行子任务在同一目录互相踩踏。
     """
-    from .session_hub import hub
-
-    async def _fire(child_session_id: str, instruction: str, subtask_id: str):
-        """后台跑 start_turn 并兜住其执行期异常：不然会被 asyncio 打成
-        "Task exception was never retrieved"，子任务却永远卡在 dispatched。"""
-        try:
-            await hub.start_turn(child_session_id, instruction)
-        except Exception as e:
-            print(f"[dispatcher] start_turn error: {type(e).__name__}: {e}")
-            db.update_dispatch_subtask(subtask_id, status="error")
-
     subtasks = await run_planner(request)
     plan_id = db.new_id()
     # 阶段2 影子表：纯附加观测，写失败只记日志绝不影响扇出主流程
@@ -229,7 +231,7 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                 status="dispatched", work_item_id=work_item_id,
             )
             # 后台起跑，不 await 阻塞后续子任务的建立
-            asyncio.ensure_future(_fire(child["id"], st["instruction"], subtask["id"]))
+            asyncio.ensure_future(_fire_subtask(child["id"], st["instruction"], subtask["id"]))
         except Exception as e:
             print(f"[dispatcher] dispatch subtask #{seq} error: {type(e).__name__}: {e}")
             db.create_dispatch_subtask(
@@ -239,3 +241,44 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
                 child_session_id="", status="error", work_item_id=work_item_id,
             )
     return plan_id
+
+
+async def retry_subtask(subtask_id: str) -> dict | None:
+    """重派一个已判定失败（failed/error）的 dispatch 子任务：新建一个隔离/共享子会话跑同样的
+    指令，把子任务状态重置回 dispatched 并指向新会话，清空旧 verdict/feedback，交回
+    _tick_fanout 在下一次 tick 自动接管完成判定（无需额外触发）。
+
+    只允许对终态 failed/error 的子任务重派，正在跑的 dispatched/verifying 不动，避免误重派。
+    沿用原子任务已存的 engine/model（不二次路由，避免同一子任务两次派发结果漂移），以及原子
+    会话的隔离选择与基准目录（从旧子会话读，不依赖 work_items）。不可重派 → 返回 None；
+    新建会话失败记 status=error 后抛出，由路由层处理。
+    """
+    sub = db.get_dispatch_subtask(subtask_id)
+    if not sub or sub.get("status") not in ("failed", "error"):
+        return None
+
+    # 隔离选择 + 基准目录沿用原子会话：worktree 会话取其 worktree_base 作 repo 根再隔离一份，
+    # 共享会话直接复用其 workdir。旧会话不存在（理论不该发生）则退回默认共享工作区。
+    old_sess = db.get_session(sub.get("child_session_id") or "") or {}
+    if old_sess.get("is_worktree"):
+        base, isolate = old_sess.get("worktree_base") or config.DEFAULT_WORKDIR, True
+    else:
+        base, isolate = old_sess.get("workdir") or config.DEFAULT_WORKDIR, False
+
+    engine, model = sub.get("engine") or "claude", sub.get("model") or config.CLAUDE_MODEL_STRONG
+    title, instruction = sub.get("title") or "", sub.get("instruction") or ""
+    wd, branch, is_wt, wt_base, _ = await asyncio.to_thread(
+        worktree.provision_workdir, base, title[:24], isolate)
+    child = db.create_session(
+        title=title[:80], workdir=wd, mode=model, engine=engine,
+        worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base,
+    )
+    # 重置回 dispatched 并指向新会话，清空上一次判定的 verdict/feedback（避免前端把旧的失败
+    # 原因错挂在正在重跑的子任务上；本项目无子任务历史表，UI 真实性优先于留痕）。
+    db.update_dispatch_subtask(
+        subtask_id, child_session_id=child["id"], status="dispatched",
+        verdict="", feedback="",
+    )
+    # 后台起跑，与首次扇出同款 fire-and-forget，不 await 阻塞路由响应。
+    asyncio.ensure_future(_fire_subtask(child["id"], instruction, subtask_id))
+    return db.get_dispatch_subtask(subtask_id)

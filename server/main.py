@@ -392,7 +392,20 @@ async def get_dispatch_plan(plan_id: str):
     return subtasks
 
 
-# ---------------- work_items（阶段4：统一"任务运行"聚合视图，只读观测，不作决策依据）----------------
+@app.post("/api/dispatch/{plan_id}/subtasks/{subtask_id}/retry",
+          dependencies=[Depends(require_auth)])
+async def post_dispatch_subtask_retry(plan_id: str, subtask_id: str):
+    """重派一个失败的 dispatch 子任务：新起子会话跑同样内容，状态重置回 dispatched，
+    交回 _tick_fanout 自动接管判定。仅对终态 failed/error 生效，其余状态拒绝避免误重派。"""
+    sub = db.get_dispatch_subtask(subtask_id)
+    if not sub or sub.get("plan_id") != plan_id:
+        raise HTTPException(status_code=404, detail="子任务不存在")
+    if sub.get("status") not in ("failed", "error"):
+        raise HTTPException(status_code=409, detail="仅失败的子任务可重派")
+    updated = await dispatcher.retry_subtask(subtask_id)
+    if not updated:
+        raise HTTPException(status_code=409, detail="子任务当前状态不可重派")
+    return updated
 @app.get("/api/work_items", dependencies=[Depends(require_auth)])
 async def get_work_items(origin: str = Query(default=None), status: str = Query(default=None),
                          limit: int = Query(default=50)):
