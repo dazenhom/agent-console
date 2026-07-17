@@ -103,15 +103,27 @@ def _team_wrap(sch: dict, prompt: str) -> str:
     return prompt
 
 
+def _solo_expand(sch: dict, prompt: str) -> str:
+    """solo（默认）模式下若目标本身以 /<skill> 开头，执行时展开成完整 prompt
+    （库里存的原文不变）；team 模式由 _team_wrap 自行展开，这里不碰。"""
+    if (sch.get("exec_mode") or "solo") != "team" and prompt.startswith("/"):
+        from . import skill_store
+        expanded, err = skill_store.expand(prompt)
+        if not err:
+            return expanded
+    return prompt
+
+
 def _build_goal_prompt(sch: dict) -> str:
     """拼一轮迭代指令：目标 + 完成标准 +（有则）上轮验收反馈 + 轮次提示。
 
     exec_mode=='team' 时在最前面注入 /console-dev 四角流水线（复用 skill_store 的斜杠展开），
-    让这一轮以 analyst→developer→reviewer→ops 的方式产出；solo（默认）走裸 prompt，行为不变。
+    让这一轮以 analyst→developer→reviewer→ops 的方式产出；solo（默认）走裸 prompt，
+    但目标本身以 /<skill> 开头时同样在执行时展开，行为向普通会话看齐。
     """
     iter_no = int(sch.get("iter_count") or 0) + 1
     parts = [
-        "【目标】\n" + (sch.get("prompt") or "").strip(),
+        "【目标】\n" + _solo_expand(sch, (sch.get("prompt") or "").strip()),
         "\n【完成标准】\n" + (sch.get("stop_condition") or "").strip(),
     ]
     feedback = (sch.get("last_feedback") or "").strip()

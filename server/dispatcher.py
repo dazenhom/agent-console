@@ -185,6 +185,15 @@ async def _fire_subtask(child_session_id: str, instruction: str, subtask_id: str
     dispatch() 首次扇出与 retry_subtask() 重派共用同一起跑逻辑。session_hub 延迟 import
     打破顶层循环导入。"""
     from .session_hub import hub
+    # 与普通会话输入一致：子任务指令支持 /<skill> 展开。fail-safe——展开报错则用原文继续，
+    # 绝不让单个子任务的展开失败拖垮整个 dispatch（参照下方 dispatch 的隔离风格）。
+    try:
+        from . import skill_store
+        expanded, err = skill_store.expand(instruction)
+        if not err:
+            instruction = expanded
+    except Exception as e:
+        print(f"[dispatcher] skill expand error: {type(e).__name__}: {e}")
     try:
         await hub.start_turn(child_session_id, instruction)
     except Exception as e:

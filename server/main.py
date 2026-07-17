@@ -341,6 +341,11 @@ async def post_arbitrate(payload: dict):
     question = (payload.get("question") or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="question 不能为空")
+    # 与普通会话输入一致：支持 /<skill> 展开（延迟 import 打破循环依赖）
+    from . import skill_store
+    question, err = skill_store.expand(question)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     model_a = config.CLAUDE_MODEL_SUPER
     model_b = config.CODEX_MODEL or (config.CODEX_MODELS[0] if config.CODEX_MODELS else "")
     arb = db.create_arbitration(
@@ -372,6 +377,11 @@ async def post_dispatch(payload: dict):
     request = (payload.get("request") or "").strip()
     if not request:
         raise HTTPException(status_code=400, detail="request 不能为空")
+    # 与普通会话输入一致：支持 /<skill> 展开（延迟 import 打破循环依赖）
+    from . import skill_store
+    request, err = skill_store.expand(request)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     workdir = payload.get("workdir") or config.DEFAULT_WORKDIR
     if workdir.strip() == "@self":
         workdir = config.SELF_REPO_DIR
@@ -1277,10 +1287,8 @@ async def upload_image(payload: dict):
     from pathlib import Path as _P
     from .fs_util import safe_path_under
 
-    session_id = payload.get("session_id") or ""
-    sess = db.get_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    # 文件落全局 UPLOAD_DIR，与会话无关：payload.session_id 仅作参考，
+    # 为空或查不到也照常上传（仲裁/分派/目标循环等入口发起时可能尚无当前会话）。
 
     # 兼容新旧字段：file（任意文件）优先，image（旧图片上传）兜底
     b64 = payload.get("file") or payload.get("image", "")
