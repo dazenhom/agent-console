@@ -686,6 +686,9 @@
     "claude-opus-4-8":            { in: 15,   out: 75  },
     "claude-opus-4-8[1m]":        { in: 15,   out: 75  },
   };
+  // 目标循环成本上限默认值：来自后端 config.GOAL_MAX_COST_USD（enterApp 拉 /api/config 覆盖）。
+  // 初值 20 仅兜底：接口 404/失败时不阻塞，UI 文案退回 20。
+  let GOAL_COST_DEFAULT = 20;
   function modePriceStr(m) {
     const p = PRICE_TABLE[m];
     if (!p) return null;
@@ -2745,7 +2748,7 @@
           <input id="gc-add" class="form-input" type="number" min="1" max="50" value="3" />
         </label>
         <label>成本上限（美元，留空不改）
-          <input id="gc-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 20" value="${it.max_cost_usd ? escapeAttr(String(it.max_cost_usd)) : ''}" />
+          <input id="gc-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 ${GOAL_COST_DEFAULT}" value="${it.max_cost_usd ? escapeAttr(String(it.max_cost_usd)) : ''}" />
         </label>
       </div>
       <div class="form-err" id="gc-err"></div>
@@ -2849,7 +2852,7 @@
       <div class="goal-field"><div class="goal-field-label">✅ 完成标准</div><div class="goal-text">${escapeHtml(sch.stop_condition || "")}</div></div>
       ${sch.verify_command ? `<div class="goal-field"><div class="goal-field-label">🧪 验收命令</div><div class="goal-text">${escapeHtml(sch.verify_command)}</div></div>` : ""}
       <div class="goal-field"><div class="goal-field-label">⚙️ 执行模式</div><div class="goal-text">${sch.exec_mode === "team" ? "team（/console-dev 四角流水线）" : "solo（单 Agent）"}</div></div>
-      <div class="goal-field"><div class="goal-field-label">💰 成本上限</div><div class="goal-text">${sch.max_cost_usd > 0 ? "$" + escapeHtml(String(sch.max_cost_usd)) : "默认 $20"}</div></div>
+      <div class="goal-field"><div class="goal-field-label">💰 成本上限</div><div class="goal-text">${sch.max_cost_usd > 0 ? "$" + escapeHtml(String(sch.max_cost_usd)) : `默认 $${GOAL_COST_DEFAULT}`}</div></div>
       <div class="goal-field"><div class="goal-field-label">💬 最新反馈</div><div class="goal-text">${escapeHtml(sch.last_feedback || "（暂无）")}</div></div>
       <div class="goal-field"><div class="goal-field-label">📍 所在会话</div><div class="goal-text goal-session-link" id="goal-session-link">${escapeHtml(sess ? sess.title : "(已删除)")}</div></div>
       <div class="goal-actions">
@@ -2956,7 +2959,7 @@
         <label>最大迭代轮数（1-100）
           <input id="gf-maxiter" class="form-input" type="number" min="1" max="100" value="${escapeAttr(String(d.max_iterations || 10))}" />
         </label>
-        <label>成本上限（美元，留空用默认）<input id="gf-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 20" value="${d.max_cost_usd ? escapeAttr(String(d.max_cost_usd)) : ''}" /></label>
+        <label>成本上限（美元，留空用默认）<input id="gf-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 ${GOAL_COST_DEFAULT}" value="${d.max_cost_usd ? escapeAttr(String(d.max_cost_usd)) : ''}" /></label>
       </div>
       <div class="form-err" id="gf-err"></div>
       <div class="modal-actions">
@@ -6120,6 +6123,10 @@
     initImage();
     initDrop();
     switchTab("overview", true);  // 只切 UI，数据由下面串行加载，不重复请求
+    // 拉后端目标循环默认成本上限（单一数据源）；fire-and-forget，失败静默保持兜底 20
+    api("/api/config").then((cfg) => {
+      if (cfg && cfg.goal_max_cost_usd > 0) GOAL_COST_DEFAULT = cfg.goal_max_cost_usd;
+    }).catch(() => {});
     initHubResizer();
     await loadTasks();      // 先建 taskBySession 映射，再 loadSessions 才能算对徽章/看板
     await loadSessions();

@@ -1883,6 +1883,15 @@ async def swanlab_upload(payload: dict):
     )
 
 
+@app.get("/api/config", dependencies=[Depends(require_auth)])
+def get_config():
+    """前端 bootstrap：暴露目标循环默认值，避免前端硬编码与后端 config 漂移。"""
+    return {
+        "goal_max_cost_usd": config.GOAL_MAX_COST_USD,
+        "goal_max_iterations": config.GOAL_MAX_ITERATIONS,
+    }
+
+
 # ---------------- 静态前端 ----------------
 # 缓存策略：让浏览器每次都向服务器核对（no-cache=必须 revalidate）。
 # StaticFiles 本身带 ETag/Last-Modified，配合 no-cache：文件没变返回 304（省流量），
