@@ -446,17 +446,11 @@ body.hub-resizing {
 .mic-btn.recording { background: var(--accent); border-color: var(--accent); color: #fff; transform: scale(1.06); box-shadow: 0 0 0 6px rgba(47,109,240,.16); }
 
 /* 详情面板底部操作按钮（Resume / Stop / Archive） */
-.detail-actions { flex: 0 0 auto; display: flex; gap: 10px; padding: 10px 16px 14px; border-top: 1px solid var(--line-soft); }
-.act-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 11px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font-size: 14px; font-weight: 600; }
-.act-btn:hover { background: var(--bg-3); }
-.act-btn.danger { color: var(--red); border-color: var(--line); }
-.act-btn.danger:hover { background: #fdecec; border-color: var(--red); }
-/* Resume 主操作：占满剩余宽度，用主题强调色突出（与 .save / send 主按钮一致） */
-.act-btn.act-primary { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 3px 12px var(--accent-glow); }
-.act-btn.act-primary:hover { background: var(--accent-hover); }
-/* Archive / 仲裁 / 分派：收成小巧的方形图标按钮，让主操作视觉更突出 */
+.detail-actions { flex: 0 0 auto; display: flex; gap: 10px; justify-content: space-around; padding: 10px 16px 14px; border-top: 1px solid var(--line-soft); }
+/* Resume / Archive / 仲裁 / 分派：一律为等大的方形图标按钮，视觉权重拉平 */
 .act-icon-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 46px; padding: 11px 0; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font-size: 18px; line-height: 1; }
 .act-icon-btn:hover { background: var(--bg-3); }
+.act-icon-btn:disabled { opacity: .4; cursor: default; }
 
 /* 待发图片预览条 */
 .img-tray { flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 16px; overflow-x: auto; background: var(--bg-2); border-top: 1px solid var(--line-soft); }
@@ -619,6 +613,7 @@ body.hub-resizing {
 .entity-list .e-name { font-weight: 600; font-size: 15px; flex: 1; word-break: break-all; }
 .entity-list .e-tag { font-size: 10.5px; padding: 3px 8px; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-weight: 600; letter-spacing: .3px; }
 .entity-list .e-tag.tag-warn { background: #fff3cd; color: #856404; border: 1px solid #ffc107; }
+.entity-list .e-tag.tag-muted { background: var(--bg-3); color: var(--muted); border: 1px solid var(--line); }
 .entity-list .e-desc { color: var(--muted); font-size: 13px; margin-top: 4px; word-break: break-word; }
 .entity-list .e-preview { color: var(--muted); font-size: 12px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; opacity: .85; }
 .entity-list .e-actions { display: flex; gap: 8px; margin-top: 12px; }
@@ -917,6 +912,19 @@ body.hub-resizing {
 .modal-cancel { background: var(--bg-2); color: var(--text); }
 .modal-ok { background: var(--grad-accent); color: #fff; border-color: var(--accent); box-shadow: 0 3px 12px var(--accent-glow); }
 .modal-ok.danger { background: linear-gradient(135deg, #e0413b, #c93832); border-color: var(--red); box-shadow: 0 3px 12px rgba(224,65,59,.25); }
+
+/* 弹窗内容过长时可滚动，避免底部按钮（如「保存」）被视口截断按不到 */
+.modal-card { max-height: calc(100dvh - 48px); overflow-y: auto; }
+/* 目标循环表单：标题 + 底部按钮固定常驻，中间表单区独立滚动，保存永远可见 */
+.goal-modal { display: flex; flex-direction: column; overflow: hidden; }
+.goal-modal > .modal-title, .goal-modal > .form-err, .goal-modal > .modal-actions { flex: 0 0 auto; }
+.goal-modal .goal-form { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 4px 0 14px; padding-right: 4px; }
+.goal-form textarea { min-height: 120px; }
+/* 宽屏两栏（执行模式 / 最大迭代 并排），窄屏由 .entity-form 的 flex 单列兜底 */
+@media (min-width: 640px) {
+  .goal-form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-content: start; }
+  .goal-form .gf-full { grid-column: 1 / -1; }
+}
 /* AskUserQuestion 弹窗里被选中的选项：加高亮描边区分未选项 */
 .ask-opt.selected { outline: 2.5px solid var(--accent); outline-offset: 2px; filter: brightness(1.08); }
 

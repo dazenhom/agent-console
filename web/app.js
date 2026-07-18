@@ -2859,23 +2859,31 @@
     if (!rounds.length) {
       ul.innerHTML = '<li class="e-empty-row">还没有完成任何一轮验收</li>';
     } else {
-      // rounds 按 iter_no 升序（后端已排好）。producing/verifying 是当前进行中的一轮，终态轮用 verdict/feedback
+      // rounds 按 iter_no 升序（后端已排好）。只有整个循环仍在跑、且是最新一轮，才算真正"进行中"；
+      // 循环已终止（耗尽/达成/暂停）后仍是 producing/verifying 的行，是进程重启/中断残留的僵尸行，标"已中断"。
+      const loopActive = !!sch.enabled && ["running", "producing", "verifying"].includes(sch.goal_status);
+      const maxIter = rounds.reduce((m, it) => Math.max(m, it.iter_no || 0), 0);
       rounds.forEach((it) => {
         const li = el("li");
-        const inProgress = it.status === "producing" || it.status === "verifying";
+        const inProgressRow = it.status === "producing" || it.status === "verifying";
+        const isCurrent = inProgressRow && loopActive && (it.iter_no || 0) === maxIter;
+        const interrupted = inProgressRow && !isCurrent;
         const bad = it.status === "error";
         const roundDone = it.verdict === "done";
         const head = el("div", "e-head");
         head.appendChild(el("span", "e-name", `第 ${it.iter_no} 轮 · ${fmtTime(it.started_at)}`));
         let tag, tagCls;
-        if (inProgress) { tag = it.status === "verifying" ? "验收中" : "执行中"; tagCls = "tag-progress"; }
+        if (isCurrent) { tag = it.status === "verifying" ? "验收中" : "执行中"; tagCls = "tag-progress"; }
+        else if (interrupted) { tag = "已中断"; tagCls = "tag-muted"; }
         else if (bad) { tag = "异常"; tagCls = "tag-warn"; }
         else if (roundDone) { tag = "达成"; tagCls = "tag-good"; }
         else if (it.verdict === "exhausted") { tag = "已耗尽"; tagCls = "tag-warn"; }
         else { tag = "继续迭代"; tagCls = ""; }
         head.appendChild(el("span", "e-tag " + tagCls, escapeHtml(tag)));
         li.appendChild(head);
-        const reason = inProgress ? goalPhaseText(sch.goal_status) : (it.feedback || "");
+        const reason = isCurrent ? goalPhaseText(sch.goal_status)
+          : interrupted ? (it.feedback || "该轮进程中断，未留下验收结论")
+          : (it.feedback || "");
         if (reason) li.appendChild(el("div", "e-desc", escapeHtml(reason)));
         ul.appendChild(li);
       });
@@ -2913,25 +2921,25 @@
     const d = existing || { session_id: state.sessionId || (state.sessions[0] || {}).id || "", prompt: "", stop_condition: "", max_iterations: 10, verify_command: "", exec_mode: "solo" };
     const opts = state.sessions.map((s) => `<option value="${escapeAttr(s.id)}" ${s.id === d.session_id ? "selected" : ""}>${escapeHtml(s.title)}</option>`).join("");
     const mode = d.exec_mode === "team" ? "team" : "solo";
-    const card = el("div", "modal-card");
+    const card = el("div", "modal-card goal-modal");
     card.innerHTML = `<div class="modal-title">${existing ? "编辑目标循环" : "新目标循环"}</div>
-      <div class="entity-form" style="gap:12px">
-        <label>在哪个会话里执行
+      <div class="entity-form goal-form">
+        <label class="gf-full">在哪个会话里执行
           <select id="gf-session">${opts}</select>
         </label>
-        <label>目标（每轮迭代都会带着这个目标去推进）
-          <textarea id="gf-prompt" class="form-input tall" rows="3" placeholder="例：把 web 前端的目标循环入口做成列表+详情两态">${escapeHtml(d.prompt || "")}</textarea>
+        <label class="gf-full">目标（每轮迭代都会带着这个目标去推进）
+          <textarea id="gf-prompt" class="form-input" rows="3" placeholder="例：把 web 前端的目标循环入口做成列表+详情两态">${escapeHtml(d.prompt || "")}</textarea>
         </label>
-        <div id="gf-snippet-bar" class="snippet-bar hidden"></div>
-        <div style="display:flex">
+        <div id="gf-snippet-bar" class="snippet-bar hidden gf-full"></div>
+        <div class="gf-full" style="display:flex">
           <button id="gf-attach-btn" class="img-btn" type="button" title="上传附件">&#128206;</button>
           <input id="gf-file-input" type="file" multiple hidden />
         </div>
-        <div id="gf-tray" class="img-tray hidden"></div>
-        <label>完成标准（自然语言，独立小模型据此验收每轮产出）
-          <textarea id="gf-stop" class="form-input tall" rows="3" placeholder="例：node --check 通过，且样式与现有页面一致">${escapeHtml(d.stop_condition || "")}</textarea>
+        <div id="gf-tray" class="img-tray hidden gf-full"></div>
+        <label class="gf-full">完成标准（自然语言，独立小模型据此验收每轮产出）
+          <textarea id="gf-stop" class="form-input" rows="3" placeholder="例：node --check 通过，且样式与现有页面一致">${escapeHtml(d.stop_condition || "")}</textarea>
         </label>
-        <label>验收命令（可选，每轮在会话工作区里跑，退出码+输出作为客观信号喂给验收员）
+        <label class="gf-full">验收命令（可选，每轮在会话工作区里跑，退出码+输出作为客观信号喂给验收员）
           <input id="gf-verify" class="form-input" type="text" placeholder="例：python3 -m py_compile server/*.py" value="${escapeAttr(d.verify_command || "")}" />
         </label>
         <label>执行模式
@@ -4866,6 +4874,8 @@
     $("cancel-btn").classList.toggle("hidden", !running);
     const cb = $("compact-btn");
     if (cb) cb.disabled = running;  // 回合进行中不可压缩
+    const resumeBtn = $("act-resume");
+    if (resumeBtn) resumeBtn.disabled = running;  // 运行中进程活着，无需恢复/重连
     const inp = $("input");
     // 运行中不再锁输入：继续输入会排队执行。
     inp.disabled = false;

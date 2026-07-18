@@ -255,8 +255,8 @@
           <div class="detail-head-row">
             <div class="detail-title" id="session-title">会话</div>
             <div class="detail-head-btns">
-              <button id="detail-subagent-btn" class="detail-icon-btn" title="展开全部子任务过程">⊞</button>
-              <button id="compact-btn" class="detail-icon-btn" title="压缩上下文：概括整段对话，降低后续 token">🗜</button>
+              <button id="detail-subagent-btn" class="detail-icon-btn" title="展开全部子任务过程">🧩</button>
+              <button id="compact-btn" class="detail-icon-btn" title="压缩上下文：概括整段对话，降低后续 token">📉</button>
               <button id="detail-peek-btn" class="detail-icon-btn" title="速览">👁</button>
               <button id="detail-close-btn" class="detail-icon-btn" title="返回列表" aria-label="返回">&#8592;</button>
             </div>
@@ -299,7 +299,7 @@
 
         <!-- 底部操作：Resume 为主操作（醒目），其余三个收成纯图标按钮（停止走输入框旁的悬浮按钮） -->
         <div class="detail-actions">
-          <button id="act-resume" class="act-btn act-primary">▷ Resume</button>
+          <button id="act-resume" class="act-icon-btn" title="恢复/重连会话进程（预热已断开的常驻进程）">▷</button>
           <button id="act-archive" class="act-icon-btn" title="归档会话">🗄</button>
           <button id="act-arbitrate" class="act-icon-btn" title="背对背仲裁">⚖</button>
           <button id="act-dispatch" class="act-icon-btn" title="分派子任务">🧭</button>
@@ -420,7 +420,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=71"></script>
+  <script src="app.js?v=72"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
