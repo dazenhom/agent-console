@@ -3079,7 +3079,7 @@
   $("open-goal-btn").onclick = openGoalView;
   const goalLoopHero = $("goal-loop-btn");
   if (goalLoopHero) goalLoopHero.onclick = openGoalView;
-  $("goal-back").onclick = closeGoalView;
+  $("goal-back").onclick = () => { if (_goalCurrentId) showGoalList(); else closeGoalView(); };
   $("goal-new").onclick = () => openGoalForm(null);
   $("goal-summary-btn").onclick = genGoalSummary;
 
