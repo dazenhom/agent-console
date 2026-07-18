@@ -288,12 +288,25 @@ class SessionHub:
         摘要暂存 pending_compact_summary，下一条消息发给 CLI 时作前缀注入续接上下文。
 
         复用 resume 失败自愈的同一套动作（forget_session + claude_session_id=None + 摘要种子），
-        绝不碰会话常驻进程之外的东西。回合进行中直接拒绝（不入队，语义会混乱）。"""
+        绝不碰会话常驻进程之外的东西。回合进行中直接拒绝（不入队，语义会混乱）。
+
+        摘要生成可长达 COMPACT_TIMEOUT，期间若不占位，is_running 会一直是 False，
+        用户此刻发消息就会起一个真实回合，等摘要返回后 compact 继续执行会 forget_session
+        杀掉正在跑的会话并与其写回竞态。故仿照 start_turn 往 self._turns[sid] 注册占位 task，
+        让整个压缩窗口内 is_running(sid) 保持为真，用户发的消息会被 submit_user_message 入队。"""
         if self.is_running(sid):
             return {"ok": False, "error": "回合进行中，稍后再压缩"}
         sess = db.get_session(sid)
         if not sess:
             return {"ok": False, "error": "会话不存在"}
+        task = asyncio.ensure_future(self._run_compact(sid, sess))
+        self._turns[sid] = task
+        try:
+            return await task
+        finally:
+            self._turns.pop(sid, None)
+
+    async def _run_compact(self, sid: str, sess: dict) -> dict:
         from . import compactor
         await self.broadcast(sid, {"type": "compacting"})
         summary = await compactor.summarize_session(sid)

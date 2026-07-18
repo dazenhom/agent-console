@@ -302,7 +302,11 @@ async def compact_session(sid: str):
     """真实上下文压缩：把整段对话概括成摘要并重置会话，摘要作前缀注入下一条消息续接。"""
     if not db.get_session(sid):
         raise HTTPException(status_code=404, detail="会话不存在")
-    return await hub.compact(sid)
+    res = await hub.compact(sid)
+    # 回合进行中属资源冲突，与「会话已开始，无法切换底层 Agent」统一用 409 语义
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("error", "压缩失败"))
+    return res
 
 
 @app.get("/api/sessions/{sid}/messages", dependencies=[Depends(require_auth)])
