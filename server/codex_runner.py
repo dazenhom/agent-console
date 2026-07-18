@@ -51,10 +51,6 @@ class CodexRunner:
         m = model or config.CODEX_MODEL
         if m:
             cmd += ["-m", m]
-        # 推理深度：非空时通过 -c model_reasoning_effort=<level> 传给 codex CLI。
-        # 必须插在位置参数（message）之前。
-        if config.CODEX_REASONING_EFFORT:
-            cmd += ["-c", f"model_reasoning_effort={config.CODEX_REASONING_EFFORT}"]
         cmd += [message]
         return cmd
 

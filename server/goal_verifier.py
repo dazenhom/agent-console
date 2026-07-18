@@ -1,11 +1,14 @@
 """目标循环验收器（checker）：用一次性子进程判断本轮产出是否达成目标。
 
-与 kanban.summarize_progress 一脉相承：独立的一次性子进程，绝不碰会话常驻上下文；
-复用 claude_runner._child_env() 剔除编排态环境变量（否则 403）。
+与 kanban.summarize_progress 一脉相承：独立的一次性子进程，绝不碰会话常驻上下文。
 
-关键设计：verifier 用 CLAUDE_MODEL_KANBAN，与生产会话模型分离（maker/checker 独立），
-避免"自己判自己完成"的乐观偏差。任何不确定（超时/异常/无输出/首行非 DONE）一律当
-CONTINUE——绝不误判完成，宁可多迭代一轮也不提前收工。
+关键设计：verifier 走 codex 引擎（GOAL_VERIFY_MODEL），与生产会话（claude）引擎分离，
+保证 maker/checker 独立，避免"自己判自己完成"的乐观偏差。之前用 claude 侧便宜档
+CLAUDE_MODEL_KANBAN，在没有 verify_command 时验收员要自己去 workdir 里 Glob/Read
+核实产出，复杂真实项目（大型数据管线等）常在旧的 300s 超时内探不完、频繁"验收超时按
+未完成继续"（多个目标循环的系统性未完成出口）；换成更强的 gpt-5.6-terra + 600s 缓解。
+任何不确定（超时/异常/无输出/首行非 DONE）一律当 CONTINUE——绝不误判完成，宁可多迭代
+一轮也不提前收工。命令拼法与 arbiter._run_codex_oneshot 一致（无 resume，JSONL 事件流）。
 """
 import json
 import re
@@ -59,34 +62,44 @@ async def verify(goal: str, stop_condition: str, produced: str,
     也作为子进程 cwd，避免评委在错误目录下核实产出而假阴性；None 时保持原行为。"""
     prompt = _build_prompt(goal, stop_condition, produced, cmd_result=cmd_result,
                            git_diff=git_diff, workdir=workdir)
-    cmd = [
-        config.CLAUDE_BIN, "--", "-p", prompt,
-        "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
-        "--effort", config.CLAUDE_ONESHOT_EFFORT,
-    ]
+    cmd = [config.CODEX_BIN, "--", "exec", "--json"]
+    if config.CODEX_SKIP_GIT_CHECK:
+        cmd += ["--skip-git-repo-check"]
+    if config.CODEX_BYPASS:
+        cmd += ["--dangerously-bypass-approvals-and-sandbox"]
+    else:
+        cmd += ["-s", config.CODEX_SANDBOX]
+    cmd += ["-m", config.GOAL_VERIFY_MODEL]
+    cmd += [prompt]
+
     jid, text, stderr_text, status = await run_logged_oneshot(
         "goal_verify", cmd, config.GOAL_VERIFY_TIMEOUT,
         session_id=session_id, schedule_id=schedule_id,
-        model=config.CLAUDE_MODEL_KANBAN, input_summary=(goal or "")[:120],
+        model=config.GOAL_VERIFY_MODEL, input_summary=(goal or "")[:120],
         cwd=workdir or None,
     )
     if status == "timeout":
         return False, "验收超时，按未完成继续"
     if status == "error":
         return False, "验收进程异常，按未完成继续"
-    # 挑出 JSON 那行解析（与 kanban.summarize_progress 一致）
-    result = ""
+    # 解析 codex exec --json 的 JSONL 事件流：最终答案来自 item.completed 里
+    # item.type == 'agent_message' 的 text（与 arbiter._run_codex_oneshot 一致）
+    messages: list[str] = []
     for line in text.splitlines():
         line = line.strip()
-        if not line.startswith("{"):
+        if not line:
             continue
         try:
-            data = json.loads(line)
+            evt = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if data.get("type") == "result" and not data.get("is_error"):
-            result = (data.get("result") or "").strip()
-            break
+        if evt.get("type") == "item.completed":
+            item = evt.get("item") or {}
+            if item.get("type") == "agent_message":
+                txt = (item.get("text") or "").strip()
+                if txt:
+                    messages.append(txt)
+    result = "\n\n".join(messages).strip()
     if not result:
         err_text = stderr_text[:200]
         print(f"[goal_verifier] no result, stderr={err_text!r}")

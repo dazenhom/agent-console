@@ -33,8 +33,12 @@ CLAUDE_PERMISSION_PROMPT = os.getenv("CLAUDE_PERMISSION_PROMPT", "true").lower()
 CLAUDE_TURN_TIMEOUT = int(os.environ.get("CLAUDE_TURN_TIMEOUT", "1800"))
 # 看门狗机制（常驻模式 send_turn）：只要 agent 还在推进（有新事件）就不杀，
 # 只有真正卡死（长时间无事件）、在循环、或超过绝对安全上限才终止。
-CLAUDE_IDLE_TIMEOUT = int(os.environ.get("CLAUDE_IDLE_TIMEOUT", "600"))   # 600s无事件 → 判定卡死
-CLAUDE_TURN_MAX = int(os.environ.get("CLAUDE_TURN_MAX", "7200"))           # 2h绝对上限
+# 关键：单个 Bash 工具调用（如大体量数据处理/训练/构建）执行期间 CLI 不会吐任何中间事件，
+# 直到该调用返回才有下一条 JSONL——这段"命令自己在跑"的时间会被计入 idle。300~600s 对真实
+# 数据管线常常不够，之前多次把"命令还在正常跑"误判成"卡死"提前掐断；调大到 1800s（30min）
+# 给耐心；真正卡死另有循环检测（CLAUDE_LOOP_REPEAT/ERRORS）兜底，不靠 idle 单独判断。
+CLAUDE_IDLE_TIMEOUT = int(os.environ.get("CLAUDE_IDLE_TIMEOUT", "1800"))   # 1800s无事件 → 判定卡死
+CLAUDE_TURN_MAX = int(os.environ.get("CLAUDE_TURN_MAX", "14400"))          # 4h绝对上限（同样为大任务放宽）
 CLAUDE_LOOP_REPEAT = int(os.environ.get("CLAUDE_LOOP_REPEAT", "8"))        # 相同工具调用连续N次 → 循环
 CLAUDE_LOOP_ERRORS = int(os.environ.get("CLAUDE_LOOP_ERRORS", "10"))       # 连续报错N次 → 循环
 CLAUDE_WATCHDOG_INTERVAL = int(os.environ.get("CLAUDE_WATCHDOG_INTERVAL", "15"))  # 看门狗检查间隔
@@ -48,23 +52,31 @@ CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() 
 #   claude-opus-4-7[1m] / claude-opus-4-6[1m] / claude-haiku-4-5 / claude-hy3
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
 # 看板进展摘要专用模型：用 hy3（tclaude 提供的档位模型），概括质量更好。
+# 注：已不再被 kanban/triage/goal_summary/summarizer 的便宜档一次性任务使用（见 CHEAP_MODEL）；
+# 仅 session_hub 的旧档位兼容映射（_LEGACY_MAP "fast"）还引用 CLAUDE_MODEL_FAST。
 CLAUDE_MODEL_KANBAN = os.environ.get("CLAUDE_MODEL_KANBAN", "claude-hy3")
 CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-5")
 CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-4-8[1m]")
-# 前端可选的完整模型列表（mode 直接存模型 ID）。GLM 5.2 放首位作为默认。
+# 前端可选的完整模型列表（mode 直接存模型 ID）。claude-sonnet-5 放首位作为默认（GLM 5.2 曾
+# 出过问题，撤下默认位，仍保留在列表里可手动选）。
 CLAUDE_MODELS = [
-    "claude-glm-5.2", "claude-glm-5.2[1m]",
+    "claude-sonnet-5", "claude-sonnet-5[1m]",
     "claude-sonnet-4-6", "claude-sonnet-4-6[1m]",
     "claude-opus-4-8", "claude-opus-4-8[1m]",
     "claude-opus-4-7", "claude-opus-4-7[1m]",
     "claude-opus-4-6", "claude-opus-4-6[1m]",
     "claude-haiku-4-5", "claude-hy3", "opusplan",
-    "claude-sonnet-5", "claude-sonnet-5[1m]",
+    "claude-glm-5.2", "claude-glm-5.2[1m]",
     "claude-deepseek-v4-pro", "claude-deepseek-v4-pro[1m]",
     "claude-deepseek-v4-flash", "claude-deepseek-v4-flash[1m]",
 ]
-# 新会话默认模型：GLM 5.2。（旧档位 fast/strong/super 仍兼容，见 session_hub 的 _LEGACY_MAP。）
-CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "claude-glm-5.2")
+# 新会话默认模型：Sonnet 5。（GLM 5.2 曾用作默认，出问题后改回；旧档位 fast/strong/super
+# 仍兼容，见 session_hub 的 _LEGACY_MAP。）
+CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "claude-sonnet-5")
+# 编排层"便宜模型"一次性机械任务（看板摘要/分诊/目标循环总览/行摘要/标题）统一用的模型：
+# 走 codex 引擎（tcodex），与生产会话（claude 引擎）分离。原来是 claude 侧 hy3/haiku，
+# 换成 gpt-5.6-luna（sol/terra/luna 三档里最轻量的一档，见 CODEX_MODELS）。
+CHEAP_MODEL = os.environ.get("CHEAP_MODEL", "gpt-5.6-luna")
 # 思考深度（low/medium/high/xhigh/max）。medium 平衡速度与质量；要更深手动调。
 # CLAUDE_EFFORT 是全局默认/兜底；每会话可在 sessions.effort 单独设置（见 db/main）。
 CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "medium")
@@ -89,7 +101,9 @@ CODEX_BIN = os.environ.get("CODEX_BIN", "/root/.nvm/versions/node/v22.23.1/bin/t
 CODEX_SANDBOX = os.environ.get("CODEX_SANDBOX", "workspace-write")
 CODEX_BYPASS = os.environ.get("CODEX_BYPASS", "true").lower() == "true"
 CODEX_SKIP_GIT_CHECK = os.environ.get("CODEX_SKIP_GIT_CHECK", "true").lower() == "true"
-CODEX_TURN_TIMEOUT = int(os.environ.get("CODEX_TURN_TIMEOUT", "3600"))
+# codex 引擎没有 idle 看门狗，是整回合硬超时（含内部所有工具调用耗时）：跟 claude 侧一样
+# 调大，给大体量数据处理/构建留够时间，别把"命令还在跑"误判成超时终止。
+CODEX_TURN_TIMEOUT = int(os.environ.get("CODEX_TURN_TIMEOUT", "7200"))
 CODEX_MODEL = os.environ.get("CODEX_MODEL", "")
 # 前端可选的 codex 模型列表（codex 会话的 mode 直接存模型 ID）。gpt-5.6-sol 放首位作为默认。
 CODEX_MODELS = [
@@ -100,9 +114,14 @@ CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.6-sol")
 # Dispatch 基础执行(dev/兜底)路由的默认引擎与模型；deep/评判仍走 Opus，不受此影响
 DISPATCH_EXEC_ENGINE = os.environ.get("DISPATCH_EXEC_ENGINE", "codex")
 DISPATCH_EXEC_MODEL = os.environ.get("DISPATCH_EXEC_MODEL", CODEX_DEFAULT_MODEL)
-# codex 推理深度：通过 `-c model_reasoning_effort=<level>` 传给 codex CLI。
-# 标准档位 high 为最高；xhigh/max 是 claude/tclaude 侧的档位命名，codex 侧未验证，不要套用。
-# 设为空字符串则不传该参数（让 CLI 用默认）。
+# codex 推理深度：该值目前不会被传给 codex CLI 命令行。已确认命令行显式传
+# `-c model_reasoning_effort=<level>` 会触发 codex CLI (v0.144.6) 的 prewarm-mismatch bug——
+# 即使数值与 `~/.tcodex/config.toml` 里的默认值相同，显式传参也会导致本轮 turn 无法复用
+# 启动时预热好的 websocket 连接，卡 ~15 秒后现开新连接，而新连接在当前腾讯内网网关环境下
+# 必现失败超时。四处调用点（goal_verifier.py / arbiter.py / codex_oneshot.py /
+# codex_runner.py）已移除该拼接；实际生效的 effort 档位由 `~/.tcodex/config.toml` 里的
+# `model_reasoning_effort` 默认值决定。若未来要复用这个环境变量，必须先确认 codex CLI
+# 有不触发该 bug 的传参方式，不要简单恢复 `-c` 拼接。
 CODEX_REASONING_EFFORT = os.environ.get("CODEX_REASONING_EFFORT", "high")
 # 会话底层 Agent 引擎：claude（tclaude）或 codex（tcodex）。新会话默认 claude。
 VALID_ENGINES = {"claude", "codex"}
@@ -114,21 +133,30 @@ SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "true").lower() == "true"
 SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "60"))
 
 # ---- 目标循环（kind=goal）----
-# 给一个自然语言目标 + 完成标准，让会话自迭代直到 verifier（小模型 checker）判定达成
-# 或触顶（迭代数/成本）。GOAL_POLL_SEC 是状态机 tick 间隔；verifier 用 CLAUDE_MODEL_KANBAN
-# 与生产会话模型分离，保证 maker/checker 独立。GOAL_MAX_COST_USD<=0 表示不做成本熔断。
+# 给一个自然语言目标 + 完成标准，让会话自迭代直到 verifier（checker）判定达成
+# 或触顶（迭代数/成本）。GOAL_POLL_SEC 是状态机 tick 间隔；verifier 走 codex 引擎
+# （GOAL_VERIFY_MODEL），与生产会话（claude）引擎分离，保证 maker/checker 独立。
+# GOAL_MAX_COST_USD<=0 表示不做成本熔断。
 GOAL_POLL_SEC = int(os.environ.get("GOAL_POLL_SEC", "30"))
 GOAL_MAX_ITERATIONS = int(os.environ.get("GOAL_MAX_ITERATIONS", "10"))
 GOAL_MAX_COST_USD = float(os.environ.get("GOAL_MAX_COST_USD", "20"))
-GOAL_VERIFY_TIMEOUT = float(os.environ.get("GOAL_VERIFY_TIMEOUT", "300"))
+# 验收员没有 verify_command 客观信号时得自己去 workdir 里 Glob/Read 核实产出，真实项目
+# （尤其大型数据管线）经常在 300s 内探索不完，900s 兜住这类场景，避免"验收超时=系统性未完成出口"。
+GOAL_VERIFY_TIMEOUT = float(os.environ.get("GOAL_VERIFY_TIMEOUT", "900"))
+# 验收员用的 codex 模型：换掉原来 claude 侧的便宜档 hy3，用更强的 gpt-5.6-terra 减少
+# 复杂真实项目验收里的漏判/超时。
+GOAL_VERIFY_MODEL = os.environ.get("GOAL_VERIFY_MODEL", "gpt-5.6-terra")
 # 新版 planned 目标循环：先把目标拆成有序子任务，每轮只推进一个子任务并单独验收。
 # 单个子任务验收未过时最多重试多少轮，超过则标记 skipped 跳过、继续下一个（避免卡死在某个子任务）。
 GOAL_SUBTASK_MAX_ATTEMPTS = int(os.environ.get("GOAL_SUBTASK_MAX_ATTEMPTS", "3"))
-# 可执行验收命令（verify_command）的子进程超时（秒）：跑测试/构建可能较久，默认给到 300s
-GOAL_CMD_TIMEOUT = float(os.environ.get("GOAL_CMD_TIMEOUT", "300"))
+# 可执行验收命令（verify_command）的子进程超时（秒）：真实数据管线的 verify_command 常常是
+# "跑全量测试 + 扫产出目录核对数据集"，300s 经常不够、把"命令还在正常跑"误判成验收超时。
+# 调大到 1800s（30min）给耐心；命令本身该多久跑完仍由 verify_command 的内容决定，这里只是
+# 不再抢先掐断。
+GOAL_CMD_TIMEOUT = float(os.environ.get("GOAL_CMD_TIMEOUT", "1800"))
 
 # ---- Triage 自动分流（H3）----
-# 秘书生成晚报后，用便宜模型（CLAUDE_MODEL_KANBAN）对当日会话/任务做一次性分诊：
+# 秘书生成晚报后，用便宜模型（CHEAP_MODEL）对当日会话/任务做一次性分诊：
 # 判断哪些是值得跟进的事项，逐项给出置信度与建议动作。默认保守——TRIAGE_AUTO_DISPATCH=false
 # 时全部进"待分诊收件箱"等人工确认，绝不自动派单。只有开了自动派单、且置信度够高、
 # 范围小、有明确完成标准，且未超每日上限时，才建隔离会话+目标循环自动开工。
@@ -138,7 +166,10 @@ TRIAGE_AUTO_CONFIDENCE = float(os.environ.get("TRIAGE_AUTO_CONFIDENCE", "0.85"))
 TRIAGE_MAX_AUTO_PER_DAY = int(os.environ.get("TRIAGE_MAX_AUTO_PER_DAY", "2"))
 TRIAGE_MAX_ITEMS = int(os.environ.get("TRIAGE_MAX_ITEMS", "8"))
 TRIAGE_TIMEOUT = float(os.environ.get("TRIAGE_TIMEOUT", "90"))
-TRIAGE_GOAL_MAX_ITERATIONS = int(os.environ.get("TRIAGE_GOAL_MAX_ITERATIONS", "3"))
+# 自动派单给的目标循环轮数上限：3 轮对"大型数据管线"这类事项经常不够（每轮验收不过就
+# 耗尽退出，B1 就是这么被提前判定失败的），调大到 6 轮给更多耐心；仍远低于手工创建目标循环
+# 的默认上限（GOAL_MAX_ITERATIONS=10），维持"自动派单更保守"的整体设计。
+TRIAGE_GOAL_MAX_ITERATIONS = int(os.environ.get("TRIAGE_GOAL_MAX_ITERATIONS", "6"))
 
 # ---- 背对背双执行 + 综合仲裁 ----
 # 同一问题背对背交给 Claude（工程师A）+ Codex（工程师B）各出一版方案，再用更强的
