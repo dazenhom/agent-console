@@ -2554,6 +2554,16 @@
   function fmtGoalStatus(status) {
     return GOAL_STATUS_LABEL[status] || [status || "-", ""];
   }
+  // 列表分组：按互斥优先级把每个目标循环归入唯一组，保证 KPI 各组之和 == 总数。
+  // 返回徽章 class / 进度条 modifier / 排序 rank（进行中→已停用→已达成→已耗尽）
+  function goalGroup(it) {
+    const st = it.goal_status;
+    if (it.enabled && (st === "running" || st === "producing" || st === "verifying"))
+      return { group: "active", badgeCls: "tag-progress", meterCls: "is-active", rank: 0 };
+    if (st === "done") return { group: "done", badgeCls: "tag-good", meterCls: "is-done", rank: 2 };
+    if (st === "exhausted") return { group: "exhausted", badgeCls: "tag-warn", meterCls: "is-exhausted", rank: 3 };
+    return { group: "disabled", badgeCls: "tag-warn", meterCls: "is-disabled", rank: 1 };
+  }
   let _goalPollTimer = null;
   let _goalCurrentId = null;  // 详情态正在看的目标循环 id（列表态为 null），用于 goal_update 就地刷新
   function stopGoalPoll() { if (_goalPollTimer) { clearTimeout(_goalPollTimer); _goalPollTimer = null; } }
@@ -2582,23 +2592,44 @@
         body.innerHTML = '<div class="entity-empty"><div class="empty-emoji">🎯</div><div>还没有目标循环</div><div class="empty-sub">点右上角「+ 新目标」，设一个完成标准让 Agent 自迭代到达成</div></div>';
         return;
       }
-      const ul = el("ul", "entity-list");
-      for (const it of items) {
-        const sess = state.sessions.find((x) => x.id === it.session_id);
-        const [label, cls] = fmtGoalStatus(it.goal_status);
-        const li = el("li");
-        const head = el("div", "e-head");
-        head.appendChild(el("span", "e-name", escapeHtml((it.prompt || "").slice(0, 60) || "（无标题）")));
-        head.appendChild(el("span", "e-tag " + cls, escapeHtml(label)));
-        if (!it.enabled) head.appendChild(el("span", "e-tag tag-warn", "已停用"));
-        li.appendChild(head);
-        li.appendChild(el("div", "e-desc",
-          `会话：${escapeHtml(sess ? sess.title : "(已删除)")} · 迭代 ${it.iter_count || 0}/${it.max_iterations || 10}`));
-        li.style.cursor = "pointer";
-        li.onclick = () => openGoalDetail(it.id);
-        ul.appendChild(li);
+      // KPI 行：四组各自计数 + 总数（各组互斥，和恒等于总数）
+      const counts = { active: 0, done: 0, exhausted: 0, disabled: 0 };
+      for (const it of items) counts[goalGroup(it).group]++;
+      const kpi = el("div", "goal-kpi");
+      for (const [lbl, n] of [["进行中", counts.active], ["已达成", counts.done], ["已耗尽", counts.exhausted], ["已停用", counts.disabled], ["总数", items.length]]) {
+        const cell = el("div", "goal-kpi-item");
+        cell.appendChild(el("div", "goal-kpi-num", String(n)));
+        cell.appendChild(el("div", "goal-kpi-label", escapeHtml(lbl)));
+        kpi.appendChild(cell);
       }
-      body.appendChild(ul);
+      body.appendChild(kpi);
+      // 排序：进行中→已停用→已达成→已耗尽，同组按创建时间倒序
+      items.sort((a, b) => goalGroup(a).rank - goalGroup(b).rank || (b.created_at || 0) - (a.created_at || 0));
+      const grid = el("div", "goal-grid");
+      for (const it of items) {
+        const g = goalGroup(it);
+        const sess = state.sessions.find((x) => x.id === it.session_id);
+        const [label] = fmtGoalStatus(it.goal_status);
+        // 来源：分诊派单标记在会话标题里（也兜底查 prompt），sess 可能不存在
+        const isTriage = (it.prompt || "").includes("[自动派单]") || (sess && (sess.title || "").includes("[自动派单]"));
+        // 标题优先用会话标题（prompt 首行是"项目路径…"抓不到重点），prompt 兜底
+        const titleText = ((sess && sess.title) ? sess.title : (it.prompt || "（无标题）")).replace(/\s+/g, " ").trim().slice(0, 60);
+        const pct = it.max_iterations ? Math.min(100, Math.round((it.iter_count || 0) / it.max_iterations * 100)) : 0;
+        const card = el("div", "goal-card" + (g.group === "disabled" ? " is-disabled" : ""),
+          `<div class="goal-card-head">` +
+            `<span class="goal-card-title">${escapeHtml(titleText)}</span>` +
+            (isTriage ? `<span class="e-tag goal-badge-triage">分诊</span>` : "") +
+            `<span class="e-tag ${g.badgeCls}">${escapeHtml(label)}</span>` +
+          `</div>` +
+          `<div class="goal-meter">` +
+            `<div class="goal-meter-track"><div class="goal-meter-fill ${g.meterCls}" style="width:${pct}%"></div></div>` +
+            `<div class="goal-card-meta">迭代 ${escapeHtml(String(it.iter_count || 0))}/${escapeHtml(String(it.max_iterations || 10))}</div>` +
+          `</div>` +
+          (it.last_feedback ? `<div class="goal-card-feedback">${escapeHtml(it.last_feedback)}</div>` : ""));
+        card.onclick = () => openGoalDetail(it.id);
+        grid.appendChild(card);
+      }
+      body.appendChild(grid);
     } catch (e) {
       body.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
     }
