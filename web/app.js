@@ -2554,15 +2554,27 @@
   function fmtGoalStatus(status) {
     return GOAL_STATUS_LABEL[status] || [status || "-", ""];
   }
+  // 精简目标反馈：剥离"理由："等前缀、删掉内联长绝对路径/反引号路径，让结论句前置；兜底原文
+  function simplifyFeedback(s) {
+    if (!s) return "";
+    const raw = String(s).trim();
+    let t = raw;
+    t = t.replace(/^\s*(理由|原因|说明|结论|反馈)\s*[:：]\s*/, "");
+    t = t.replace(/`[^`]*\/[^`]*`/g, "");
+    t = t.replace(/\/[\w.\-\/]{12,}/g, "");
+    t = t.replace(/经?在?工作目录\s*实际核实\s*[，,、]?/g, "");
+    t = t.replace(/\s{2,}/g, " ").replace(/^[\s，,、。.·-]+/, "").trim();
+    return t || raw;
+  }
   // 列表分组：按互斥优先级把每个目标循环归入唯一组，保证 KPI 各组之和 == 总数。
-  // 返回徽章 class / 进度条 modifier / 排序 rank（进行中→已停用→已达成→已耗尽）
+  // 返回徽章 class / 进度条 modifier / 排序 rank（进行中→已耗尽→已停用→已达成）
   function goalGroup(it) {
     const st = it.goal_status;
     if (it.enabled && (st === "running" || st === "producing" || st === "verifying"))
       return { group: "active", badgeCls: "tag-progress", meterCls: "is-active", rank: 0 };
-    if (st === "done") return { group: "done", badgeCls: "tag-good", meterCls: "is-done", rank: 2 };
-    if (st === "exhausted") return { group: "exhausted", badgeCls: "tag-warn", meterCls: "is-exhausted", rank: 3 };
-    return { group: "disabled", badgeCls: "tag-warn", meterCls: "is-disabled", rank: 1 };
+    if (st === "done") return { group: "done", badgeCls: "tag-good", meterCls: "is-done", rank: 3 };
+    if (st === "exhausted") return { group: "exhausted", badgeCls: "tag-warn", meterCls: "is-exhausted", rank: 1 };
+    return { group: "disabled", badgeCls: "tag-warn", meterCls: "is-disabled", rank: 2 };
   }
   let _goalPollTimer = null;
   let _goalCurrentId = null;  // 详情态正在看的目标循环 id（列表态为 null），用于 goal_update 就地刷新
@@ -2603,7 +2615,7 @@
         kpi.appendChild(cell);
       }
       body.appendChild(kpi);
-      // 排序：进行中→已停用→已达成→已耗尽，同组按创建时间倒序
+      // 排序：进行中→已耗尽→已停用→已达成，同组按创建时间倒序
       items.sort((a, b) => goalGroup(a).rank - goalGroup(b).rank || (b.created_at || 0) - (a.created_at || 0));
       const grid = el("div", "goal-grid");
       for (const it of items) {
@@ -2614,7 +2626,9 @@
         const isTriage = (it.prompt || "").includes("[自动派单]") || (sess && (sess.title || "").includes("[自动派单]"));
         // 标题优先用会话标题（prompt 首行是"项目路径…"抓不到重点），prompt 兜底
         const titleText = ((sess && sess.title) ? sess.title : (it.prompt || "（无标题）")).replace(/\s+/g, " ").trim().slice(0, 60);
-        const pct = it.max_iterations ? Math.min(100, Math.round((it.iter_count || 0) / it.max_iterations * 100)) : 0;
+        const pct = it.goal_status === "done"
+          ? 100
+          : (it.max_iterations ? Math.min(100, Math.round((it.iter_count || 0) / it.max_iterations * 100)) : 0);
         const card = el("div", "goal-card" + (g.group === "disabled" ? " is-disabled" : ""),
           `<div class="goal-card-head">` +
             `<span class="goal-card-title">${escapeHtml(titleText)}</span>` +
@@ -2623,9 +2637,9 @@
           `</div>` +
           `<div class="goal-meter">` +
             `<div class="goal-meter-track"><div class="goal-meter-fill ${g.meterCls}" style="width:${pct}%"></div></div>` +
-            `<div class="goal-card-meta">迭代 ${escapeHtml(String(it.iter_count || 0))}/${escapeHtml(String(it.max_iterations || 10))}</div>` +
+            `<div class="goal-card-meta">迭代 ${escapeHtml(String(it.iter_count || 0))}/${escapeHtml(String(it.max_iterations || 10))} · ${escapeHtml(it.last_run ? fmtRelTime(it.last_run) : "未运行")}</div>` +
           `</div>` +
-          (it.last_feedback ? `<div class="goal-card-feedback">${escapeHtml(it.last_feedback)}</div>` : ""));
+          (it.last_feedback ? `<div class="goal-card-feedback">${escapeHtml(simplifyFeedback(it.last_feedback))}</div>` : ""));
         card.onclick = () => openGoalDetail(it.id);
         grid.appendChild(card);
       }
