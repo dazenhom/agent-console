@@ -691,6 +691,27 @@ body.hub-resizing {
 .goal-card-meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
 .goal-card-feedback { font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
+/* 目标循环总览：完成率 + 各状态计数卡（stat-card 风格），stat-ico 按状态着色 */
+.goal-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.goal-overview .goal-meter { margin-top: 8px; }
+.goal-stat-active .stat-ico { color: var(--accent); }
+.goal-stat-done .stat-ico { color: var(--green); }
+.goal-stat-exhausted .stat-ico { color: var(--yellow); }
+.goal-stat-disabled .stat-ico { color: var(--red); }
+/* 总览小结面板（可折叠） */
+.goal-summary-panel { background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 12px 14px; margin-bottom: 18px; }
+.goal-summary-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; }
+.goal-summary-toggle { font-size: 12px; color: var(--accent); font-weight: 500; }
+.goal-summary-body { margin-top: 10px; font-size: 13px; color: var(--muted); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.goal-summary-panel.collapsed .goal-summary-body { display: none; }
+/* 分节 + 卡片状态左色条 */
+.goal-section { margin-bottom: 20px; }
+.goal-card.is-active { border-left: 3px solid var(--accent); }
+.goal-card.is-done { border-left: 3px solid var(--green); }
+.goal-card.is-exhausted { border-left: 3px solid var(--yellow); }
+.goal-card.is-disabled { border-left: 3px solid var(--red); }
+.goal-continue-btn { margin-top: 12px; }
+
 /* 表单 */
 .entity-form { display: flex; flex-direction: column; gap: 14px; max-width: 720px; }
 .entity-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
