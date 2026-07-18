@@ -313,7 +313,7 @@ async def _run_goal_verify(scid: str) -> None:
         done, reason = await verifier.judge("nl",
                                             goal=sch.get("prompt") or "",
                                             stop_condition=sch.get("stop_condition") or "",
-                                            produced=produced[-8000:] if len(produced) > 8000 else produced,
+                                            produced=produced,
                                             session_id=sess.get("id"), schedule_id=scid,
                                             cmd_result=cmd_result, git_diff=git_diff,
                                             workdir=sess.get("workdir") or "")
@@ -592,7 +592,7 @@ async def _run_goal_verify_planned(scid: str) -> None:
                 sess, verify_command=sch.get("verify_command"))
             done, reason = await verifier.judge(
                 "nl", goal=sch.get("prompt") or "", stop_condition=sch.get("stop_condition") or "",
-                produced=produced[-8000:] if len(produced) > 8000 else produced,
+                produced=produced,
                 session_id=sess.get("id"), schedule_id=scid,
                 cmd_result=cmd_result, git_diff=git_diff,
                 workdir=sess.get("workdir") or "")
@@ -619,7 +619,7 @@ async def _run_goal_verify_planned(scid: str) -> None:
         sub_criteria = "完成上述子任务要求：" + (sub.get("instruction") or sub.get("title") or "")
         done, reason = await verifier.judge(
             "nl", goal=sub_goal, stop_condition=sub_criteria,
-            produced=produced[-8000:] if len(produced) > 8000 else produced,
+            produced=produced,
             session_id=sess.get("id"), schedule_id=scid, git_diff=git_diff,
             workdir=sess.get("workdir") or "")
         attempts = int(sub.get("attempts") or 0)
