@@ -2912,7 +2912,7 @@
         head.appendChild(el("span", "e-arrow", "▸"));
         head.addEventListener("click", () => li.classList.toggle("open"));
         li.appendChild(head);
-        // 收起态：一行反馈/阶段预览。展开态：完整产出摘要 + 反馈 + 元信息 + 跳转会话。
+        // 收起态：一行反馈/阶段预览。展开态：本轮产出摘要 + 元信息 + 跳转会话。
         const reason = isCurrent ? goalPhaseText(sch.goal_status)
           : interrupted ? (it.feedback || "该轮进程中断，未留下验收结论")
           : (it.feedback || "");
@@ -2922,7 +2922,6 @@
           ? "该轮进程中断，未留下产出"
           : (it.produced_excerpt || "（本轮无产出摘要）");
         bodyEl.appendChild(el("pre", "goal-round-excerpt", escapeHtml(excerpt)));
-        if (it.feedback) bodyEl.appendChild(el("div", "goal-text", escapeHtml(it.feedback)));
         let metaText = `原始迭代号 #${it.iter_no}`;
         if (it.task) {
           if (it.task.duration_ms) metaText += ` · 耗时 ${(it.task.duration_ms / 1000).toFixed(1)}s`;
