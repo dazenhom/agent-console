@@ -297,6 +297,14 @@ async def resume_session(sid: str):
         raise HTTPException(status_code=500, detail=f"启动 Claude CLI 失败：{e}")
 
 
+@app.post("/api/sessions/{sid}/compact", dependencies=[Depends(require_auth)])
+async def compact_session(sid: str):
+    """真实上下文压缩：把整段对话概括成摘要并重置会话，摘要作前缀注入下一条消息续接。"""
+    if not db.get_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return await hub.compact(sid)
+
+
 @app.get("/api/sessions/{sid}/messages", dependencies=[Depends(require_auth)])
 async def get_messages(sid: str):
     if not db.get_session(sid):

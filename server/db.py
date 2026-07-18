@@ -278,6 +278,11 @@ def init_db() -> None:
             _add_col("sessions", "is_worktree INTEGER DEFAULT 0")
         if "worktree_base" not in cols:
             _add_col("sessions", "worktree_base TEXT DEFAULT ''")
+        # /compact 上下文压缩：待注入下一条消息的摘要前缀（拿到新 claude_session_id 后清空）/ 最近一次压缩时间戳
+        if "pending_compact_summary" not in cols:
+            _add_col("sessions", "pending_compact_summary TEXT DEFAULT ''")
+        if "compacted_at" not in cols:
+            _add_col("sessions", "compacted_at REAL DEFAULT 0")
         # 看板进展摘要三列：正文 / 生成时间 / 生成时所依据的 jsonl mtime（用于缓存判断）
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")

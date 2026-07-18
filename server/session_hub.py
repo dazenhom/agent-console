@@ -260,6 +260,10 @@ class SessionHub:
     async def _start_expanded(self, sid: str, user_text: str, mode=None) -> str:
         """展开 skill 后开始回合。返回 'started' 或 'error:...'"""
         from . import skill_store
+        # /compact：真实上下文压缩，不走 skill 展开、不开回合
+        if user_text.strip() == "/compact":
+            res = await self.compact(sid)
+            return "started" if res.get("ok") else f"error:{res.get('error', '压缩失败')}"
         if user_text.startswith("/"):
             expanded, err = skill_store.expand(user_text)
             if err:
@@ -278,6 +282,32 @@ class SessionHub:
             await self.emit_queue_update(sid)
             return "queued"
         return await self._start_expanded(sid, user_text, mode)
+
+    async def compact(self, sid: str) -> dict:
+        """真实上下文压缩：把整段对话概括成摘要，重置会话（丢弃 claude_session_id），
+        摘要暂存 pending_compact_summary，下一条消息发给 CLI 时作前缀注入续接上下文。
+
+        复用 resume 失败自愈的同一套动作（forget_session + claude_session_id=None + 摘要种子），
+        绝不碰会话常驻进程之外的东西。回合进行中直接拒绝（不入队，语义会混乱）。"""
+        if self.is_running(sid):
+            return {"ok": False, "error": "回合进行中，稍后再压缩"}
+        sess = db.get_session(sid)
+        if not sess:
+            return {"ok": False, "error": "会话不存在"}
+        from . import compactor
+        await self.broadcast(sid, {"type": "compacting"})
+        summary = await compactor.summarize_session(sid)
+        if not summary:
+            return {"ok": False, "error": "对话为空，无需压缩"}
+        # 重置会话：回收常驻进程、丢弃 claude_session_id，摘要暂存待下条消息注入
+        await _runner_for(sess).forget_session(sid)
+        db.update_session(sid, claude_session_id=None,
+                          pending_compact_summary=summary, compacted_at=time.time())
+        db.add_message(sid, "compact", {"summary": summary})
+        await self.broadcast(sid, {
+            "type": "message", "role": "compact", "content": {"summary": summary},
+        })
+        return {"ok": True}
 
     async def _drain_queue(self, sid: str) -> None:
         """出队并自动开始下一条（循环处理 skill 报错跳过）"""
@@ -367,6 +397,16 @@ class SessionHub:
             # codex 的 run_turn 不接受 effort 形参，故仅 claude 引擎透传该 kwarg。
             turn_extra = {} if effort is None else {"effort": effort}
             r = _runner_for(sess)
+            # /compact 遗留的摘要前缀：本回合即将全新开会话（无 claude_session_id）时，把摘要
+            # 拼进发给 CLI 的消息里帮 agent 续接上下文。只影响发给 CLI 的文本，DB 里的用户气泡
+            # 保持原样干净。拿到新 claude_session_id 后清空该字段（见回合末尾）。
+            send_message = user_text
+            pending_summary = (sess or {}).get("pending_compact_summary") or ""
+            if pending_summary and not (sess or {}).get("claude_session_id"):
+                send_message = (
+                    "以下是之前对话经压缩后的摘要，请据此继续：\n\n"
+                    + pending_summary + "\n\n" + user_text
+                )
             # codex 无常驻进程，恒走 run_turn；claude 视配置走 send_turn / run_turn
             if (sess or {}).get("engine") == "codex":
                 _turn_fn = r.run_turn
@@ -374,7 +414,7 @@ class SessionHub:
                 _turn_fn = r.send_turn if config.CLAUDE_PERSISTENT else r.run_turn
             ret = await _turn_fn(
                 session_id=sid,
-                message=user_text,
+                message=send_message,
                 workdir=(sess or {}).get("workdir") or config.DEFAULT_WORKDIR,
                 resume_claude_session=(sess or {}).get("claude_session_id"),
                 on_event=on_event,
@@ -407,6 +447,9 @@ class SessionHub:
                 )
             if ret.get("claude_session_id"):
                 db.update_session(sid, claude_session_id=ret["claude_session_id"])
+                # 新会话已建立：/compact 遗留的摘要前缀已注入本回合，清空避免下回合重复拼接
+                if pending_summary:
+                    db.update_session(sid, pending_compact_summary="")
             if ret.get("error"):
                 final_result["status"] = "error"
                 db.add_message(sid, "error", {"message": ret["error"]})

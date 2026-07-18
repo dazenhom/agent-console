@@ -147,6 +147,14 @@ TRIAGE_GOAL_MAX_ITERATIONS = int(os.environ.get("TRIAGE_GOAL_MAX_ITERATIONS", "3
 ARBITRATION_TIMEOUT = float(os.environ.get("ARBITRATION_TIMEOUT", "600"))
 ARBITER_MODEL = os.environ.get("ARBITER_MODEL", "claude-opus-4-8[1m]")
 
+# ---- /compact 上下文压缩 ----
+# 用一次性子进程把整段对话概括成摘要，重置会话后作为前缀注入下一条消息，达到"截断历史再续"。
+# COMPACT_MODEL 用较强模型保证摘要质量；COMPACT_TIMEOUT 是概括子进程的超时（秒）。
+COMPACT_MODEL = os.environ.get("COMPACT_MODEL", CLAUDE_MODEL_STRONG)
+COMPACT_TIMEOUT = float(os.environ.get("COMPACT_TIMEOUT", "180"))
+# 喂给概括模型的转录文本上限（字）：超限时保留首尾两段，中间省略，兼顾整段概括与 prompt 体积。
+COMPACT_TRANSCRIPT_CHARS = int(os.environ.get("COMPACT_TRANSCRIPT_CHARS", "16000"))
+
 # ---- 会话标题异步刷新 ----
 # 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
 # 之后每 TITLE_EVERY_N 回合刷一次；用户手动改名（title_auto=0）后不再自动覆盖。
