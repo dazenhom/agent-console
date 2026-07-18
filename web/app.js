@@ -2886,19 +2886,21 @@
     if (!rounds.length) {
       ul.innerHTML = '<li class="e-empty-row">还没有完成任何一轮验收</li>';
     } else {
-      // rounds 按 iter_no 升序（后端已排好）。只有整个循环仍在跑、且是最新一轮，才算真正"进行中"；
+      // rounds 按时间升序给出连续编号（第 N 次迭代），编号与原始 iter_no 解耦。
+      // 只有整个循环仍在跑、且是最新一轮，才算真正"进行中"；
       // 循环已终止（耗尽/达成/暂停）后仍是 producing/verifying 的行，是进程重启/中断残留的僵尸行，标"已中断"。
       const loopActive = !!sch.enabled && ["running", "producing", "verifying"].includes(sch.goal_status);
-      const maxIter = rounds.reduce((m, it) => Math.max(m, it.iter_no || 0), 0);
-      rounds.forEach((it) => {
+      const sorted = rounds.slice().sort((a, b) => (a.started_at || 0) - (b.started_at || 0));
+      const lastIdx = sorted.length - 1;
+      sorted.forEach((it, idx) => {
         const li = el("li");
         const inProgressRow = it.status === "producing" || it.status === "verifying";
-        const isCurrent = inProgressRow && loopActive && (it.iter_no || 0) === maxIter;
+        const isCurrent = inProgressRow && loopActive && idx === lastIdx;
         const interrupted = inProgressRow && !isCurrent;
         const bad = it.status === "error";
         const roundDone = it.verdict === "done";
         const head = el("div", "e-head");
-        head.appendChild(el("span", "e-name", `第 ${it.iter_no} 轮 · ${fmtTime(it.started_at)}`));
+        head.appendChild(el("span", "e-name", `第 ${idx + 1} 次迭代 · ${fmtTime(it.started_at)}`));
         let tag, tagCls;
         if (isCurrent) { tag = it.status === "verifying" ? "验收中" : "执行中"; tagCls = "tag-progress"; }
         else if (interrupted) { tag = "已中断"; tagCls = "tag-muted"; }
@@ -2907,11 +2909,32 @@
         else if (it.verdict === "exhausted") { tag = "已耗尽"; tagCls = "tag-warn"; }
         else { tag = "继续迭代"; tagCls = ""; }
         head.appendChild(el("span", "e-tag " + tagCls, escapeHtml(tag)));
+        head.appendChild(el("span", "e-arrow", "▸"));
+        head.addEventListener("click", () => li.classList.toggle("open"));
         li.appendChild(head);
+        // 收起态：一行反馈/阶段预览。展开态：完整产出摘要 + 反馈 + 元信息 + 跳转会话。
         const reason = isCurrent ? goalPhaseText(sch.goal_status)
           : interrupted ? (it.feedback || "该轮进程中断，未留下验收结论")
           : (it.feedback || "");
         if (reason) li.appendChild(el("div", "e-desc", escapeHtml(reason)));
+        const bodyEl = el("div", "e-body");
+        const excerpt = interrupted && !it.produced_excerpt
+          ? "该轮进程中断，未留下产出"
+          : (it.produced_excerpt || "（本轮无产出摘要）");
+        bodyEl.appendChild(el("pre", "goal-round-excerpt", escapeHtml(excerpt)));
+        if (it.feedback) bodyEl.appendChild(el("div", "goal-text", escapeHtml(it.feedback)));
+        let metaText = `原始迭代号 #${it.iter_no}`;
+        if (it.task) {
+          if (it.task.duration_ms) metaText += ` · 耗时 ${(it.task.duration_ms / 1000).toFixed(1)}s`;
+          if (it.task.cost_usd != null) metaText += ` · $${it.task.cost_usd.toFixed(4)}`;
+        }
+        bodyEl.appendChild(el("div", "e-desc", escapeHtml(metaText)));
+        if (sess) {
+          const jump = el("button", "btn-sm", "查看该轮会话");
+          jump.onclick = (e) => { e.stopPropagation(); closeGoalView(); switchSession(sess.id); };
+          bodyEl.appendChild(jump);
+        }
+        li.appendChild(bodyEl);
         ul.appendChild(li);
       });
     }

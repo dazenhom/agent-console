@@ -661,6 +661,14 @@ body.hub-resizing {
 .goal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 22px; }
 .goal-rounds-head { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 10px; }
 .goal-rounds .e-empty-row { list-style: none; color: var(--muted); font-size: 13px; padding: 15px 16px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; }
+/* 每轮进展：卡片可展开，箭头顶到右侧，展开区显示产出摘要 */
+.goal-rounds li { cursor: pointer; }
+.goal-rounds .e-head { display: flex; align-items: center; gap: 8px; }
+.goal-rounds .e-arrow { color: var(--muted); transition: transform var(--ease); margin-left: auto; }
+.goal-rounds li.open .e-arrow { transform: rotate(90deg); }
+.goal-rounds .e-body { display: none; margin-top: 8px; }
+.goal-rounds li.open .e-body { display: block; }
+.goal-round-excerpt { font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 280px; overflow: auto; background: var(--bg-3); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; margin: 6px 0; }
 
 /* 目标循环列表：任务进度仪表盘（KPI 行 + 卡片网格） */
 .goal-kpi { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
