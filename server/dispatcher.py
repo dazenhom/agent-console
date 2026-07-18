@@ -172,11 +172,11 @@ def _route(subtask: dict) -> tuple[str, str, str]:
     # R2：深度分析/架构/根因 → 强 Claude（Opus）
     if category == "deep" or _hit(_KW_DEEP):
         return "claude", "claude-opus-4-8", "deep"
-    # R3：直接开发活 → Claude 强模型
+    # R3：直接开发活 → codex 执行模型（可 env 覆盖回 Claude）
     if category == "dev" or _hit(_KW_DEV):
-        return "claude", config.CLAUDE_MODEL_STRONG, "dev"
+        return config.DISPATCH_EXEC_ENGINE, config.DISPATCH_EXEC_MODEL, "dev"
     # R4 兜底
-    return "claude", config.CLAUDE_MODEL_STRONG, "dev"
+    return config.DISPATCH_EXEC_ENGINE, config.DISPATCH_EXEC_MODEL, "dev"
 
 
 async def _fire_subtask(child_session_id: str, instruction: str, subtask_id: str):

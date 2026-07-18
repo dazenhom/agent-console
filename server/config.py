@@ -97,6 +97,9 @@ CODEX_MODELS = [
     "gpt-5.1-codex", "gpt-5.1-codex-mini", "hy3-preview-ioa",
 ]
 CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.6-sol")
+# Dispatch 基础执行(dev/兜底)路由的默认引擎与模型；deep/评判仍走 Opus，不受此影响
+DISPATCH_EXEC_ENGINE = os.environ.get("DISPATCH_EXEC_ENGINE", "codex")
+DISPATCH_EXEC_MODEL = os.environ.get("DISPATCH_EXEC_MODEL", CODEX_DEFAULT_MODEL)
 # codex 推理深度：通过 `-c model_reasoning_effort=<level>` 传给 codex CLI。
 # 标准档位 high 为最高；xhigh/max 是 claude/tclaude 侧的档位命名，codex 侧未验证，不要套用。
 # 设为空字符串则不传该参数（让 CLI 用默认）。
