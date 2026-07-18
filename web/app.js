@@ -2956,7 +2956,7 @@
         <label>最大迭代轮数（1-100）
           <input id="gf-maxiter" class="form-input" type="number" min="1" max="100" value="${escapeAttr(String(d.max_iterations || 10))}" />
         </label>
-        <label>成本上限（美元，留空用默认）<input id="gf-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 100" value="${d.max_cost_usd ? escapeAttr(String(d.max_cost_usd)) : ''}" /></label>
+        <label>成本上限（美元，留空用默认）<input id="gf-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 20" value="${d.max_cost_usd ? escapeAttr(String(d.max_cost_usd)) : ''}" /></label>
       </div>
       <div class="form-err" id="gf-err"></div>
       <div class="modal-actions">
@@ -2980,6 +2980,25 @@
       gfFileInp.value = "";
       for (const f of files) await uploadFileTo(f, gfPending, gfTray);
     };
+    // —— 成本上限自动预填（公式A：模型×模式×轮数×冗余；可改，用户改过后停止联动）——
+    const LEGACY_MODEL_MAP = { fast: "claude-haiku-4-5", strong: "claude-sonnet-5", super: "claude-opus-4-8[1m]" };
+    const maxCostEl = card.querySelector("#gf-maxcost");
+    let costTouched = !!existing && Number(d.max_cost_usd) > 0;  // 编辑已有且已设值：保留、不预填、不联动
+    function suggestCost() {
+      const sess = state.sessions.find((s) => s.id === card.querySelector("#gf-session").value);
+      const model = sess ? (LEGACY_MODEL_MAP[sess.mode] || sess.mode) : "";
+      const p = PRICE_TABLE[model];                       // 查不到（glm/deepseek/hy3/codex/脏值）→ 系数 1
+      const priceFactor = p ? p.out / 15 : 1;             // 相对 sonnet 归一：haiku≈0.27 / sonnet 1 / opus 5
+      const team = card.querySelector("#gf-mode").value === "team" ? 4 : 1;
+      const iter = Math.max(1, parseInt(card.querySelector("#gf-maxiter").value, 10) || 1);
+      return Math.max(2, Math.ceil(0.5 * priceFactor * team * iter * 1.5)); // 向上取整到$1、下限$2
+    }
+    function refreshCost() { if (!costTouched) maxCostEl.value = String(suggestCost()); }
+    if (!costTouched) refreshCost();
+    maxCostEl.addEventListener("input", () => { costTouched = true; });
+    card.querySelector("#gf-session").addEventListener("change", refreshCost);
+    card.querySelector("#gf-mode").addEventListener("change", refreshCost);
+    card.querySelector("#gf-maxiter").addEventListener("input", refreshCost);
     card.querySelector(".modal-ok").onclick = async () => {
       const errEl = card.querySelector("#gf-err");
       const body = {
