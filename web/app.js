@@ -2578,6 +2578,7 @@
   }
   let _goalPollTimer = null;
   let _goalCurrentId = null;  // 详情态正在看的目标循环 id（列表态为 null），用于 goal_update 就地刷新
+  let _goalSummaryCache = "";  // 「生成总结」结果缓存：模块级存活，WS 全量重建列表后仍能重渲，不随 goal-body 抹掉
   function stopGoalPoll() { if (_goalPollTimer) { clearTimeout(_goalPollTimer); _goalPollTimer = null; } }
   function openGoalView() {
     stopGoalPoll();
@@ -4228,6 +4229,15 @@
       node = el("div", "result-line", `本回合完成 ${dur}${cost}${turns}`);
     } else if (role === "system") {
       return null; // init 信息不展示
+    } else if (role === "compact") {
+      // 上下文压缩标记：居中分割线 + 灰字标签，点击展开摘要全文
+      node = el("div", "msg-compact");
+      const divider = el("div", "compact-divider", "— 以上上下文已压缩 —");
+      const summary = el("div", "compact-summary");
+      summary.textContent = (content && content.summary) || "";
+      divider.onclick = () => node.classList.toggle("open");
+      node.appendChild(divider);
+      node.appendChild(summary);
     } else { return null; }
     return node;
   }
@@ -4616,6 +4626,9 @@
     } else if (data.type === "permission_request") {
       showPermissionDialog(data);
       return;
+    } else if (data.type === "compacting") {
+      toast("正在压缩上下文…", "info", 3000);
+      return;
     }
   }
 
@@ -4726,6 +4739,8 @@
   function setRunning(running) {
     state.running = running;
     $("cancel-btn").classList.toggle("hidden", !running);
+    const cb = $("compact-btn");
+    if (cb) cb.disabled = running;  // 回合进行中不可压缩
     const inp = $("input");
     // 运行中不再锁输入：继续输入会排队执行。
     inp.disabled = false;
@@ -4767,6 +4782,13 @@
     let text = input.value.trim();
     const imgs = state.pendingImages || [];
     if (!text && !imgs.length) return;
+    // /compact：真实上下文压缩，走独立接口而非正常发消息
+    if (text === "/compact") {
+      input.value = ""; input.style.height = "auto";
+      $("char-count").classList.add("hidden");
+      await requestCompact();
+      return;
+    }
     // 危险操作预检
     const danger = dangerHit(text);
     if (danger) {
@@ -4806,6 +4828,19 @@
   }
 
   $("send-btn").onclick = send;
+  const compactBtn = $("compact-btn");
+  if (compactBtn) compactBtn.onclick = requestCompact;
+
+  // 压缩上下文：概括整段对话、重置会话，摘要作前缀注入下一条消息续接。
+  // compacting 提示与 compact 分割线由后端经 WS 广播，这里只负责发起与失败提示。
+  async function requestCompact() {
+    if (!state.sessionId) { toast("请先选择会话", "info", 1500); return; }
+    if (state.running) { toast("回合进行中，稍后再压缩", "info", 2000); return; }
+    try {
+      const res = await api(`/api/sessions/${state.sessionId}/compact`, { method: "POST" });
+      if (res && res.ok === false) toast(res.error || "压缩失败", "info", 2500);
+    } catch (e) { toast("压缩失败：" + e.message, "error"); }
+  }
   const memoQuickBtn = $("memo-quick-btn");
   if (memoQuickBtn) memoQuickBtn.onclick = openMemoQuickPanel;
   // 手机：回车换行；点发送按钮才发送。桌面：Enter 发送，Shift+Enter 换行

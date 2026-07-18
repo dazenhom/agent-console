@@ -285,6 +285,7 @@
         <!-- Reply 输入区 -->
         <footer class="composer">
           <button id="cancel-btn" class="cancel-btn hidden">停止</button>
+          <button id="compact-btn" class="compact-btn" title="压缩上下文：概括整段对话，降低后续 token">🗜 压缩</button>
           <button id="file-btn" class="img-btn" aria-label="上传文件" title="上传文件发给 Agent">&#128206;</button>
           <input id="file-input" type="file" multiple hidden />
           <button id="mic-btn" class="mic-btn" aria-label="语音输入" title="点击录音">&#127908;</button>
@@ -377,6 +378,7 @@
     <header class="topbar">
       <button id="goal-back" class="icon-btn" aria-label="返回">&#8592;</button>
       <div class="topbar-title">目标循环</div>
+      <button id="goal-summary-btn" class="mini-btn">🧠 生成总结</button>
       <button id="goal-new" class="mini-btn">+ 新目标</button>
     </header>
     <main class="manage-body">

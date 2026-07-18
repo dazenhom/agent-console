@@ -426,6 +426,16 @@ body.hub-resizing {
 .send-btn:hover { background: #2a323f; }
 .send-btn:disabled { opacity: .4; box-shadow: none; }
 .cancel-btn { flex: 0 0 auto; height: 44px; padding: 0 15px; border-radius: 12px; border: 1px solid var(--red); background: #fdecec; color: var(--red); font-size: 14px; font-weight: 600; }
+.compact-btn { flex: 0 0 auto; height: 44px; padding: 0 13px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-3); color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.compact-btn:hover { background: var(--bg-2); color: var(--text); border-color: var(--accent); }
+.compact-btn:disabled { opacity: .4; }
+
+/* /compact 上下文压缩分割线：居中灰字标签，点击展开摘要全文 */
+.msg-compact { margin: 12px 0; text-align: center; }
+.msg-compact .compact-divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
+.msg-compact .compact-divider::before, .msg-compact .compact-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.msg-compact .compact-summary { display: none; margin: 8px auto 0; max-width: 92%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font-size: 13px; line-height: 1.6; white-space: pre-wrap; text-align: left; }
+.msg-compact.open .compact-summary { display: block; }
 
 /* 圆钮：mic / img */
 .mic-btn, .img-btn {
