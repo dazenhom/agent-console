@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, memory_store, agent_store, skill_store, asr_client, session_import, wecom_notify, scheduler, worktree, arbiter, dispatcher
+from . import config, db, memory_store, agent_store, skill_store, asr_client, session_import, wecom_notify, scheduler, worktree, arbiter, dispatcher, goal_summary
 from . import logging_util
 from .llms_doc import build_llms_txt, build_llms_full_txt
 from .claude_runner import runner
@@ -904,6 +904,40 @@ async def schedules_subtasks(sid: str):
     return db.list_goal_subtasks(sid)
 
 
+@app.post("/api/schedules/{sid}/continue", dependencies=[Depends(require_auth)])
+async def schedules_continue(sid: str, payload: dict):
+    """目标循环「续跑」：在保留历史（iter_count/反馈/子任务）的前提下追加轮数继续迭代。
+
+    与 PUT 的「重新启用」语义不同——PUT 对 goal 传 enabled=true 会清零 iter_count/清空反馈子任务
+    （从头重跑），本接口只抬 max_iterations + 复位 running/enabled + 重算 next_run，绝不碰历史。
+    payload 全可选：prompt（改目标）、stop_condition（改完成标准）、add_iterations（追加轮数，默认 3）。"""
+    sch = db.get_schedule(sid)
+    if not sch:
+        raise HTTPException(status_code=404, detail="定时任务不存在")
+    if sch.get("kind") != "goal":
+        raise HTTPException(status_code=400, detail="仅目标循环支持续跑")
+    iter_count = int(sch.get("iter_count") or 0)
+    add = int(payload.get("add_iterations") or 3)
+    if add < 1 or add > 50:
+        raise HTTPException(status_code=400, detail="追加轮数需在 1-50 之间")
+    new_max = iter_count + add
+    if new_max > 100:
+        raise HTTPException(status_code=400, detail="累计迭代上限不能超过 100 轮")
+    # 只复位可继续的调度字段，绝不碰 iter_count/last_feedback/goal_iterations/子任务
+    fields = {
+        "goal_status": "running", "enabled": 1, "max_iterations": new_max,
+        "next_run": scheduler.compute_next_run("goal", None, None),
+    }
+    p = (payload.get("prompt") or "").strip()
+    if p:
+        fields["prompt"] = p
+    sc = payload.get("stop_condition")
+    if sc is not None and sc.strip():
+        fields["stop_condition"] = sc.strip()
+    db.update_schedule(sid, **fields)
+    return db.get_schedule(sid)
+
+
 # ---------------- 目标循环历史（H2 goal loop：列表态 + 详情态）----------------
 @app.get("/api/goals", dependencies=[Depends(require_auth)])
 async def goals_list():
@@ -916,6 +950,16 @@ async def goals_detail(sid: str):
     if not detail:
         raise HTTPException(status_code=404, detail="目标循环不存在")
     return detail
+
+
+@app.post("/api/goals/summary", dependencies=[Depends(require_auth)])
+async def goals_summary():
+    """汇总所有目标循环的完成情况，用一次性子进程生成一段中文小结（点按钮触发，不缓存）。"""
+    try:
+        ok, summary = await goal_summary.summarize_goals()
+        return {"ok": ok, "summary": summary}
+    except Exception as e:
+        return {"ok": False, "summary": "总结生成失败", "error": f"{type(e).__name__}: {e}"}
 
 
 # ---------------- 待办事项 ----------------
