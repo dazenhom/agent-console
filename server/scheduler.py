@@ -696,6 +696,11 @@ async def _tick_fanout() -> None:
             # 子会话已空闲 → 转 verifying（先落库再起后台判定，防重复触发）
             db.update_dispatch_subtask(sub["id"], status="verifying")
             asyncio.ensure_future(_run_dispatch_verify(sub["id"]))
+            # 状态写库后广播一条 monitor 进展，供前端"智能分派"详情页实时更新（不依赖 60s 轮询）
+            asyncio.ensure_future(hub.broadcast_monitor({
+                "type": "dispatch_progress", "plan_id": plan_id,
+                "subtask_id": sub["id"], "status": "verifying",
+            }))
 
 
 async def _run_dispatch_verify(subtask_id: str) -> None:
@@ -736,8 +741,16 @@ async def _run_dispatch_verify(subtask_id: str) -> None:
                                    feedback=f"[verify异常:{type(e).__name__}]")
     finally:
         try:
-            plan_id = (sub or db.get_dispatch_subtask(subtask_id) or {}).get("plan_id") or ""
+            # 重新读一次拿最新 status（局部 sub 是判定前的旧快照，status 还停在 verifying）
+            cur = db.get_dispatch_subtask(subtask_id) or sub or {}
+            plan_id = cur.get("plan_id") or ""
             _maybe_finalize_fanout(plan_id)
+            # 判定落终态后广播一条 monitor 进展，供前端"智能分派"详情页实时更新（不依赖 60s 轮询）
+            from .session_hub import hub
+            asyncio.ensure_future(hub.broadcast_monitor({
+                "type": "dispatch_progress", "plan_id": plan_id,
+                "subtask_id": subtask_id, "status": cur.get("status"),
+            }))
         except Exception:
             pass
 

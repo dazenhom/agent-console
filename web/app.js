@@ -415,7 +415,10 @@
     const label = el("span", "dispatch-group-label",
       `📦 批次：${escapeHtml(title)}（${children.length}个子任务）`);
     const summary = el("span", "dispatch-group-summary", `进行中 ${running} / 共 ${children.length}`);
-    head.append(caret, label, summary);
+    // 「详情」入口：跳到智能分派详情页看该批次的拆解/验收进展，stopPropagation 避免误触发组头折叠
+    const detail = el("span", "dispatch-group-detail", "详情");
+    detail.onclick = (e) => { e.stopPropagation(); openDispatchView(); openDispatchDetail(planId); };
+    head.append(caret, label, summary, detail);
 
     const body = el("div", "dispatch-group-body");
     body.style.display = expanded ? "" : "none";
@@ -1527,6 +1530,19 @@
       }
       return;
     }
+    // 分派子任务阶段实时进展（转验收 / 落 done-failed）：正打开该 plan 详情就重拉重渲染，
+    // 且无论详情态与否都刷新会话列表对应批次组摘要（推送为主，pollDispatch 的 60s 封顶轮询保留兜底）
+    if (data.type === "dispatch_progress") {
+      if (!$("dispatch-view").classList.contains("hidden") && _dispatchCurrentPlanId && _dispatchCurrentPlanId === data.plan_id) {
+        openDispatchDetail(_dispatchCurrentPlanId);
+      }
+      const grp = document.querySelector(`li.dispatch-group[data-plan-id="${data.plan_id}"]`);
+      if (grp) {
+        const row = grp.querySelector(".dispatch-group-body li[data-sid]");
+        if (row) refreshDispatchGroupSummary(row);
+      }
+      return;
+    }
     if (data.type !== "session_update") return;
     const s = state.sessions.find((x) => x.id === data.session_id);
     if (s) {
@@ -2375,6 +2391,7 @@
 
   // ---------------- 角色化动态调度（智能分派） ----------------
   let _dispatchPollTimer = null;
+  let _dispatchCurrentPlanId = null;  // 详情态正在看的 plan id，用于 dispatch_progress 就地刷新（比照 _arbCurrentId）
   function stopDispatchPoll() { if (_dispatchPollTimer) { clearTimeout(_dispatchPollTimer); _dispatchPollTimer = null; } }
   function openDispatchView() {
     stopDispatchPoll();
@@ -2390,6 +2407,7 @@
 
   async function showDispatchList() {
     stopDispatchPoll();
+    _dispatchCurrentPlanId = null;  // 回列表态清空，避免列表态下误触发详情刷新（比照 goal 的 _goalCurrentId）
     const body = $("dispatch-body");
     body.innerHTML = '<div class="entity-loading">加载中…</div>';
     try {
@@ -2419,6 +2437,7 @@
 
   async function openDispatchDetail(planId) {
     stopDispatchPoll();
+    _dispatchCurrentPlanId = planId;
     $("dispatch-view").classList.remove("hidden");
     $("app-view").classList.add("hidden");
     $("dispatch-body").innerHTML = '<div class="entity-loading">加载中…</div>';
@@ -2443,6 +2462,7 @@
     try {
       const data = await api("/api/dispatch", { method: "POST", body: JSON.stringify({ request, session_id: state.sessionId || null, need_arbitration: needArbitration }) });
       renderDispatchPlan(data);
+      _dispatchCurrentPlanId = data.plan_id || null;  // 记住当前详情 plan，供 dispatch_progress 就地刷新
       // 子会话在各自后台跑，轮询几次刷新状态徽章
       if (data.plan_id) pollDispatch(data.plan_id, 0);
     } catch (e) {
