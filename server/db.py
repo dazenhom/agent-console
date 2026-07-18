@@ -606,22 +606,6 @@ def set_job_output(jid: str, output: str) -> None:
     _exec("UPDATE job_runs SET output=? WHERE id=?", (output, jid))
 
 
-def list_jobs(kind: str | None = None, limit: int = 50) -> list[dict]:
-    if kind:
-        rows = _query(
-            "SELECT * FROM job_runs WHERE kind=? ORDER BY started_at DESC LIMIT ?",
-            (kind, limit),
-        )
-    else:
-        rows = _query("SELECT * FROM job_runs ORDER BY started_at DESC LIMIT ?", (limit,))
-    return [dict(r) for r in rows]
-
-
-def get_job(jid: str) -> dict | None:
-    rows = _query("SELECT * FROM job_runs WHERE id=?", (jid,))
-    return dict(rows[0]) if rows else None
-
-
 # ---------- snippets ----------
 def list_snippets() -> list[dict]:
     rows = _query("SELECT * FROM snippets ORDER BY sort_order ASC, id ASC")
