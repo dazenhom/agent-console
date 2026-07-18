@@ -93,8 +93,8 @@ CODEX_TURN_TIMEOUT = int(os.environ.get("CODEX_TURN_TIMEOUT", "3600"))
 CODEX_MODEL = os.environ.get("CODEX_MODEL", "")
 # 前端可选的 codex 模型列表（codex 会话的 mode 直接存模型 ID）。gpt-5.6-sol 放首位作为默认。
 CODEX_MODELS = [
-    "gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex",
-    "gpt-5.1-codex", "gpt-5.1-codex-mini", "hy3-preview-ioa",
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4",
+    "gpt-5.3-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini", "glm-5.2-ioa", "hy3-ioa",
 ]
 CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.6-sol")
 # Dispatch 基础执行(dev/兜底)路由的默认引擎与模型；deep/评判仍走 Opus，不受此影响

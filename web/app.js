@@ -663,7 +663,7 @@
     const parts = String(workdir).replace(/\/$/, "").split("/");
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : workdir;
   }
-  const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","hy3-preview-ioa"];
+  const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","glm-5.2-ioa","hy3-ioa"];
   const CLAUDE_MODELS = [
     "claude-glm-5.2","claude-glm-5.2[1m]",
     "claude-sonnet-4-6","claude-sonnet-4-6[1m]",
@@ -720,12 +720,15 @@
       "claude-deepseek-v4-flash[1m]": "DeepSeek V4 Flash 长文",
       // codex 模型
       "gpt-5.6-sol": "GPT-5.6 Sol",
+      "gpt-5.6-terra": "GPT-5.6 Terra",
+      "gpt-5.6-luna": "GPT-5.6 Luna",
       "gpt-5.5": "GPT-5.5",
       "gpt-5.4": "GPT-5.4",
       "gpt-5.3-codex": "GPT-5.3 Codex",
       "gpt-5.1-codex": "GPT-5.1 Codex",
       "gpt-5.1-codex-mini": "GPT-5.1 Mini",
-      "hy3-preview-ioa": "HY3 Preview",
+      "glm-5.2-ioa": "GLM 5.2 (IOA)",
+      "hy3-ioa": "HY3",
       // 兼容旧档位标签
       "fast": "极速", "strong": "均衡", "super": "最强"
     };
@@ -2763,6 +2766,15 @@
         <label>完成标准
           <textarea id="gc-stop" class="form-input tall" rows="3">${escapeHtml(it.stop_condition || "")}</textarea>
         </label>
+        <label>验收命令（可选，每轮在会话工作区里跑，退出码+输出作为客观信号喂给验收员）
+          <input id="gc-verify" class="form-input" type="text" placeholder="例：python3 -m py_compile server/*.py" value="${escapeAttr(it.verify_command || "")}" />
+        </label>
+        <label>执行模式
+          <select id="gc-mode">
+            <option value="solo" ${(it.exec_mode || "solo") === "solo" ? "selected" : ""}>solo — 单 Agent 裸执行（默认）</option>
+            <option value="team" ${it.exec_mode === "team" ? "selected" : ""}>team — 走 /console-dev 四角流水线</option>
+          </select>
+        </label>
         <label>追加轮数（1-50）
           <input id="gc-add" class="form-input" type="number" min="1" max="50" value="3" />
         </label>
@@ -2788,6 +2800,8 @@
       const payload = {
         prompt: card.querySelector("#gc-prompt").value.trim(),
         stop_condition: card.querySelector("#gc-stop").value.trim(),
+        verify_command: card.querySelector("#gc-verify").value.trim(),
+        exec_mode: card.querySelector("#gc-mode").value,
         add_iterations: add,
         max_cost_usd: card.querySelector("#gc-maxcost").value === "" ? undefined : parseFloat(card.querySelector("#gc-maxcost").value),
       };
@@ -4995,7 +5009,6 @@
   $("cancel-btn").onclick = () => { if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify({ type: "cancel" })); };
 
   // 详情面板顶部/底部操作按钮
-  $("detail-peek-btn").onclick = () => { if (state.sessionId) openPeek(state.sessionId); };
   // Resume：聚焦输入框继续对话（会话本就持续，这里相当于"继续聊"入口）
   $("act-resume").onclick = async () => {
     const sid = state.sessionId;
@@ -5021,9 +5034,31 @@
       await loadSessions();
     } catch (e) { toast("归档失败：" + e.message, "error"); }
   };
-  // 背对背仲裁 / 分派子任务：详情操作区入口（复用 Experimental 面板里的实现）
-  $("act-arbitrate").onclick = openArbitrationInput;
-  $("act-dispatch").onclick = openDispatchView;
+  // 背对背仲裁 / 分派子任务：用得少，收进「更多」面板，点⋯弹出选项
+  $("detail-more-btn").onclick = () => {
+    showActionSheet([
+      { label: "⚖ 背对背仲裁", onClick: openArbitrationInput },
+      { label: "🧭 分派子任务", onClick: openDispatchView },
+    ]);
+  };
+
+  function showActionSheet(items) {
+    const root = $("modal-root");
+    root.innerHTML = "";
+    const card = el("div", "modal-card sheet-card");
+    card.innerHTML = items.map((it, i) =>
+      `<button class="sheet-option" type="button" data-i="${i}">${escapeHtml(it.label)}</button>`
+    ).join("") + `<button class="sheet-option sheet-cancel" type="button">取消</button>`;
+    root.appendChild(card);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => root.classList.add("show"));
+    const close = () => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); };
+    card.querySelectorAll(".sheet-option[data-i]").forEach((btn) => {
+      btn.onclick = () => { close(); items[+btn.dataset.i].onClick(); };
+    });
+    card.querySelector(".sheet-cancel").onclick = close;
+    root.onclick = (e) => { if (e.target === root) close(); };
+  }
 
   // ---------------- 按住说话（录音 → 后端 ASR）----------------
   // 约束：getUserMedia 需要安全上下文（HTTPS 或 localhost）。HTTP + 内网 IP 下浏览器禁用麦克风。
