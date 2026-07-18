@@ -177,13 +177,14 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
         await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）仍未完成")
         return
     # 成本熔断
-    if config.GOAL_MAX_COST_USD > 0:
+    cost_limit = float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD
+    if cost_limit > 0:
         # 已知局限（一期接受）：sum_session_cost 从 created_at 起算，会把用户在同一会话里的
         # 手动回合成本也计入目标循环预算——可能偏保守提前熔断。二期若要精确应按 goal 启动时间戳起算。
         spent = db.sum_session_cost(sid, sch.get("cost_base_ts") or sch.get("created_at") or 0)
-        if spent >= config.GOAL_MAX_COST_USD:
+        if spent >= cost_limit:
             await _finish_goal(scid, sess, "exhausted",
-                               f"已达成本上限（${spent:.2f} ≥ ${config.GOAL_MAX_COST_USD}）")
+                               f"已达成本上限（${spent:.2f} ≥ ${cost_limit:g}）")
             return
     prompt = _build_goal_prompt(sch)
     try:
@@ -482,11 +483,12 @@ async def _tick_goal_planned(sch: dict, sess: dict, now: float) -> None:
     if iter_count >= max_iter:
         await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）仍未完成")
         return
-    if config.GOAL_MAX_COST_USD > 0:
+    cost_limit = float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD
+    if cost_limit > 0:
         spent = db.sum_session_cost(sid, sch.get("cost_base_ts") or sch.get("created_at") or 0)
-        if spent >= config.GOAL_MAX_COST_USD:
+        if spent >= cost_limit:
             await _finish_goal(scid, sess, "exhausted",
-                               f"已达成本上限（${spent:.2f} ≥ ${config.GOAL_MAX_COST_USD}）")
+                               f"已达成本上限（${spent:.2f} ≥ ${cost_limit:g}）")
             return
 
     nxt = db.next_pending_goal_subtask(scid)

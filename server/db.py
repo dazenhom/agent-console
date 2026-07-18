@@ -316,6 +316,8 @@ def init_db() -> None:
         _add_col("schedules", "active_subtask_id TEXT DEFAULT ''")
         # 续跑重置成本窗口：成本熔断从此时间戳起算（点「继续」时置为当前时间），为空/0 时回退 created_at。
         _add_col("schedules", "cost_base_ts REAL DEFAULT 0")
+        # 每目标成本上限（美元），<=0 回退全局 config.GOAL_MAX_COST_USD
+        _add_col("schedules", "max_cost_usd REAL DEFAULT 0")
         # 老库 goal_iterations 补 produced_excerpt 列（新库已在 CREATE TABLE 里带上）
         _add_col("goal_iterations", "produced_excerpt TEXT DEFAULT ''")
         # 阶段4：给四张来源子表补 work_item_id 关联列，把它们挂到统一的 work_items 观测视图。
@@ -666,14 +668,15 @@ def get_schedule(sid: str) -> dict | None:
 
 def create_schedule(session_id: str, prompt: str, kind: str, interval_min, at_hhmm, next_run: float,
                     stop_condition: str = "", max_iterations: int = 10, goal_status: str = "",
-                    verify_command: str = "", exec_mode: str = "solo", goal_mode: str = "flat") -> dict:
+                    verify_command: str = "", exec_mode: str = "solo", goal_mode: str = "flat",
+                    max_cost_usd: float = 0) -> dict:
     sid = new_id()
     _exec(
         "INSERT INTO schedules(id,session_id,prompt,kind,interval_min,at_hhmm,enabled,next_run,last_run,created_at,"
-        "stop_condition,max_iterations,iter_count,goal_status,last_feedback,verify_command,exec_mode,goal_mode)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "stop_condition,max_iterations,iter_count,goal_status,last_feedback,verify_command,exec_mode,goal_mode,max_cost_usd)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, session_id, prompt, kind, interval_min, at_hhmm, 1, next_run, None, _now(),
-         stop_condition, max_iterations, 0, goal_status, "", verify_command, exec_mode, goal_mode),
+         stop_condition, max_iterations, 0, goal_status, "", verify_command, exec_mode, goal_mode, max_cost_usd),
     )
     return get_schedule(sid)
 

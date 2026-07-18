@@ -773,6 +773,14 @@ def _validate_schedule(payload: dict) -> dict:
             raise HTTPException(status_code=400, detail="max_iterations 需为整数")
         if not (1 <= max_iterations <= 100):
             raise HTTPException(status_code=400, detail="max_iterations 需在 1..100 之间")
+        raw_cost = payload.get("max_cost_usd")
+        # 留空/None 归零回退全局；非数字 400；负数 400
+        try:
+            max_cost_usd = 0.0 if raw_cost is None or raw_cost == "" else float(raw_cost)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_cost_usd 需为数字")
+        if max_cost_usd < 0:
+            raise HTTPException(status_code=400, detail="max_cost_usd 不能为负数")
         verify_command = (payload.get("verify_command") or "").strip()
         exec_mode = payload.get("exec_mode") or "solo"
         if exec_mode not in ("solo", "team"):
@@ -782,7 +790,8 @@ def _validate_schedule(payload: dict) -> dict:
             raise HTTPException(status_code=400, detail="goal_mode 仅支持 flat / planned")
         return {"kind": kind, "interval_min": None, "at_hhmm": None,
                 "stop_condition": stop_condition, "max_iterations": max_iterations,
-                "verify_command": verify_command, "exec_mode": exec_mode, "goal_mode": goal_mode}
+                "verify_command": verify_command, "exec_mode": exec_mode, "goal_mode": goal_mode,
+                "max_cost_usd": max_cost_usd}
     if kind == "interval":
         try:
             interval_min = int(payload.get("interval_min"))
@@ -822,7 +831,7 @@ async def schedules_create(payload: dict):
                                  stop_condition=norm["stop_condition"],
                                  max_iterations=norm["max_iterations"], goal_status="running",
                                  verify_command=norm["verify_command"], exec_mode=norm["exec_mode"],
-                                 goal_mode=norm["goal_mode"])
+                                 goal_mode=norm["goal_mode"], max_cost_usd=norm["max_cost_usd"])
         # 阶段2 影子表：纯附加观测，写失败只记日志绝不影响建循环主流程
         sess = db.get_session(session_id)
         db.create_work_item_safe(
@@ -858,6 +867,7 @@ async def schedules_update(sid: str, payload: dict):
                 "stop_condition": norm["stop_condition"], "max_iterations": norm["max_iterations"],
                 "verify_command": norm["verify_command"], "exec_mode": norm["exec_mode"],
                 "goal_mode": norm["goal_mode"],
+                "max_cost_usd": norm["max_cost_usd"],
                 "goal_status": "running", "iter_count": 0, "last_feedback": "",
                 # planned 相关状态全部复位，旧子任务清空——下个 tick 会按新目标重新拆解
                 "plan_status": "", "active_subtask_id": "",
@@ -949,6 +959,16 @@ async def schedules_continue(sid: str, payload: dict):
     sc = payload.get("stop_condition")
     if sc is not None and sc.strip():
         fields["stop_condition"] = sc.strip()
+    # 成本上限「传了才改」：None/"" 跳过（保留原值）；非数字/负数 → 400
+    mc = payload.get("max_cost_usd")
+    if mc is not None and mc != "":
+        try:
+            mc_val = float(mc)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_cost_usd 需为数字")
+        if mc_val < 0:
+            raise HTTPException(status_code=400, detail="max_cost_usd 不能为负数")
+        fields["max_cost_usd"] = mc_val
     db.update_schedule(sid, **fields)
     return db.get_schedule(sid)
 

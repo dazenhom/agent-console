@@ -2744,6 +2744,9 @@
         <label>追加轮数（1-50）
           <input id="gc-add" class="form-input" type="number" min="1" max="50" value="3" />
         </label>
+        <label>成本上限（美元，留空不改）
+          <input id="gc-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 100" value="${it.max_cost_usd ? escapeAttr(String(it.max_cost_usd)) : ''}" />
+        </label>
       </div>
       <div class="form-err" id="gc-err"></div>
       <div class="modal-actions">
@@ -2764,6 +2767,7 @@
         prompt: card.querySelector("#gc-prompt").value.trim(),
         stop_condition: card.querySelector("#gc-stop").value.trim(),
         add_iterations: add,
+        max_cost_usd: card.querySelector("#gc-maxcost").value === "" ? undefined : parseFloat(card.querySelector("#gc-maxcost").value),
       };
       try {
         await api(`/api/schedules/${encodeURIComponent(it.id)}/continue`, { method: "POST", body: JSON.stringify(payload) });
@@ -2845,6 +2849,7 @@
       <div class="goal-field"><div class="goal-field-label">✅ 完成标准</div><div class="goal-text">${escapeHtml(sch.stop_condition || "")}</div></div>
       ${sch.verify_command ? `<div class="goal-field"><div class="goal-field-label">🧪 验收命令</div><div class="goal-text">${escapeHtml(sch.verify_command)}</div></div>` : ""}
       <div class="goal-field"><div class="goal-field-label">⚙️ 执行模式</div><div class="goal-text">${sch.exec_mode === "team" ? "team（/console-dev 四角流水线）" : "solo（单 Agent）"}</div></div>
+      <div class="goal-field"><div class="goal-field-label">💰 成本上限</div><div class="goal-text">${sch.max_cost_usd > 0 ? "$" + escapeHtml(String(sch.max_cost_usd)) : "默认 $100"}</div></div>
       <div class="goal-field"><div class="goal-field-label">💬 最新反馈</div><div class="goal-text">${escapeHtml(sch.last_feedback || "（暂无）")}</div></div>
       <div class="goal-field"><div class="goal-field-label">📍 所在会话</div><div class="goal-text goal-session-link" id="goal-session-link">${escapeHtml(sess ? sess.title : "(已删除)")}</div></div>
       <div class="goal-actions">
@@ -2918,7 +2923,7 @@
     stopGoalPoll();
     const root = $("modal-root");
     root.innerHTML = "";
-    const d = existing || { session_id: state.sessionId || (state.sessions[0] || {}).id || "", prompt: "", stop_condition: "", max_iterations: 10, verify_command: "", exec_mode: "solo" };
+    const d = existing || { session_id: state.sessionId || (state.sessions[0] || {}).id || "", prompt: "", stop_condition: "", max_iterations: 10, verify_command: "", exec_mode: "solo", max_cost_usd: 0 };
     const opts = state.sessions.map((s) => `<option value="${escapeAttr(s.id)}" ${s.id === d.session_id ? "selected" : ""}>${escapeHtml(s.title)}</option>`).join("");
     const mode = d.exec_mode === "team" ? "team" : "solo";
     const card = el("div", "modal-card goal-modal");
@@ -2951,6 +2956,7 @@
         <label>最大迭代轮数（1-100）
           <input id="gf-maxiter" class="form-input" type="number" min="1" max="100" value="${escapeAttr(String(d.max_iterations || 10))}" />
         </label>
+        <label>成本上限（美元，留空用默认）<input id="gf-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 100" value="${d.max_cost_usd ? escapeAttr(String(d.max_cost_usd)) : ''}" /></label>
       </div>
       <div class="form-err" id="gf-err"></div>
       <div class="modal-actions">
@@ -2984,6 +2990,7 @@
         verify_command: card.querySelector("#gf-verify").value.trim(),
         exec_mode: card.querySelector("#gf-mode").value,
         max_iterations: parseInt(card.querySelector("#gf-maxiter").value, 10),
+        max_cost_usd: card.querySelector("#gf-maxcost").value === "" ? 0 : parseFloat(card.querySelector("#gf-maxcost").value),
       };
       if (!body.prompt) { errEl.textContent = "目标不能为空"; return; }
       if (!body.stop_condition) { errEl.textContent = "完成标准不能为空"; return; }
