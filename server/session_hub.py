@@ -264,12 +264,14 @@ class SessionHub:
         if user_text.strip() == "/compact":
             res = await self.compact(sid)
             return "started" if res.get("ok") else f"error:{res.get('error', '压缩失败')}"
-        if user_text.startswith("/"):
-            expanded, err = skill_store.expand(user_text)
-            if err:
-                await self.broadcast(sid, {"type": "error", "message": err})
-                return f"error:{err}"
-            user_text = expanded
+        # 始终走 skill 展开：带附件时前端把附件行前置到文本最前，展开后不再以 `/` 开头，
+        # 用 startswith("/") 预判会漏掉"附件+/skill"组合。expand() 内部自会剥离附件行、
+        # 对非 skill 文本原样返回 (user_text, None)，故无条件调用与旧逻辑等价。
+        expanded, err = skill_store.expand(user_text)
+        if err:
+            await self.broadcast(sid, {"type": "error", "message": err})
+            return f"error:{err}"
+        user_text = expanded
         if mode in config.CLAUDE_MODELS or mode in config.CODEX_MODELS or mode in ("fast", "strong", "super"):
             db.update_session(sid, mode=mode)
         await self.start_turn(sid, user_text)
@@ -305,22 +307,30 @@ class SessionHub:
             return await task
         finally:
             self._turns.pop(sid, None)
+            # 压缩窗口期间攒进队列的消息（如另一标签页发的）在此接着出队执行，
+            # 与 _run_turn 收尾口径一致，避免消息一直躺到无关回合结束才被带出。
+            asyncio.ensure_future(self._drain_queue(sid))
 
     async def _run_compact(self, sid: str, sess: dict) -> dict:
         from . import compactor
-        await self.broadcast(sid, {"type": "compacting"})
-        summary = await compactor.summarize_session(sid)
-        if not summary:
-            return {"ok": False, "error": "对话为空，无需压缩"}
-        # 重置会话：回收常驻进程、丢弃 claude_session_id，摘要暂存待下条消息注入
-        await _runner_for(sess).forget_session(sid)
-        db.update_session(sid, claude_session_id=None,
-                          pending_compact_summary=summary, compacted_at=time.time())
-        db.add_message(sid, "compact", {"summary": summary})
-        await self.broadcast(sid, {
-            "type": "message", "role": "compact", "content": {"summary": summary},
-        })
-        return {"ok": True}
+        try:
+            await self.broadcast(sid, {"type": "compacting"})
+            summary = await compactor.summarize_session(sid)
+            if not summary:
+                return {"ok": False, "error": "对话为空，无需压缩"}
+            # 重置会话：回收常驻进程、丢弃 claude_session_id，摘要暂存待下条消息注入
+            await _runner_for(sess).forget_session(sid)
+            db.update_session(sid, claude_session_id=None,
+                              pending_compact_summary=summary, compacted_at=time.time())
+            db.add_message(sid, "compact", {"summary": summary})
+            await self.broadcast(sid, {
+                "type": "message", "role": "compact", "content": {"summary": summary},
+            })
+            return {"ok": True}
+        except Exception as e:  # noqa
+            # forget_session/db 写库若抛异常（如常驻进程已死、kill 失败），兜住并走统一错误
+            # 响应路径，避免异常一路冒到 main.py 变成裸 500。_turns 的清理在 compact() 的 finally。
+            return {"ok": False, "error": f"压缩失败：{e}"}
 
     async def _drain_queue(self, sid: str) -> None:
         """出队并自动开始下一条（循环处理 skill 报错跳过）"""
