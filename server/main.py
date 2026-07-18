@@ -1366,16 +1366,33 @@ _IMG_MIME_TO_EXT = {
 }
 
 
-def _cleanup_uploads(directory, cutoff):
+def _cleanup_uploads(directory, cutoff, protected=frozenset()):
     try:
         for f in directory.iterdir():
             try:
                 if f.is_file() and f.stat().st_mtime < cutoff:
+                    if str(f) in protected:
+                        continue  # 活跃目标循环仍在引用，跳过不删
                     f.unlink()
             except Exception:
                 pass
     except Exception:
         pass
+
+
+def _goal_protected_uploads() -> set:
+    """活跃目标循环 prompt 里固化引用的上传附件绝对路径集合。目标循环跨多轮复用同一 prompt，
+    其中的附件路径不能被 TTL 清理删除，否则后续迭代 Read 附件会失败（dispatch/arbiter 是一次性
+    的，不跨天复用，无此风险）。"""
+    upload_dir = str(config.UPLOAD_DIR)
+    pat = re.compile(re.escape(upload_dir) + r"[^\s（）\"']*")
+    out: set = set()
+    try:
+        for prompt in db.active_goal_prompts():
+            out.update(pat.findall(prompt))
+    except Exception:
+        pass
+    return out
 
 
 async def _uploads_cleanup_loop():
@@ -1387,7 +1404,8 @@ async def _uploads_cleanup_loop():
     while True:
         try:
             cutoff = _t2.time() - ttl_days * 86400
-            await asyncio.to_thread(_cleanup_uploads, config.UPLOAD_DIR, cutoff)
+            protected = await asyncio.to_thread(_goal_protected_uploads)
+            await asyncio.to_thread(_cleanup_uploads, config.UPLOAD_DIR, cutoff, protected)
         except Exception:
             pass
         await asyncio.sleep(interval * 3600)

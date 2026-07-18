@@ -135,6 +135,13 @@ def delete_skill(name: str) -> dict:
 # 注意：name 后不能紧跟 `/`，否则是文件路径（如 /apdcephfs_gy2/...）而非 skill 命令。
 _SLASH_RE = re.compile(r"^/([A-Za-z0-9_\-]+)(?:[^\S\n](.*))?$", re.S)
 
+# 前端 attachmentLines() 生成的附件前置行，形如：
+#   图片：/abs/path.png
+#   文件：原名（/abs/path.ext）
+# 带附件发送时这些行会被前置到文本最前，导致 skill 调用不再以 `/` 开头、_SLASH_RE 匹配失败。
+# expand() 先剥离开头连续的附件行，对剩余正文展开，成功后再把附件行拼回结果最前。
+_ATTACH_LINE_RE = re.compile(r"^(?:图片：/.*|文件：.*（/.*）)$")
+
 
 def expand(user_text: str) -> tuple[str, str | None]:
     """把可能的 `/<skill> [args]` 展开成完整 prompt。
@@ -143,9 +150,22 @@ def expand(user_text: str) -> tuple[str, str | None]:
     - 非斜杠开头：原样返回 (user_text, None)。
     - 已知 skill：返回 (SKILL正文 + 附加内容, None)。
     - 未知 skill：返回 (user_text, 友好错误提示)，由调用方决定是否拦截。
+
+    带附件时前端会把附件行前置到文本最前，这里先剥离开头连续的附件行再对剩余正文展开。
     """
     with _lock:
-        m = _SLASH_RE.match(user_text)
+        # 剥离开头连续的附件行；遇到第一行非附件即停止，避免误剥正文里的普通句子。
+        lines = user_text.split("\n")
+        n_attach = 0
+        for ln in lines:
+            if _ATTACH_LINE_RE.match(ln):
+                n_attach += 1
+            else:
+                break
+        prefix = "\n".join(lines[:n_attach])
+        rest_text = "\n".join(lines[n_attach:])
+
+        m = _SLASH_RE.match(rest_text)
         if not m:
             return user_text, None
         name, rest = m.group(1), (m.group(2) or "").strip()
@@ -154,4 +174,6 @@ def expand(user_text: str) -> tuple[str, str | None]:
             avail = "、".join("/" + s for s in list_skills()) or "（无）"
             return user_text, f"未知的 skill：/{name}。可用的有：{avail}"
         prompt = body if not rest else f"{body}\n\n{rest}"
+        if prefix:
+            prompt = f"{prefix}\n{prompt}"
         return prompt, None

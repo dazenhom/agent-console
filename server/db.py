@@ -744,6 +744,16 @@ def has_active_goal(session_id: str) -> bool:
     return bool(rows)
 
 
+def active_goal_prompts() -> list[str]:
+    """所有启用中、未进入终态的目标循环的 prompt 文本。目标循环把附件绝对路径固化在 prompt
+    里跨轮复用，上传清理据此保护这些附件不被 TTL 删除（否则后续迭代 Read 附件会失败）。"""
+    rows = _query(
+        "SELECT prompt FROM schedules WHERE kind='goal' AND enabled=1"
+        " AND goal_status NOT IN ('done','exhausted')"
+    )
+    return [r[0] for r in rows if r[0]]
+
+
 # ---------- todos（待办事项）----------
 def list_todos(status: str | None = None, include_archived: bool = False, archived_only: bool = False) -> list[dict]:
     where = []

@@ -104,9 +104,13 @@ def _team_wrap(sch: dict, prompt: str) -> str:
 
 
 def _solo_expand(sch: dict, prompt: str) -> str:
-    """solo（默认）模式下若目标本身以 /<skill> 开头，执行时展开成完整 prompt
-    （库里存的原文不变）；team 模式由 _team_wrap 自行展开，这里不碰。"""
-    if (sch.get("exec_mode") or "solo") != "team" and prompt.startswith("/"):
+    """solo（默认）模式下若目标本身是 /<skill> 调用，执行时展开成完整 prompt
+    （库里存的原文不变）；team 模式由 _team_wrap 自行展开，这里不碰。
+
+    不再用 startswith("/") 预判：带附件时前端会把附件行拼进 prompt 最前，展开后不再以
+    `/` 开头，预判会漏掉"附件+/skill"组合。expand() 内部自会剥离附件行、对非 skill 文本
+    原样返回 (prompt, None)，故 solo 模式下无条件调用与旧逻辑等价。"""
+    if (sch.get("exec_mode") or "solo") != "team":
         from . import skill_store
         expanded, err = skill_store.expand(prompt)
         if not err:
