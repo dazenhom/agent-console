@@ -2930,7 +2930,7 @@
         }
         bodyEl.appendChild(el("div", "e-desc", escapeHtml(metaText)));
         if (sess) {
-          const jump = el("button", "btn-sm", "查看该轮会话");
+          const jump = el("button", "btn-sm", "查看会话");
           jump.onclick = (e) => { e.stopPropagation(); closeGoalView(); switchSession(sess.id); };
           bodyEl.appendChild(jump);
         }
