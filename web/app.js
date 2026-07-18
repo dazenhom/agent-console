@@ -2745,7 +2745,7 @@
           <input id="gc-add" class="form-input" type="number" min="1" max="50" value="3" />
         </label>
         <label>成本上限（美元，留空不改）
-          <input id="gc-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 100" value="${it.max_cost_usd ? escapeAttr(String(it.max_cost_usd)) : ''}" />
+          <input id="gc-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 20" value="${it.max_cost_usd ? escapeAttr(String(it.max_cost_usd)) : ''}" />
         </label>
       </div>
       <div class="form-err" id="gc-err"></div>
@@ -2849,7 +2849,7 @@
       <div class="goal-field"><div class="goal-field-label">✅ 完成标准</div><div class="goal-text">${escapeHtml(sch.stop_condition || "")}</div></div>
       ${sch.verify_command ? `<div class="goal-field"><div class="goal-field-label">🧪 验收命令</div><div class="goal-text">${escapeHtml(sch.verify_command)}</div></div>` : ""}
       <div class="goal-field"><div class="goal-field-label">⚙️ 执行模式</div><div class="goal-text">${sch.exec_mode === "team" ? "team（/console-dev 四角流水线）" : "solo（单 Agent）"}</div></div>
-      <div class="goal-field"><div class="goal-field-label">💰 成本上限</div><div class="goal-text">${sch.max_cost_usd > 0 ? "$" + escapeHtml(String(sch.max_cost_usd)) : "默认 $100"}</div></div>
+      <div class="goal-field"><div class="goal-field-label">💰 成本上限</div><div class="goal-text">${sch.max_cost_usd > 0 ? "$" + escapeHtml(String(sch.max_cost_usd)) : "默认 $20"}</div></div>
       <div class="goal-field"><div class="goal-field-label">💬 最新反馈</div><div class="goal-text">${escapeHtml(sch.last_feedback || "（暂无）")}</div></div>
       <div class="goal-field"><div class="goal-field-label">📍 所在会话</div><div class="goal-text goal-session-link" id="goal-session-link">${escapeHtml(sess ? sess.title : "(已删除)")}</div></div>
       <div class="goal-actions">
