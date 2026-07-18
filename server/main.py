@@ -916,6 +916,14 @@ async def schedules_continue(sid: str, payload: dict):
         raise HTTPException(status_code=404, detail="定时任务不存在")
     if sch.get("kind") != "goal":
         raise HTTPException(status_code=400, detail="仅目标循环支持续跑")
+    # 纵深防御：仅未完成（已耗尽或人工暂停）才允许续跑，拒掉进行中/已完成，避免误把 max_iterations
+    # 缩成 iter_count+add 而提前掐断正在跑的循环。与前端「继续」按钮的显示条件一致。
+    status = sch.get("goal_status") or ""
+    enabled = sch.get("enabled")
+    is_exhausted = status == "exhausted"
+    is_paused = (not enabled) and status not in ("done", "exhausted")  # 人工暂停：enabled=0 且非终态
+    if not (is_exhausted or is_paused):
+        raise HTTPException(status_code=400, detail="仅未完成（已耗尽或已暂停）的目标循环支持续跑")
     iter_count = int(sch.get("iter_count") or 0)
     add = int(payload.get("add_iterations") or 3)
     if add < 1 or add > 50:
