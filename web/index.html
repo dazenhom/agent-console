@@ -256,6 +256,7 @@
             <div class="detail-title" id="session-title">会话</div>
             <div class="detail-head-btns">
               <button id="detail-subagent-btn" class="detail-icon-btn" title="展开全部子任务过程">⊞</button>
+              <button id="compact-btn" class="detail-icon-btn" title="压缩上下文：概括整段对话，降低后续 token">🗜</button>
               <button id="detail-peek-btn" class="detail-icon-btn" title="速览">👁</button>
               <button id="detail-close-btn" class="detail-icon-btn" title="返回列表" aria-label="返回">&#8592;</button>
             </div>
@@ -285,7 +286,6 @@
         <!-- Reply 输入区 -->
         <footer class="composer">
           <button id="cancel-btn" class="cancel-btn hidden">停止</button>
-          <button id="compact-btn" class="compact-btn" title="压缩上下文：概括整段对话，降低后续 token">🗜 压缩</button>
           <button id="file-btn" class="img-btn" aria-label="上传文件" title="上传文件发给 Agent">&#128206;</button>
           <input id="file-input" type="file" multiple hidden />
           <button id="mic-btn" class="mic-btn" aria-label="语音输入" title="点击录音">&#127908;</button>
@@ -420,7 +420,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=70"></script>
+  <script src="app.js?v=71"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

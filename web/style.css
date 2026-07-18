@@ -230,6 +230,7 @@ body.hub-resizing {
 .detail-head-btns { display: flex; gap: 4px; flex: 0 0 auto; }
 .detail-icon-btn { background: none; border: none; color: var(--muted); font-size: 17px; padding: 5px 7px; border-radius: 8px; line-height: 1; }
 .detail-icon-btn:hover { background: var(--bg-3); color: var(--text); }
+.detail-icon-btn:disabled { opacity: .4; cursor: default; }
 /* 桌面双栏下详情常驻，"返回列表"无意义 → 隐藏；窄屏覆盖层时再显示（见响应式） */
 #detail-close-btn { display: none; }
 .detail-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
@@ -426,9 +427,6 @@ body.hub-resizing {
 .send-btn:hover { background: #2a323f; }
 .send-btn:disabled { opacity: .4; box-shadow: none; }
 .cancel-btn { flex: 0 0 auto; height: 44px; padding: 0 15px; border-radius: 12px; border: 1px solid var(--red); background: #fdecec; color: var(--red); font-size: 14px; font-weight: 600; }
-.compact-btn { flex: 0 0 auto; height: 44px; padding: 0 13px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-3); color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
-.compact-btn:hover { background: var(--bg-2); color: var(--text); border-color: var(--accent); }
-.compact-btn:disabled { opacity: .4; }
 
 /* /compact 上下文压缩分割线：居中灰字标签，点击展开摘要全文 */
 .msg-compact { margin: 12px 0; text-align: center; }
