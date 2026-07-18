@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Agent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=44" />
+  <link rel="stylesheet" href="style.css?v=45" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -297,12 +297,12 @@
           <button id="send-btn" class="send-btn" aria-label="发送">&#9993; Send</button>
         </footer>
 
-        <!-- 底部操作：Resume / Archive（停止走输入框旁的悬浮按钮） -->
+        <!-- 底部操作：Resume 为主操作（醒目），其余三个收成纯图标按钮（停止走输入框旁的悬浮按钮） -->
         <div class="detail-actions">
-          <button id="act-resume" class="act-btn">▷ Resume</button>
-          <button id="act-archive" class="act-btn">🗄 Archive</button>
-          <button id="act-arbitrate" class="act-btn">⚖ 背对背仲裁</button>
-          <button id="act-dispatch" class="act-btn">🧭 分派子任务</button>
+          <button id="act-resume" class="act-btn act-primary">▷ Resume</button>
+          <button id="act-archive" class="act-icon-btn" title="归档会话">🗄</button>
+          <button id="act-arbitrate" class="act-icon-btn" title="背对背仲裁">⚖</button>
+          <button id="act-dispatch" class="act-icon-btn" title="分派子任务">🧭</button>
         </div>
       </section>
     </div>
