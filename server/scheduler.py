@@ -627,7 +627,12 @@ async def _run_goal_verify_planned(scid: str) -> None:
             it_verdict, it_status = "continue", "exhausted"
         else:
             # 未过且还有重试额度 → 回 pending，反馈喂给下一轮该子任务
-            db.update_goal_subtask(sub["id"], status="pending", last_feedback=reason)
+            sub_fb = reason
+            if _is_canned_feedback(reason):
+                prev = (sub.get("last_feedback") or "").strip()
+                sub_fb = prev if (prev and not _is_canned_feedback(prev)) else \
+                    "上一轮验收未完成（超时/异常），请对照完成标准自查并补齐验证证据"
+            db.update_goal_subtask(sub["id"], status="pending", last_feedback=sub_fb)
             it_verdict, it_status = "continue", "continue"
         if iteration:
             excerpt = "\n\n".join(x for x in (produced, git_diff) if x)[:4000]
@@ -637,7 +642,12 @@ async def _run_goal_verify_planned(scid: str) -> None:
         if iter_count >= max_iter:
             await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）：{reason}")
         else:
-            db.update_schedule(scid, goal_status="running", active_subtask_id="", last_feedback=reason)
+            fb = reason
+            if _is_canned_feedback(reason):
+                prev = (sch.get("last_feedback") or "").strip()
+                fb = prev if (prev and not _is_canned_feedback(prev)) else \
+                    "上一轮验收未完成（超时/异常），请对照完成标准自查并补齐验证证据"
+            db.update_schedule(scid, goal_status="running", active_subtask_id="", last_feedback=fb)
             _broadcast_goal_progress(scid)
     except Exception as e:
         db.update_schedule(scid, goal_status="running", active_subtask_id="",
