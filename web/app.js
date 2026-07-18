@@ -4907,6 +4907,8 @@
     let text = input.value.trim();
     const imgs = state.pendingImages || [];
     if (!text && !imgs.length) return;
+    // 压缩进行中：直接挡掉，不发 WS（此刻后端 is_running 为真，发出去只会被入队，语义混乱）
+    if (state.compacting) { toast("压缩中，请稍候…", "info", 2000); return; }
     // /compact：真实上下文压缩，走独立接口而非正常发消息
     if (text === "/compact") {
       input.value = ""; input.style.height = "auto";
@@ -4961,10 +4963,28 @@
   async function requestCompact() {
     if (!state.sessionId) { toast("请先选择会话", "info", 1500); return; }
     if (state.running) { toast("回合进行中，稍后再压缩", "info", 2000); return; }
+    if (state.compacting) return;  // 防重复触发
+    // 压缩期间锁 UI：输入框/发送按钮/压缩按钮全禁用，避免用户在等待窗口发消息触发后端竞态。
+    state.compacting = true;
+    const inp = $("input");
+    const sendBtn = $("send-btn");
+    const cb = $("compact-btn");
+    inp.disabled = true; sendBtn.disabled = true; if (cb) cb.disabled = true;
+    const prevPlaceholder = inp.placeholder;
+    inp.placeholder = "压缩中，请稍候…";
     try {
-      const res = await api(`/api/sessions/${state.sessionId}/compact`, { method: "POST" });
-      if (res && res.ok === false) toast(res.error || "压缩失败", "info", 2500);
-    } catch (e) { toast("压缩失败：" + e.message, "error"); }
+      // 摘要生成可长达 COMPACT_TIMEOUT（约 180s），放宽超时避免请求在压缩完成前被中止。
+      await api(`/api/sessions/${state.sessionId}/compact`, { method: "POST", timeoutMs: 200000 });
+    } catch (e) {
+      // 409（回合进行中/会话为空等）与其它错误经 api() 抛出，统一 toast 出来。
+      toast("压缩失败：" + e.message, "error");
+    } finally {
+      state.compacting = false;
+      inp.disabled = false; sendBtn.disabled = false;
+      inp.placeholder = prevPlaceholder;
+      // 压缩按钮的可用性交回 setRunning 的统一口径（运行中禁用、空闲启用）。
+      if (cb) cb.disabled = state.running;
+    }
   }
   const memoQuickBtn = $("memo-quick-btn");
   if (memoQuickBtn) memoQuickBtn.onclick = openMemoQuickPanel;
