@@ -1,6 +1,7 @@
 """FastAPI 应用：REST（会话/历史/任务）+ WebSocket（流式对话）。"""
 import asyncio
 import base64
+import hashlib
 import json
 import re
 from contextlib import asynccontextmanager
@@ -1854,12 +1855,40 @@ class NoCacheStatic(StaticFiles):
 
 
 @app.get("/")
+@app.get("/index.html")
 async def index():
-    # index.html 绝不缓存——它是入口，必须每次拿最新，否则连里面的资源版本号都更新不了
-    return FileResponse(
-        str(config.WEB_DIR / "index.html"),
+    # index.html 绝不缓存——它是入口，必须每次拿最新，否则连里面的资源版本号都更新不了。
+    # 资源版本号（app.js?v=/style.css?v=）由服务端按文件内容哈希自动改写：文件一变
+    # 版本就变，强制穿透所有缓存层（浏览器/代理/隧道），无需再人工 bump ?v=。
+    return HTMLResponse(
+        _rewrite_asset_versions(),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
+
+
+# 按文件内容算短哈希做缓存版本号；按 (mtime, size) 缓存，避免每次请求重读大文件。
+_ASSET_VER_CACHE: dict[str, tuple[tuple, str]] = {}
+_ASSET_VER_RE = re.compile(r"(app\.js|style\.css)\?v=[^\"']*")
+
+
+def _asset_version(fname: str) -> str:
+    p = config.WEB_DIR / fname
+    try:
+        st = p.stat()
+    except OSError:
+        return "0"
+    key = (st.st_mtime_ns, st.st_size)
+    cached = _ASSET_VER_CACHE.get(fname)
+    if cached and cached[0] == key:
+        return cached[1]
+    ver = hashlib.md5(p.read_bytes()).hexdigest()[:8]
+    _ASSET_VER_CACHE[fname] = (key, ver)
+    return ver
+
+
+def _rewrite_asset_versions() -> str:
+    html = (config.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    return _ASSET_VER_RE.sub(lambda m: f"{m.group(1)}?v={_asset_version(m.group(1))}", html)
 
 
 app.mount("/fs", StaticFiles(directory="/"), name="fs")
