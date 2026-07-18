@@ -119,8 +119,8 @@ SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "60"))
 # 与生产会话模型分离，保证 maker/checker 独立。GOAL_MAX_COST_USD<=0 表示不做成本熔断。
 GOAL_POLL_SEC = int(os.environ.get("GOAL_POLL_SEC", "30"))
 GOAL_MAX_ITERATIONS = int(os.environ.get("GOAL_MAX_ITERATIONS", "10"))
-GOAL_MAX_COST_USD = float(os.environ.get("GOAL_MAX_COST_USD", "5"))
-GOAL_VERIFY_TIMEOUT = float(os.environ.get("GOAL_VERIFY_TIMEOUT", "60"))
+GOAL_MAX_COST_USD = float(os.environ.get("GOAL_MAX_COST_USD", "100"))
+GOAL_VERIFY_TIMEOUT = float(os.environ.get("GOAL_VERIFY_TIMEOUT", "180"))
 # 新版 planned 目标循环：先把目标拆成有序子任务，每轮只推进一个子任务并单独验收。
 # 单个子任务验收未过时最多重试多少轮，超过则标记 skipped 跳过、继续下一个（避免卡死在某个子任务）。
 GOAL_SUBTASK_MAX_ATTEMPTS = int(os.environ.get("GOAL_SUBTASK_MAX_ATTEMPTS", "3"))

@@ -180,7 +180,7 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
     if config.GOAL_MAX_COST_USD > 0:
         # 已知局限（一期接受）：sum_session_cost 从 created_at 起算，会把用户在同一会话里的
         # 手动回合成本也计入目标循环预算——可能偏保守提前熔断。二期若要精确应按 goal 启动时间戳起算。
-        spent = db.sum_session_cost(sid, sch.get("created_at") or 0)
+        spent = db.sum_session_cost(sid, sch.get("cost_base_ts") or sch.get("created_at") or 0)
         if spent >= config.GOAL_MAX_COST_USD:
             await _finish_goal(scid, sess, "exhausted",
                                f"已达成本上限（${spent:.2f} ≥ ${config.GOAL_MAX_COST_USD}）")
@@ -280,6 +280,16 @@ async def _gather_verify_context(sess: dict, verify_command: str | None = None) 
     return produced, cmd_result, git_diff
 
 
+# 验收器在超时/进程异常/无输出/内部异常时返回的固定套话——不含可执行改进信号，
+# 不应作为"改进反馈"覆盖上一轮实质反馈，否则迭代空转不收敛。
+_CANNED_FEEDBACK_PREFIXES = ("验收超时", "验收进程异常", "验收无输出", "[verify异常")
+
+
+def _is_canned_feedback(text: str) -> bool:
+    t = (text or "").strip()
+    return any(t.startswith(p) for p in _CANNED_FEEDBACK_PREFIXES)
+
+
 async def _run_goal_verify(scid: str) -> None:
     """后台验收本轮产出，是唯一把状态推回 running/done 的地方。
     整体 try/except 兜底：任何异常都复位 running，绝不让状态卡死在 verifying。"""
@@ -324,7 +334,12 @@ async def _run_goal_verify(scid: str) -> None:
             await _finish_goal(scid, sess, "exhausted",
                                f"已达迭代上限（{max_iter} 轮）：{reason}")
         else:
-            db.update_schedule(scid, goal_status="running", last_feedback=reason)
+            fb = reason
+            if _is_canned_feedback(reason):
+                prev = (sch.get("last_feedback") or "").strip()
+                fb = prev if (prev and not _is_canned_feedback(prev)) else \
+                    "上一轮验收未完成（超时/异常），请对照完成标准自查并补齐验证证据"
+            db.update_schedule(scid, goal_status="running", last_feedback=fb)
             _broadcast_goal_progress(scid)
     except Exception as e:
         db.update_schedule(scid, goal_status="running",
@@ -360,7 +375,10 @@ async def _finish_goal(scid: str, sess: dict, status: str, reason: str) -> None:
     """落终态并停用，推企微 + 广播 monitor。"""
     from . import wecom_notify
     from .session_hub import hub
-    db.update_schedule(scid, goal_status=status, enabled=0)
+    _fields = {"goal_status": status, "enabled": 0}
+    if status in ("exhausted", "done"):
+        _fields["last_feedback"] = reason
+    db.update_schedule(scid, **_fields)
     # 阶段2 影子表：把对应影子记录收尾到 done/exhausted，写失败只记日志绝不影响主流程
     try:
         db.update_work_item_status_by_ref(scid, status)
@@ -465,7 +483,7 @@ async def _tick_goal_planned(sch: dict, sess: dict, now: float) -> None:
         await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）仍未完成")
         return
     if config.GOAL_MAX_COST_USD > 0:
-        spent = db.sum_session_cost(sid, sch.get("created_at") or 0)
+        spent = db.sum_session_cost(sid, sch.get("cost_base_ts") or sch.get("created_at") or 0)
         if spent >= config.GOAL_MAX_COST_USD:
             await _finish_goal(scid, sess, "exhausted",
                                f"已达成本上限（${spent:.2f} ≥ ${config.GOAL_MAX_COST_USD}）")

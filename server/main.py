@@ -937,9 +937,11 @@ async def schedules_continue(sid: str, payload: dict):
     if new_max > 100:
         raise HTTPException(status_code=400, detail="累计迭代上限不能超过 100 轮")
     # 只复位可继续的调度字段，绝不碰 iter_count/last_feedback/goal_iterations/子任务
+    import time
     fields = {
         "goal_status": "running", "enabled": 1, "max_iterations": new_max,
         "next_run": scheduler.compute_next_run("goal", None, None),
+        "cost_base_ts": time.time(),
     }
     p = (payload.get("prompt") or "").strip()
     if p:

@@ -314,6 +314,8 @@ def init_db() -> None:
         _add_col("schedules", "goal_mode TEXT DEFAULT 'flat'")
         _add_col("schedules", "plan_status TEXT DEFAULT ''")
         _add_col("schedules", "active_subtask_id TEXT DEFAULT ''")
+        # 续跑重置成本窗口：成本熔断从此时间戳起算（点「继续」时置为当前时间），为空/0 时回退 created_at。
+        _add_col("schedules", "cost_base_ts REAL DEFAULT 0")
         # 老库 goal_iterations 补 produced_excerpt 列（新库已在 CREATE TABLE 里带上）
         _add_col("goal_iterations", "produced_excerpt TEXT DEFAULT ''")
         # 阶段4：给四张来源子表补 work_item_id 关联列，把它们挂到统一的 work_items 观测视图。
