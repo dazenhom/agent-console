@@ -2701,7 +2701,7 @@
     btn.disabled = true;
     btn.textContent = "生成中…";
     try {
-      const res = await api("/api/goals/summary", { method: "POST" });
+      const res = await api("/api/goals/summary", { method: "POST", timeoutMs: 120000 });
       if (res && res.ok) {
         _goalSummaryCache = res.summary || "";
         if (!_goalCurrentId) showGoalList();
