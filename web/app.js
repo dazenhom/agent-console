@@ -4729,6 +4729,11 @@
   function handleWsMessage(data) {
     if (data.type === "pong") return;  // 心跳回应，忽略
     if (data.type === "message") {
+      if (data.role === "status") {
+        // 纯瞬时状态提示（如 codex 续跑心跳）：toast 展示即可，不落聊天气泡、不动打字机状态。
+        toast(data.content && data.content.text || "", "info", 6000);
+        return;
+      }
       if (data.role === "assistant_delta") {
         // 子智能体增量：parent 命中某张卡片 → 追加到其 body，不碰全局 streamEl（顶层打字机）
         const pid = data.content.parent;

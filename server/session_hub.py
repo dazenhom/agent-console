@@ -102,6 +102,13 @@ def translate_event(evt: dict) -> list[dict]:
             },
         })
 
+    elif etype == "status":
+        # 纯瞬时状态提示（如 codex 续跑心跳），只广播给前端展示，不落库、不进 reply_text、
+        # 不计入 _activity_label —— 避免被当成真实 assistant 回复污染摘要/标题/通知/进度。
+        txt = evt.get("text", "")
+        if txt:
+            out.append({"role": "status", "content": {"text": txt}})
+
     return out
 
 
@@ -356,7 +363,9 @@ class SessionHub:
 
         async def on_event(evt: dict):
             for msg in translate_event(evt):
-                if msg["role"] != "assistant_delta":
+                # assistant_delta（打字机增量）、status（瞬时状态提示）不落库：前者靠后续权威
+                # assistant 全文入库，后者纯前端提示、不该进聊天记录/摘要/通知。
+                if msg["role"] not in ("assistant_delta", "status"):
                     db.add_message(sid, msg["role"], msg["content"])
                 if msg["role"] == "assistant":
                     t = (msg["content"] or {}).get("text", "")

@@ -258,12 +258,12 @@ class CodexRunner:
                     continue
                 heartbeat_sent = True
                 try:
+                    # 用 type=status 的纯状态事件，而非 assistant：后者会被 session_hub 当成真实
+                    # 回复落库、拼进 reply_text（污染摘要/标题/企业微信通知）、被 _activity_label
+                    # 统计成"已有回复"。status 只广播给前端做瞬时提示，不产生任何回复副作用。
                     await on_event({
-                        "type": "assistant",
-                        "message": {"content": [{
-                            "type": "text",
-                            "text": "正在续接上文，可能需要较长时间，请耐心等待…",
-                        }]},
+                        "type": "status",
+                        "text": "正在续接上文，可能需要较长时间，请耐心等待…",
                     })
                 except Exception:
                     pass
@@ -314,19 +314,30 @@ class CodexRunner:
             error_msg = f"已由用户手动停止（{error_msg}）"
         self._procs.pop(session_id, None)
 
-        # resume 失败自愈：对齐 claude_runner 的 resume_failed 机制（session_hub 消费后会丢弃
-        # 坏 sid、注入近期对话摘录全新重启一次）。codex 侧 resume 失败常表现为"进程非正常退出
-        # 或 stderr 命中会话找不到类关键字，且全程零 item 事件产出"（即 exec resume 没能真正接上
-        # 上文、假死或直接报错）。三条同时满足才标记，宁可漏判不误判：正常回合必有 item 事件，
-        # 用户手动取消不算失败。
+        # 无论后续是否触发 resume 自愈，都先把原始错误/stderr 记进服务端日志：session_hub 的
+        # 自愈分支会用通用文案（"上下文已失效…"）覆盖 error_msg，不落日志的话原始信息（如超时
+        # 分支写好的"回合超过 XXs 超时"、OOM/被杀的 stderr）会彻底消失、无从排查。
+        if error_msg or stderr_text:
+            logger.warning(
+                "codex turn 收尾 sid=%s returncode=%s cancelled=%s item_seen=%s error=%r stderr=%r",
+                session_id, proc.returncode, cancelled, item_seen, error_msg, stderr_text[:2000],
+            )
+
+        # resume 失败自愈：对齐 claude_runner 的精确判定思路——claude 侧靠结构化强信号
+        # （type=result / subtype=error_during_execution / num_turns==0 / errors 含
+        # "No conversation found"），绝不靠宽泛关键字或"进程非零退出"兜底。codex 无等价结构化
+        # 事件，只能读 stderr：仅当 resume 非空、全程零 item 事件、非用户取消，且 stderr 命中
+        # "会话/线程确实找不到"这类强信号时才标记。
+        # 刻意不再因"进程非零退出"就触发——超时/被杀已各有专门错误路径，在此兜底只会把无关崩溃
+        # （OOM、信号）误判成 resume 失败，还让准确错误信息被通用文案覆盖、误导排查方向。
+        # 关键字也去掉了过宽的 "resume"/"not found"/"no such"（正常日志/无关文件缺失都可能命中）。
         resume_failed = False
-        if resume_claude_session and not item_seen and not cancelled:
+        if resume_claude_session and not item_seen and not cancelled and stderr_text:
             stderr_low = stderr_text.lower()
-            stderr_hit = any(k in stderr_low for k in (
-                "no conversation", "not found", "no such", "resume", "conversation id",
+            resume_failed = any(k in stderr_low for k in (
+                "no conversation", "conversation not found",
+                "thread not found", "no such conversation",
             ))
-            if proc.returncode not in (0, None) or stderr_hit:
-                resume_failed = True
 
         # 兜底 result：进程没吐 turn.completed（崩溃/超时/取消）也补一条，保证上层收尾
         try:
