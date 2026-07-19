@@ -13,7 +13,6 @@ import asyncio
 import collections
 import hashlib
 import json
-import logging
 import os
 import re
 import signal
@@ -21,10 +20,28 @@ import time
 from typing import Awaitable, Callable
 
 from . import config
+from .logging_util import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 EventCallback = Callable[[dict], Awaitable[None]]
+
+
+def is_sleep_command(command) -> bool:
+    """判断一条 shell 命令是否为「等待型」sleep 调用。
+
+    这类调用（agent 轮询等待后台任务）不该被计入循环检测 / 超时预算。
+    规则：命令按 && / || / ; 分段，任一段 strip 后以 sleep 开头（词边界）即视为
+    sleep 命令。入参兼容字符串或 argv 数组（数组先 join 成字符串再判断）。
+    """
+    if isinstance(command, (list, tuple)):
+        command = " ".join(str(x) for x in command)
+    if not isinstance(command, str):
+        return False
+    for seg in re.split(r"&&|\|\||;", command):
+        if re.match(r"^\s*sleep\b", seg):
+            return True
+    return False
 
 
 class LoopDetector:
@@ -45,19 +62,12 @@ class LoopDetector:
     def _is_sleep_bash(block) -> bool:
         """判断 tool_use block 是否为「Bash 运行 sleep」。
 
-        这类调用（agent 轮询等待后台任务）不应计入循环检测。
-        规则：命令按 && / || / ; 分段，任一段 strip 后以 sleep 开头
-        （词边界）即视为 sleep 命令。
+        这类调用（agent 轮询等待后台任务）不应计入循环检测。分段判定逻辑复用
+        模块级 is_sleep_command。
         """
         if not isinstance(block, dict) or block.get("name") != "Bash":
             return False
-        command = (block.get("input") or {}).get("command", "")
-        if not isinstance(command, str):
-            return False
-        for seg in re.split(r"&&|\|\||;", command):
-            if re.match(r"^\s*sleep\b", seg):
-                return True
-        return False
+        return is_sleep_command((block.get("input") or {}).get("command", ""))
 
     def feed(self, evt: dict):
         """返回 (is_loop: bool, reason: str)。"""

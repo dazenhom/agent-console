@@ -101,9 +101,19 @@ CODEX_BIN = os.environ.get("CODEX_BIN", "/root/.nvm/versions/node/v22.23.1/bin/t
 CODEX_SANDBOX = os.environ.get("CODEX_SANDBOX", "workspace-write")
 CODEX_BYPASS = os.environ.get("CODEX_BYPASS", "true").lower() == "true"
 CODEX_SKIP_GIT_CHECK = os.environ.get("CODEX_SKIP_GIT_CHECK", "true").lower() == "true"
-# codex 引擎没有 idle 看门狗，是整回合硬超时（含内部所有工具调用耗时）：跟 claude 侧一样
-# 调大，给大体量数据处理/构建留够时间，别把"命令还在跑"误判成超时终止。
+# codex 引擎的回合超时：原本是整回合硬超时（含内部所有工具调用耗时）。现在改为
+# **非等待的有效工作时间上限**——识别出的等待型调用（如 sleep 轮询等 GPU 训练完成）
+# 的时长会被从倒计时里扣除（见 codex_runner.run_turn 的看门狗），避免主动轮询长任务
+# 的正常场景被误杀。值不变，默认仍 7200s。
 CODEX_TURN_TIMEOUT = int(os.environ.get("CODEX_TURN_TIMEOUT", "7200"))
+# 绝对墙钟硬上限（秒）：不管有没有在等待，回合总耗时撞到这个值就必杀，兜底防豁免逻辑失控。
+CODEX_TURN_MAX_WALL = int(os.environ.get("CODEX_TURN_MAX_WALL", "14400"))
+# 单次等待型调用最多豁免的秒数：防止一次 `sleep 3600` 直接吃掉大半有效工作预算。
+CODEX_WAIT_WAIVE_PER_CALL_MAX = int(os.environ.get("CODEX_WAIT_WAIVE_PER_CALL_MAX", "1800"))
+# 全回合累计豁免上限（秒）：所有等待型调用一起最多能延长这么多。
+CODEX_WAIT_WAIVE_TOTAL_MAX = int(os.environ.get("CODEX_WAIT_WAIVE_TOTAL_MAX", "7200"))
+# 看门狗监视循环的检查间隔（秒）：定期核对有效工作时间 / 墙钟是否超限。
+CODEX_WATCHDOG_INTERVAL = int(os.environ.get("CODEX_WATCHDOG_INTERVAL", "5"))
 # 超时/取消终止 codex 进程时，SIGTERM 后等多久再兜底 SIGKILL（秒）。原来硬编码 5s 太短，
 # codex 收到 SIGTERM 后要落稳 rollout 文件（下一回合 resume 就靠它），等太短容易没写完就被
 # SIGKILL，导致后续 exec resume 失败/长时间零事件"假死"。放宽到 12s 给它收尾。

@@ -22,7 +22,7 @@ import signal
 from typing import Awaitable, Callable
 
 from . import config
-from .claude_runner import _child_env, _kill_process_group, _STREAM_LIMIT
+from .claude_runner import _child_env, _kill_process_group, _STREAM_LIMIT, is_sleep_command
 from .logging_util import get_logger
 
 logger = get_logger(__name__)
@@ -131,6 +131,12 @@ class CodexRunner:
         item_seen = False
         thread_started_at: float | None = None
         heartbeat_sent = False
+        # 等待型（sleep 轮询）调用豁免：把这段"主动等待长任务"（如等 GPU 训练完成）的时长
+        # 从有效工作时间倒计时里扣除，避免正常轮询被 CODEX_TURN_TIMEOUT 误杀。
+        start_time = loop.time()
+        committed_waived = 0.0    # 已完成等待型调用的累计豁免秒数
+        pending_wait: dict = {}    # item_id -> 开始时刻，记录在飞的等待型调用
+        wait_notice_sent = False   # 是否已推过一次"检测到等待型调用"提示，避免刷屏
 
         async def _emit_result(is_error: bool):
             nonlocal result_emitted
@@ -149,6 +155,7 @@ class CodexRunner:
 
         async def _read_stdout():
             nonlocal conv_id, error_msg, item_seen, thread_started_at
+            nonlocal committed_waived, wait_notice_sent
             while True:
                 try:
                     line = await proc.stdout.readline()
@@ -196,6 +203,21 @@ class CodexRunner:
                     item = evt.get("item") or {}
                     item_seen = True
                     if item.get("type") == "command_execution":
+                        item_id = item.get("id")
+                        # 等待型调用（sleep 轮询）：记下开始时刻，其时长将从超时倒计时豁免。
+                        if item_id is not None and is_sleep_command(item.get("command")):
+                            pending_wait[item_id] = loop.time()
+                            if not wait_notice_sent:
+                                wait_notice_sent = True
+                                # 用 type=status 纯状态事件（同心跳提示）：不落库、不拼进
+                                # reply_text、不污染摘要/标题/企业微信通知，只做前端瞬时提示。
+                                try:
+                                    await on_event({
+                                        "type": "status",
+                                        "text": "检测到等待型调用（sleep），超时计时已相应延长",
+                                    })
+                                except Exception:
+                                    pass
                         await on_event({
                             "type": "assistant",
                             "message": {"content": [{
@@ -219,6 +241,14 @@ class CodexRunner:
                                 "message": {"content": [{"type": "text", "text": txt}]},
                             })
                     elif itype == "command_execution":
+                        # 等待型调用收尾：把这次实际等待时长（单次封顶）累加进已完成豁免。
+                        item_id = item.get("id")
+                        if item_id in pending_wait:
+                            dur = loop.time() - pending_wait.pop(item_id)
+                            committed_waived = min(
+                                config.CODEX_WAIT_WAIVE_TOTAL_MAX,
+                                committed_waived + min(dur, config.CODEX_WAIT_WAIVE_PER_CALL_MAX),
+                            )
                         exit_code = item.get("exit_code")
                         await on_event({
                             "type": "user",
@@ -273,19 +303,10 @@ class CodexRunner:
         hb_task = asyncio.create_task(_heartbeat_monitor()) if resume_claude_session else None
 
         cancelled = False
-        try:
-            await asyncio.wait_for(_read_stdout(), timeout=config.CODEX_TURN_TIMEOUT)
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=10)
-            except asyncio.TimeoutError:
-                _kill_process_group(proc, signal.SIGKILL)
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=3)
-                except asyncio.TimeoutError:
-                    pass
-        except asyncio.TimeoutError:
-            error_msg = error_msg or f"Agent 回合超过 {config.CODEX_TURN_TIMEOUT}s 超时，已终止。"
-            # 先 SIGTERM，给 codex 落稳 rollout 文件的宽限（下回合 resume 靠它），再兜底 SIGKILL。
+
+        async def _terminate_after_timeout():
+            """有效工作/墙钟超时后的终止序列（与原硬超时分支同一套）：先 SIGTERM，给 codex
+            落稳 rollout 文件的宽限（下回合 resume 靠它），再兜底 SIGKILL。"""
             _kill_process_group(proc, signal.SIGTERM)
             try:
                 await asyncio.wait_for(proc.wait(), timeout=config.CODEX_TIMEOUT_GRACE_SECONDS)
@@ -295,7 +316,57 @@ class CodexRunner:
                     await asyncio.wait_for(proc.wait(), timeout=3)
                 except asyncio.TimeoutError:
                     pass
+
+        read_task = asyncio.create_task(_read_stdout())
+        try:
+            # 看门狗：每 CODEX_WATCHDOG_INTERVAL 秒醒一次核对超时预算。stdout 读完（进程正常
+            # 收尾）即退出；否则按"有效工作时间"（扣除等待豁免）和"墙钟绝对上限"两条线判杀。
+            while True:
+                done, _ = await asyncio.wait({read_task}, timeout=config.CODEX_WATCHDOG_INTERVAL)
+                if read_task in done:
+                    read_task.result()  # 传播 _read_stdout 内的异常（若有），与原 wait_for 行为一致
+                    # 读完 stdout 后再等子进程退出，给个上限防 wait 永远卡住
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=10)
+                    except asyncio.TimeoutError:
+                        _kill_process_group(proc, signal.SIGKILL)
+                        try:
+                            await asyncio.wait_for(proc.wait(), timeout=3)
+                        except asyncio.TimeoutError:
+                            pass
+                    break
+                # 还在跑：算"当前豁免总量"。把在飞的 pending_wait 也实时计入（单次封顶），
+                # 避免一个正在进行的长 sleep 期间豁免没被计入、导致提前被杀。
+                now = loop.time()
+                waived_now = min(
+                    config.CODEX_WAIT_WAIVE_TOTAL_MAX,
+                    committed_waived + sum(
+                        min(now - t, config.CODEX_WAIT_WAIVE_PER_CALL_MAX)
+                        for t in pending_wait.values()
+                    ),
+                )
+                if now - start_time - waived_now > config.CODEX_TURN_TIMEOUT:
+                    error_msg = error_msg or (
+                        f"Agent 回合有效工作时间超过 {config.CODEX_TURN_TIMEOUT}s"
+                        "（等待时间已豁免），已终止。"
+                    )
+                    await _terminate_after_timeout()
+                    break
+                if now - start_time > config.CODEX_TURN_MAX_WALL:
+                    error_msg = error_msg or (
+                        f"Agent 回合总耗时超过绝对上限 {config.CODEX_TURN_MAX_WALL}s，已强制终止。"
+                    )
+                    await _terminate_after_timeout()
+                    break
         finally:
+            if not read_task.done():
+                read_task.cancel()
+                try:
+                    await read_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
             if hb_task and not hb_task.done():
                 hb_task.cancel()
             stderr_bytes = b""
