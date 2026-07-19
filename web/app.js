@@ -665,13 +665,13 @@
   }
   const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","glm-5.2-ioa","hy3-ioa"];
   const CLAUDE_MODELS = [
-    "claude-glm-5.2","claude-glm-5.2[1m]",
+    "claude-sonnet-5","claude-sonnet-5[1m]",
     "claude-sonnet-4-6","claude-sonnet-4-6[1m]",
     "claude-opus-4-8","claude-opus-4-8[1m]",
     "claude-opus-4-7","claude-opus-4-7[1m]",
     "claude-opus-4-6","claude-opus-4-6[1m]",
     "claude-haiku-4-5","claude-hy3","opusplan",
-    "claude-sonnet-5","claude-sonnet-5[1m]",
+    "claude-glm-5.2","claude-glm-5.2[1m]",
     "claude-deepseek-v4-pro","claude-deepseek-v4-pro[1m]",
     "claude-deepseek-v4-flash","claude-deepseek-v4-flash[1m]",
   ];
@@ -4282,7 +4282,32 @@
       node.appendChild(el("div", "msg-time", escapeHtml(fmtClock(ts || nowTs()))));
     } else if (role === "error") {
       node = el("div", "msg error");
-      node.appendChild(el("div", "bubble", escapeHtml(content.message || "出错了")));
+      const emsg = content.message || "出错了";
+      node.appendChild(el("div", "bubble", escapeHtml(emsg)));
+      // 回合以「用户手动停止 / 取消 / 超时 / 卡死」结尾时，给一排快捷操作，省得用户自己打字续跑：
+      // 「继续」复用发消息通道发一条“请继续”，「新建会话」按当前会话的引擎/目录/模型另起一个。
+      if (interactive && /手动停止|已取消|超时|卡死|已终止/.test(emsg)) {
+        const bar = el("div", "qr-bar");
+        const contBtn = el("button", "qr-btn", "继续");
+        contBtn.type = "button";
+        contBtn.onclick = () => {
+          input.value = "请继续";
+          input.dispatchEvent(new Event("input"));
+          send();
+        };
+        const newBtn = el("button", "qr-btn", "新建会话");
+        newBtn.type = "button";
+        newBtn.onclick = async () => {
+          const cur = (state.sessions || []).find((s) => s.id === state.sessionId) || {};
+          try {
+            await createSession({ workdir: cur.workdir, mode: cur.mode, effort: cur.effort, engine: cur.engine });
+            toast("已新建会话", "success", 1600);
+          } catch (err) { toast("新建失败：" + err.message, "error"); }
+        };
+        bar.appendChild(contBtn);
+        bar.appendChild(newBtn);
+        node.appendChild(bar);
+      }
     } else if (role === "tool_use") {
       const toolName = content.name || "";
       const isAskTool = /^Ask(Followup|User|Clarif)/i.test(toolName);
