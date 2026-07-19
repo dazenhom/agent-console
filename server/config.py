@@ -104,6 +104,13 @@ CODEX_SKIP_GIT_CHECK = os.environ.get("CODEX_SKIP_GIT_CHECK", "true").lower() ==
 # codex 引擎没有 idle 看门狗，是整回合硬超时（含内部所有工具调用耗时）：跟 claude 侧一样
 # 调大，给大体量数据处理/构建留够时间，别把"命令还在跑"误判成超时终止。
 CODEX_TURN_TIMEOUT = int(os.environ.get("CODEX_TURN_TIMEOUT", "7200"))
+# 超时/取消终止 codex 进程时，SIGTERM 后等多久再兜底 SIGKILL（秒）。原来硬编码 5s 太短，
+# codex 收到 SIGTERM 后要落稳 rollout 文件（下一回合 resume 就靠它），等太短容易没写完就被
+# SIGKILL，导致后续 exec resume 失败/长时间零事件"假死"。放宽到 12s 给它收尾。
+CODEX_TIMEOUT_GRACE_SECONDS = int(os.environ.get("CODEX_TIMEOUT_GRACE_SECONDS", "12"))
+# 续跑（exec resume）心跳提示阈值（秒）：resume 回合里 thread.started 之后若超过该秒数仍未收到
+# 任何 item 事件，就推一条状态提示，避免前端一直只显示"思考中"、被用户误当卡死点停止。
+CODEX_RESUME_HEARTBEAT_SECONDS = int(os.environ.get("CODEX_RESUME_HEARTBEAT_SECONDS", "20"))
 CODEX_MODEL = os.environ.get("CODEX_MODEL", "")
 # 前端可选的 codex 模型列表（codex 会话的 mode 直接存模型 ID）。gpt-5.6-sol 放首位作为默认。
 CODEX_MODELS = [

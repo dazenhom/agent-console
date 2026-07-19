@@ -124,6 +124,13 @@ class CodexRunner:
         error_msg = ""
         # 是否已发过 result（turn.completed / turn.failed），避免 finally 重复兜底
         result_emitted = False
+        # resume 失败检测 / 续跑心跳用的状态：
+        # item_seen —— 本回合是否吐过任意 item 事件（有则说明 resume 正常起来了）；
+        # thread_started_at —— 收到 thread.started 的时刻（心跳监视器据此计时）。
+        loop = asyncio.get_event_loop()
+        item_seen = False
+        thread_started_at: float | None = None
+        heartbeat_sent = False
 
         async def _emit_result(is_error: bool):
             nonlocal result_emitted
@@ -141,7 +148,7 @@ class CodexRunner:
             })
 
         async def _read_stdout():
-            nonlocal conv_id, error_msg
+            nonlocal conv_id, error_msg, item_seen, thread_started_at
             while True:
                 try:
                     line = await proc.stdout.readline()
@@ -180,10 +187,14 @@ class CodexRunner:
                                 on_session_id(tid)
                             except Exception:
                                 pass
+                    # 记下 thread 起始时刻，供续跑心跳监视器计时
+                    if thread_started_at is None:
+                        thread_started_at = loop.time()
                     continue
 
                 if etype == "item.started":
                     item = evt.get("item") or {}
+                    item_seen = True
                     if item.get("type") == "command_execution":
                         await on_event({
                             "type": "assistant",
@@ -198,6 +209,7 @@ class CodexRunner:
 
                 if etype == "item.completed":
                     item = evt.get("item") or {}
+                    item_seen = True
                     itype = item.get("type")
                     if itype == "agent_message":
                         txt = item.get("text", "")
@@ -231,6 +243,35 @@ class CodexRunner:
                     await _emit_result(is_error=bool(error_msg))
                     continue
 
+        async def _heartbeat_monitor():
+            """续跑心跳：thread.started 之后长时间零 item 事件时，推一条状态提示，
+            让前端不再干等"思考中"（用户以为卡死点停止是本次要修的核心体验问题）。
+            只推一次；一旦收到任意 item 事件即退出。"""
+            nonlocal heartbeat_sent
+            while True:
+                await asyncio.sleep(2)
+                if item_seen or heartbeat_sent:
+                    return
+                if thread_started_at is None:
+                    continue
+                if loop.time() - thread_started_at < config.CODEX_RESUME_HEARTBEAT_SECONDS:
+                    continue
+                heartbeat_sent = True
+                try:
+                    await on_event({
+                        "type": "assistant",
+                        "message": {"content": [{
+                            "type": "text",
+                            "text": "正在续接上文，可能需要较长时间，请耐心等待…",
+                        }]},
+                    })
+                except Exception:
+                    pass
+                return
+
+        # 仅续跑（resume 非空）回合才挂心跳监视器：全新会话首回合冷启动慢是正常的，不提示。
+        hb_task = asyncio.create_task(_heartbeat_monitor()) if resume_claude_session else None
+
         cancelled = False
         try:
             await asyncio.wait_for(_read_stdout(), timeout=config.CODEX_TURN_TIMEOUT)
@@ -244,9 +285,10 @@ class CodexRunner:
                     pass
         except asyncio.TimeoutError:
             error_msg = error_msg or f"Agent 回合超过 {config.CODEX_TURN_TIMEOUT}s 超时，已终止。"
+            # 先 SIGTERM，给 codex 落稳 rollout 文件的宽限（下回合 resume 靠它），再兜底 SIGKILL。
             _kill_process_group(proc, signal.SIGTERM)
             try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
+                await asyncio.wait_for(proc.wait(), timeout=config.CODEX_TIMEOUT_GRACE_SECONDS)
             except asyncio.TimeoutError:
                 _kill_process_group(proc, signal.SIGKILL)
                 try:
@@ -254,20 +296,37 @@ class CodexRunner:
                 except asyncio.TimeoutError:
                     pass
         finally:
+            if hb_task and not hb_task.done():
+                hb_task.cancel()
             stderr_bytes = b""
             try:
                 stderr_bytes = await asyncio.wait_for(proc.stderr.read(), timeout=3)
             except Exception:
                 pass
-            if stderr_bytes and proc.returncode not in (0, None):
-                error_msg = error_msg or stderr_bytes.decode("utf-8", errors="replace").strip()
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip() if stderr_bytes else ""
+            if stderr_text and proc.returncode not in (0, None):
+                error_msg = error_msg or stderr_text
 
         cancelled = bool(self._procs.get(session_id, {}).get("cancelled"))
         if cancelled and not error_msg:
-            error_msg = "已取消"
+            error_msg = "已由用户手动停止"
         elif cancelled:
-            error_msg = f"已取消（{error_msg}）"
+            error_msg = f"已由用户手动停止（{error_msg}）"
         self._procs.pop(session_id, None)
+
+        # resume 失败自愈：对齐 claude_runner 的 resume_failed 机制（session_hub 消费后会丢弃
+        # 坏 sid、注入近期对话摘录全新重启一次）。codex 侧 resume 失败常表现为"进程非正常退出
+        # 或 stderr 命中会话找不到类关键字，且全程零 item 事件产出"（即 exec resume 没能真正接上
+        # 上文、假死或直接报错）。三条同时满足才标记，宁可漏判不误判：正常回合必有 item 事件，
+        # 用户手动取消不算失败。
+        resume_failed = False
+        if resume_claude_session and not item_seen and not cancelled:
+            stderr_low = stderr_text.lower()
+            stderr_hit = any(k in stderr_low for k in (
+                "no conversation", "not found", "no such", "resume", "conversation id",
+            ))
+            if proc.returncode not in (0, None) or stderr_hit:
+                resume_failed = True
 
         # 兜底 result：进程没吐 turn.completed（崩溃/超时/取消）也补一条，保证上层收尾
         try:
@@ -280,6 +339,7 @@ class CodexRunner:
             "returncode": proc.returncode,
             "error": error_msg,
             "cancelled": cancelled,
+            "resume_failed": resume_failed,
         }
 
     # ---- 空操作方法：保持与 ClaudeRunner 接口一致（codex 无常驻进程/授权/预热）----
