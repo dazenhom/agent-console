@@ -4,6 +4,8 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
@@ -66,6 +68,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agent Console", lifespan=lifespan)
+
+_START_TIME = time.time()
 
 
 # ---------------- 鉴权 ----------------
@@ -1861,6 +1865,26 @@ def get_config():
     return {
         "goal_max_cost_usd": config.GOAL_MAX_COST_USD,
         "goal_max_iterations": config.GOAL_MAX_ITERATIONS,
+    }
+
+
+@app.get("/api/version", dependencies=[Depends(require_auth)])
+def version():
+    try:
+        result = subprocess.run(
+            ["git", "-C", config.SELF_REPO_DIR, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        git_commit = result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        git_commit = "unknown"
+    now = time.time()
+    return {
+        "git_commit": git_commit,
+        "started_at": _START_TIME,
+        "uptime_seconds": round(now - _START_TIME, 1),
     }
 
 
