@@ -25,10 +25,12 @@ from . import config, db, wecom_notify
 from .claude_runner import runner as claude_runner
 from .codex_runner import runner as codex_runner
 
+_PROVIDERS = {"claude": claude_runner, "codex": codex_runner}
+
 
 def _runner_for(sess):
-    """按会话 engine 字段选 runner：codex → CodexRunner，其余 → ClaudeRunner。"""
-    return codex_runner if (sess or {}).get("engine") == "codex" else claude_runner
+    """按会话 engine 字段选 runner，未知或缺省 engine 默认落 ClaudeRunner。"""
+    return _PROVIDERS.get((sess or {}).get("engine"), claude_runner)
 
 
 # ---------------- stream-json 事件翻译（从 main.py 搬入） ----------------
@@ -422,12 +424,9 @@ class SessionHub:
                 }
                 model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
             db.update_task(task_id, resolved_model=model_name)
-            # 会话级 effort（推理强度）：空则回落全局默认。codex 无此参数，置 None 且不传。
+            # 会话级 effort（推理强度）：空则回落全局默认；不支持的 provider 接收后忽略。
             effort = (sess or {}).get("effort") or config.CLAUDE_EFFORT
-            if (sess or {}).get("engine") == "codex":
-                effort = None
-            # codex 的 run_turn 不接受 effort 形参，故仅 claude 引擎透传该 kwarg。
-            turn_extra = {} if effort is None else {"effort": effort}
+            turn_extra = {"effort": effort}
             r = _runner_for(sess)
             # /compact 遗留的摘要前缀：本回合即将全新开会话（无 claude_session_id）时，把摘要
             # 拼进发给 CLI 的消息里帮 agent 续接上下文。只影响发给 CLI 的文本，DB 里的用户气泡
@@ -439,11 +438,8 @@ class SessionHub:
                     "以下是之前对话经压缩后的摘要，请据此继续：\n\n"
                     + pending_summary + "\n\n" + user_text
                 )
-            # codex 无常驻进程，恒走 run_turn；claude 视配置走 send_turn / run_turn
-            if (sess or {}).get("engine") == "codex":
-                _turn_fn = r.run_turn
-            else:
-                _turn_fn = r.send_turn if config.CLAUDE_PERSISTENT else r.run_turn
+            # provider 统一按配置走 send_turn / run_turn；无常驻实现时基类会转发到 run_turn。
+            _turn_fn = r.send_turn if config.CLAUDE_PERSISTENT else r.run_turn
             ret = await _turn_fn(
                 session_id=sid,
                 message=send_message,

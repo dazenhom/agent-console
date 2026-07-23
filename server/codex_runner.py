@@ -22,7 +22,7 @@ import signal
 from typing import Awaitable, Callable
 
 from . import config
-from .claude_runner import _child_env, _kill_process_group, _STREAM_LIMIT, is_sleep_command
+from .agent_provider import AgentProvider, _child_env, _kill_process_group, _STREAM_LIMIT, is_sleep_command
 from .logging_util import get_logger
 
 logger = get_logger(__name__)
@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 EventCallback = Callable[[dict], Awaitable[None]]
 
 
-class CodexRunner:
+class CodexRunner(AgentProvider):
     def __init__(self):
         # session_id -> {"proc": Process, "cancelled": bool}（每回合一个进程）
         self._procs: dict[str, dict] = {}
@@ -91,6 +91,7 @@ class CodexRunner:
         model: str | None = None,
         on_permission=None,
         on_session_id=None,
+        effort: str | None = None,
     ) -> dict:
         """跑一个回合。返回 {claude_session_id, returncode, error, cancelled}。
 
@@ -424,19 +425,10 @@ class CodexRunner:
             "resume_failed": resume_failed,
         }
 
-    # ---- 空操作方法：保持与 ClaudeRunner 接口一致（codex 无常驻进程/授权/预热）----
-    async def forget_session(self, session_id: str) -> None:
-        return None
-
-    async def respond_permission(self, session_id: str, request_id: str, behavior: str,
-                                 updated_input: dict = None) -> None:
-        return None
-
-    async def ensure_warm(self, session_id: str, workdir: str, resume: str | None = None) -> str:
+    # ---- codex 无常驻进程，预热保持原有返回语义，其余空操作继承基类默认实现 ----
+    async def ensure_warm(self, session_id: str, workdir: str, resume: str | None = None,
+                          effort: str | None = None) -> str:
         return "warmed"
-
-    async def cleanup_idle(self) -> None:
-        return None
 
 
 runner = CodexRunner()

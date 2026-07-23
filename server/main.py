@@ -292,11 +292,11 @@ async def resume_session(sid: str):
 
     try:
         workdir = sess.get("workdir") or config.DEFAULT_WORKDIR
-        # codex 无 effort 概念，其 ensure_warm 也不接受该 kwarg；仅 claude 引擎透传。
-        warm_extra = {} if sess.get("engine") == "codex" else {
-            "effort": sess.get("effort") or config.CLAUDE_EFFORT
-        }
-        status = await _runner_for(sess).ensure_warm(sid, workdir, resume=claude_session_id, **warm_extra)
+        # provider 统一接收 effort；不支持该概念的实现可直接忽略。
+        status = await _runner_for(sess).ensure_warm(
+            sid, workdir, resume=claude_session_id,
+            effort=sess.get("effort") or config.CLAUDE_EFFORT,
+        )
         return {"ok": True, "status": status, "claude_session_id": claude_session_id}
     except (FileNotFoundError, PermissionError, OSError) as e:
         raise HTTPException(status_code=500, detail=f"启动 Claude CLI 失败：{e}")
