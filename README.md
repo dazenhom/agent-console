@@ -88,6 +88,10 @@ http://<服务器IP>:8800
   Claude Code 的 `--permission-prompt-tool`（MCP 权限网关）——已为后续扩展预留。
 - 请务必修改默认 `AUTH_TOKEN`，不要把端口直接暴露公网。
 
+## 关于临时脚本归档
+
+agent-console 的 git worktree 隔离（`sessions.is_worktree`）是**会话级**的临时工作区，会话删除时目录随之销毁，不适合长期归档。任何跟具体某个任务相关但不属于本项目代码库的临时脚本/一次性分析，请放到统一的 `worklog/`（见上级目录 `../CLAUDE.md` / `../AGENTS.md` 里的约定），不要指望靠 worktree 保留。
+
 ## 工作原理
 
 每发一条消息，后端执行：

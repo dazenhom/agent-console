@@ -901,7 +901,10 @@ async def schedules_continue(sid: str, payload: dict):
 
     与 PUT 的「重新启用」语义不同——PUT 对 goal 传 enabled=true 会清零 iter_count/清空反馈子任务
     （从头重跑），本接口只抬 max_iterations + 复位 running/enabled + 重算 next_run，绝不碰历史。
-    payload 全可选：prompt（改目标）、stop_condition（改完成标准）、add_iterations（追加轮数，默认 3）。"""
+    payload 全可选：prompt（改目标）、stop_condition（改完成标准）、add_iterations（追加轮数，默认 3）、
+    verify_command（改验收命令）、exec_mode（改 solo/team）。这三个字段调度器每轮都现读现用
+    （scheduler._build_goal_prompt/_gather_verify_context），不会改写已判过的历史轮，故续跑时可放心改；
+    唯独 session_id 不在此列——所有历史轮次的会话上下文/worktree 都挂在同一个会话上，续跑不允许换会话。"""
     sch = db.get_schedule(sid)
     if not sch:
         raise HTTPException(status_code=404, detail="定时任务不存在")
@@ -945,6 +948,14 @@ async def schedules_continue(sid: str, payload: dict):
         if mc_val < 0:
             raise HTTPException(status_code=400, detail="max_cost_usd 不能为负数")
         fields["max_cost_usd"] = mc_val
+    vc = payload.get("verify_command")
+    if vc is not None:
+        fields["verify_command"] = vc.strip()
+    em = payload.get("exec_mode")
+    if em is not None and em != "":
+        if em not in ("solo", "team"):
+            raise HTTPException(status_code=400, detail="exec_mode 仅支持 solo / team")
+        fields["exec_mode"] = em
     db.update_schedule(sid, **fields)
     return db.get_schedule(sid)
 

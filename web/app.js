@@ -778,11 +778,21 @@
   // hover 显示编辑/删除操作，点击行主体跳转关联会话。
   async function renderKanban() {
     const list = $("kanban-list");
-    if (!list) return;
+    if (!list) return { ok: false, items: null };
     const archived = state.kanbanView === "archived";
+    const refreshBtn = $("kanban-refresh-btn");
+    const addBtn = $("kanban-add-btn");
+    if (refreshBtn) {
+      refreshBtn.disabled = archived;
+      refreshBtn.title = archived ? "归档视图不可刷新进展" : "";
+    }
+    if (addBtn) {
+      addBtn.disabled = archived;
+      addBtn.title = archived ? "请返回活跃任务后新建" : "新建任务";
+    }
     let todos;
     try { todos = await api(archived ? "/api/todos?archived=1" : "/api/todos"); }
-    catch (e) { return; }
+    catch (e) { return { ok: false, items: null }; }
 
     // 排序权重：in_progress 在前，pending 其次，done/cancelled 最后
     const order = { in_progress: 0, pending: 1, done: 2, cancelled: 3 };
@@ -794,30 +804,134 @@
     if (!sorted.length) {
       list.innerHTML = `<div class="kanban-empty">${archived ? "暂无归档任务" : "暂无任务"}</div>`;
     } else {
-      for (const t of sorted) list.appendChild(renderKanbanRow(t, archived));
+      const visibleItems = archived ? sorted : sorted.slice(0, 3);
+      for (const t of visibleItems) list.appendChild(renderKanbanRow(t, archived));
+      if (!archived && sorted.length > 3) {
+        const showAll = el("button", "kanban-show-all");
+        showAll.type = "button";
+        showAll.textContent = `查看全部 ${sorted.length} 项`;
+        showAll.onclick = () => showKanbanSheet(sorted, showAll);
+        list.appendChild(showAll);
+      }
     }
-    if (!archived) renderTriageInbox();
+    if (!archived) {
+      const triageResult = await renderTriageInbox();
+      return { ...triageResult, kanbanItems: sorted };
+    }
+    const triageBox = $("triage-inbox");
+    if (triageBox) {
+      triageBox.classList.add("hidden");
+      triageBox.innerHTML = "";
+    }
+    return { ok: true, items: [], kanbanItems: sorted };
   }
 
   // 待分诊收件箱（H3）：秘书晚报后分诊出的待跟进事项，等人工派单/转任务/忽略
   async function renderTriageInbox() {
     const box = $("triage-inbox");
-    if (!box) return;
+    if (!box) return { ok: false, items: null };
     let items;
     try { items = await api("/api/triage"); }
-    catch (e) { box.classList.add("hidden"); return; }
+    catch (e) { return { ok: false, items: null }; }
     if (!items || !items.length) {
       box.classList.add("hidden");
       box.innerHTML = "";
-      return;
+      return { ok: true, items: [] };
     }
     box.classList.remove("hidden");
     box.innerHTML = `<div class="triage-head">🔔 待分诊 (${items.length})</div>`;
-    for (const t of items) box.appendChild(renderTriageRow(t));
+    for (const t of items.slice(0, 3)) box.appendChild(renderTriageRow(t));
+    if (items.length > 3) {
+      const showAll = el("button", "triage-show-all");
+      showAll.type = "button";
+      showAll.textContent = `查看全部 ${items.length} 项`;
+      showAll.onclick = () => showTriageSheet(items, showAll);
+      box.appendChild(showAll);
+    }
+    return { ok: true, items };
+  }
+
+  // 待分诊完整列表：复用 modal-root，列表独立滚动，避免把 Overview 下方 Agent 列表顶走。
+  function showTriageSheet(items, opener) {
+    const root = $("modal-root");
+    if (!root) return;
+    if (root._sheetOwner && root._sheetOwner.close) root._sheetOwner.close({ suppressFocus: true });
+    let closed = false;
+    let closeBtn = null;
+    const owner = {};
+    const onKeydown = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
+    };
+    const close = (opts = {}) => {
+      if (closed) return;
+      closed = true;
+      if (root.onclick === onBackdropClick) root.onclick = null;
+      root.removeEventListener("keydown", onKeydown);
+      root.classList.remove("show");
+      setTimeout(() => {
+        if (root._sheetOwner !== owner) return;
+        root.classList.add("hidden");
+        root.innerHTML = "";
+        delete root._sheetOwner;
+        if (!opts.suppressFocus) {
+          const focusTarget = (opener && opener.isConnected)
+            ? opener
+            : document.querySelector("#triage-inbox .triage-show-all");
+          if (focusTarget) focusTarget.focus();
+        }
+      }, 200);
+    };
+    const onBackdropClick = (e) => { if (e.target === root) close(); };
+    const render = (currentItems) => {
+      if (closed) return;
+      if (!currentItems.length) {
+        close();
+        return;
+      }
+      const shouldFocusClose = root.contains(document.activeElement);
+      root.innerHTML = "";
+      const card = el("div", "modal-card triage-sheet-card");
+      card.setAttribute("role", "dialog");
+      card.setAttribute("aria-modal", "true");
+      card.setAttribute("aria-label", `全部待分诊事项，共 ${currentItems.length} 项`);
+      card.innerHTML = `
+        <div class="triage-sheet-head">
+          <div class="modal-title">待分诊 (${currentItems.length})</div>
+          <button class="triage-sheet-close" type="button" aria-label="关闭待分诊列表">关闭</button>
+        </div>
+        <div class="triage-sheet-list"></div>`;
+      const list = card.querySelector(".triage-sheet-list");
+      for (const t of currentItems) {
+        list.appendChild(renderTriageRow(t, {
+          onResolved: async (nextItems) => {
+            if (!closed) render(nextItems);
+          },
+        }));
+      }
+      root.appendChild(card);
+      closeBtn = card.querySelector(".triage-sheet-close");
+      closeBtn.onclick = close;
+      if (shouldFocusClose) closeBtn.focus();
+    };
+    render(items);
+    if (closed) return;
+    owner.close = close;
+    root._sheetOwner = owner;
+    root.onclick = onBackdropClick;
+    root.addEventListener("keydown", onKeydown);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => {
+      if (closed) return;
+      root.classList.add("show");
+      if (closeBtn && closeBtn.isConnected) closeBtn.focus();
+    });
   }
 
   // 单条待分诊事项：标题 + 置信度 + 建议动作徽章 + 理由 + 三个操作按钮
-  function renderTriageRow(t) {
+  function renderTriageRow(t, opts = {}) {
     const row = document.createElement("div");
     row.className = "triage-row";
     row.dataset.id = t.id;
@@ -834,53 +948,177 @@
         ${reason ? `<div class="triage-row-reason">${escapeHtml(reason)}</div>` : ""}
       </div>
       <div class="triage-row-actions">
-        <button class="kanban-act-btn btn-edit" title="派单开工" data-act="dispatch">▶ 派单</button>
-        <button class="kanban-act-btn btn-edit" title="转为普通任务" data-act="to_todo">→ 任务</button>
-        <button class="kanban-act-btn btn-delete" title="忽略" data-act="ignore">🗑</button>
+        <button class="kanban-act-btn btn-edit" type="button" title="派单开工" aria-label="派单开工" data-act="dispatch">▶ 派单</button>
+        <button class="kanban-act-btn btn-edit" type="button" title="转为普通任务" aria-label="转为普通任务" data-act="to_todo">→ 任务</button>
+        <button class="kanban-act-btn btn-delete" type="button" title="忽略" aria-label="忽略" data-act="ignore">🗑 忽略</button>
       </div>`;
 
-    row.querySelector("[data-act='dispatch']").onclick = async () => {
-      try {
-        await api(`/api/triage/${t.id}/dispatch`, { method: "POST" });
-        toast("已派单开工", "success", 1500);
-        await renderKanban();
-      } catch (e) { toast("派单失败：" + e.message, "error"); }
+    let inFlight = false;
+    const actionButtons = row.querySelectorAll("[data-act]");
+    const setBusy = (busy) => {
+      inFlight = busy;
+      row.setAttribute("aria-busy", String(busy));
+      actionButtons.forEach((button) => { button.disabled = busy; });
     };
-    row.querySelector("[data-act='to_todo']").onclick = async () => {
+    const resolve = async (endpoint, successText, failText) => {
+      if (inFlight) return;
+      setBusy(true);
       try {
-        await api(`/api/triage/${t.id}/to_todo`, { method: "POST" });
-        toast("已转为任务", "success", 1500);
-        await renderKanban();
-      } catch (e) { toast("转任务失败：" + e.message, "error"); }
-    };
-    row.querySelector("[data-act='ignore']").onclick = async () => {
+        await api(`/api/triage/${t.id}/${endpoint}`, { method: "POST" });
+      } catch (e) {
+        if (row.isConnected) setBusy(false);
+        toast(`${failText}：${e.message}`, "error");
+        return;
+      }
+      let refreshed;
       try {
-        await api(`/api/triage/${t.id}/ignore`, { method: "POST" });
-        toast("已忽略", "success", 1500);
-        await renderKanban();
-      } catch (e) { toast("忽略失败：" + e.message, "error"); }
+        refreshed = await renderKanban();
+      } catch (e) {
+        refreshed = { ok: false, items: null };
+      }
+      if (!refreshed || !refreshed.ok) {
+        toast("操作已提交，但列表刷新失败，请手动刷新确认", "error");
+        return;
+      }
+      toast(successText, "success", 1500);
+      if (opts.onResolved) await opts.onResolved(refreshed.items);
     };
+    row.querySelector("[data-act='dispatch']").onclick = () => resolve("dispatch", "已派单开工", "派单失败");
+    row.querySelector("[data-act='to_todo']").onclick = () => resolve("to_todo", "已转为任务", "转任务失败");
+    row.querySelector("[data-act='ignore']").onclick = () => resolve("ignore", "已忽略", "忽略失败");
     return row;
   }
 
+  // 活跃任务完整列表：首页仅保留三条预览，完整交互放在可滚动 sheet 中。
+  function showKanbanSheet(items, opener) {
+    const root = $("modal-root");
+    if (!root) return;
+    if (root._sheetOwner && root._sheetOwner.close) root._sheetOwner.close({ suppressFocus: true });
+    let closed = false;
+    let closeBtn = null;
+    const owner = {};
+    const onKeydown = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
+    };
+    const close = (opts = {}) => {
+      if (closed) return;
+      closed = true;
+      if (root.onclick === onBackdropClick) root.onclick = null;
+      root.removeEventListener("keydown", onKeydown);
+      root.classList.remove("show");
+      setTimeout(() => {
+        if (root._sheetOwner !== owner) return;
+        root.classList.add("hidden");
+        root.innerHTML = "";
+        delete root._sheetOwner;
+        if (opts.afterClose) {
+          opts.afterClose();
+          return;
+        }
+        if (!opts.suppressFocus) {
+          const focusTarget = (opener && opener.isConnected)
+            ? opener
+            : document.querySelector("#kanban-list .kanban-show-all");
+          if (focusTarget) focusTarget.focus();
+        }
+      }, 200);
+    };
+    const onBackdropClick = (e) => { if (e.target === root) close(); };
+    const render = (currentItems) => {
+      if (closed) return;
+      if (!currentItems.length) {
+        close();
+        return;
+      }
+      const shouldFocusClose = root.contains(document.activeElement);
+      root.innerHTML = "";
+      const card = el("div", "modal-card kanban-sheet-card");
+      card.setAttribute("role", "dialog");
+      card.setAttribute("aria-modal", "true");
+      card.setAttribute("aria-label", `全部任务，共 ${currentItems.length} 项`);
+      card.innerHTML = `
+        <div class="kanban-sheet-head">
+          <div class="modal-title">全部任务 (${currentItems.length})</div>
+          <button class="kanban-sheet-close" type="button" aria-label="关闭全部任务列表">关闭</button>
+        </div>
+        <div class="kanban-sheet-list"></div>`;
+      const list = card.querySelector(".kanban-sheet-list");
+      for (const t of currentItems) {
+        list.appendChild(renderKanbanRow(t, false, {
+          onChanged: async (refreshed) => {
+            if (!closed) render(refreshed.kanbanItems || []);
+          },
+          onExitSheet: (afterClose) => close({ afterClose }),
+        }));
+      }
+      root.appendChild(card);
+      closeBtn = card.querySelector(".kanban-sheet-close");
+      closeBtn.onclick = close;
+      if (shouldFocusClose) closeBtn.focus();
+    };
+    render(items);
+    if (closed) return;
+    owner.close = close;
+    root._sheetOwner = owner;
+    root.onclick = onBackdropClick;
+    root.addEventListener("keydown", onKeydown);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => {
+      if (closed) return;
+      root.classList.add("show");
+      if (closeBtn && closeBtn.isConnected) closeBtn.focus();
+    });
+  }
+
   // 归档任务：从活跃看板隐藏（不物理删除），归档视图里可恢复
+  async function refreshKanbanAfterTodoMutation(successText) {
+    let refreshed;
+    try {
+      refreshed = await renderKanban();
+    } catch (e) {
+      refreshed = { ok: false, items: null };
+    }
+    if (!refreshed || !Array.isArray(refreshed.kanbanItems)) {
+      toast("操作已提交，但看板刷新失败，请稍后手动刷新", "info", 3000);
+      return { ok: false, submitted: true, refreshed: null };
+    }
+    toast(successText, "success", 1500);
+    return { ok: true, submitted: true, refreshed };
+  }
+
   async function archiveTodo(id) {
     try {
       await api(`/api/todos/${id}/archive`, { method: "POST" });
-      toast("已归档", "success", 1500);
-      await renderKanban();
-    } catch (e) { toast("归档失败：" + e.message, "error"); }
+    } catch (e) {
+      toast("归档失败：" + e.message, "error");
+      return { ok: false, submitted: false };
+    }
+    return refreshKanbanAfterTodoMutation("已归档");
   }
   async function unarchiveTodo(id) {
     try {
       await api(`/api/todos/${id}/unarchive`, { method: "POST" });
-      toast("已恢复", "success", 1500);
-      await renderKanban();
-    } catch (e) { toast("恢复失败：" + e.message, "error"); }
+    } catch (e) {
+      toast("恢复失败：" + e.message, "error");
+      return { ok: false, submitted: false };
+    }
+    return refreshKanbanAfterTodoMutation("已恢复");
+  }
+  async function deleteTodo(id) {
+    try {
+      await api(`/api/todos/${id}`, { method: "DELETE" });
+    } catch (e) {
+      toast("删除失败：" + e.message, "error");
+      return { ok: false, submitted: false };
+    }
+    return refreshKanbanAfterTodoMutation("已删除");
   }
 
   // 单行看板（列表模式）：左侧状态色点 + 标题 + 单行截断的进展摘要 + hover 操作按钮
-  function renderKanbanRow(t, isArchived = false) {
+  function renderKanbanRow(t, isArchived = false, opts = {}) {
     const row = document.createElement("div");
     row.className = "kanban-row";
     row.dataset.id = t.id;
@@ -909,45 +1147,67 @@
       </div>
       <div class="kanban-row-actions">
         ${isArchived
-          ? `<button class="kanban-act-btn btn-edit" title="恢复" data-act="unarchive">↩</button>
-             <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>`
-          : `<button class="kanban-act-btn btn-edit" title="编辑" data-act="edit">✎</button>
-             <button class="kanban-act-btn btn-edit" title="归档" data-act="archive">🗄</button>
-             <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>`}
+          ? `<button class="kanban-act-btn btn-edit" type="button" title="恢复" aria-label="恢复任务" data-act="unarchive">↩</button>
+             <button class="kanban-act-btn btn-delete" type="button" title="删除" aria-label="删除任务" data-act="delete">🗑</button>`
+          : `<button class="kanban-act-btn btn-edit" type="button" title="编辑" aria-label="编辑任务" data-act="edit">✎</button>
+             <button class="kanban-act-btn btn-edit" type="button" title="归档" aria-label="归档任务" data-act="archive">🗄</button>
+             <button class="kanban-act-btn btn-delete" type="button" title="删除" aria-label="删除任务" data-act="delete">🗑</button>`}
       </div>`;
 
+    let inFlight = false;
+    const actionButtons = row.querySelectorAll("[data-act]");
+    const setBusy = (busy) => {
+      inFlight = busy;
+      row.setAttribute("aria-busy", String(busy));
+      actionButtons.forEach((button) => { button.disabled = busy; });
+    };
+    const exitSheet = (next) => {
+      if (opts.onExitSheet) opts.onExitSheet(next);
+      else next();
+    };
+    const handleMutation = async (mutation) => {
+      if (inFlight) return;
+      setBusy(true);
+      const result = await mutation();
+      if (!result || !result.ok) {
+        // 请求未提交时允许重试；已提交但刷新失败则维持禁用，避免重复提交。
+        if (!result || !result.submitted) setBusy(false);
+        return;
+      }
+      if (opts.onChanged) await opts.onChanged(result.refreshed);
+    };
+
     // 点击整行：跳转关联会话（策略见 KANBAN_JUMP_MODE）；未关联时打开编辑去关联
-    row.onclick = () => jumpToTodoSession(t, () => showEditTodoModal(t));
+    row.onclick = () => exitSheet(() => jumpToTodoSession(t, () => showEditTodoModal(t)));
 
     // 编辑
     const editBtn = row.querySelector("[data-act='edit']");
     if (editBtn) editBtn.onclick = (e) => {
       e.stopPropagation();
-      showEditTodoModal(t);
+      exitSheet(() => showEditTodoModal(t));
     };
 
     // 归档 / 恢复
     const archiveBtn = row.querySelector("[data-act='archive']");
     if (archiveBtn) archiveBtn.onclick = (e) => {
       e.stopPropagation();
-      archiveTodo(t.id);
+      handleMutation(() => archiveTodo(t.id));
     };
     const unarchiveBtn = row.querySelector("[data-act='unarchive']");
     if (unarchiveBtn) unarchiveBtn.onclick = (e) => {
       e.stopPropagation();
-      unarchiveTodo(t.id);
+      handleMutation(() => unarchiveTodo(t.id));
     };
 
-    // 删除（二次确认后就地移除）
-    row.querySelector("[data-act='delete']").onclick = async (e) => {
+    // 删除需二次确认；在 sheet 内先退出，避免与确认弹窗嵌套。
+    row.querySelector("[data-act='delete']").onclick = (e) => {
       e.stopPropagation();
-      const yes = await confirmDialog(`确定删除「${t.title}」？`, { okText: "删除", danger: true });
-      if (!yes) return;
-      try {
-        await api(`/api/todos/${t.id}`, { method: "DELETE" });
-        row.remove();
-        toast("已删除", "success", 1500);
-      } catch (err) { toast("删除失败：" + err.message, "error"); }
+      if (inFlight) return;
+      exitSheet(async () => {
+        const yes = await confirmDialog(`确定删除「${t.title}」？`, { okText: "删除", danger: true });
+        if (!yes) return;
+        await handleMutation(() => deleteTodo(t.id));
+      });
     };
 
     return row;

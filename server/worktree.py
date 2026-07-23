@@ -1,14 +1,14 @@
 """Git worktree 会话隔离：为会话创建独立分支+独立目录，使并行会话互不干扰。
 不是 git 仓库时降级为直接返回 base（不报错）。绝不自动 merge 回主干——合并走人工。"""
-import logging
 import re
 import secrets
 import subprocess
 from pathlib import Path
 
 from . import config
+from .logging_util import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 def _run(args, cwd=None, timeout=60):

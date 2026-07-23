@@ -8,6 +8,11 @@ data/*.sqlite*
 # ---- 隔离会话的 worktree 物理目录（linked worktree，不应进主仓库）----
 data/worktrees/
 
+# ---- 数据库备份（大体积二进制，不入库）----
+data/backups/
+data/agent_console.db
+data/job_logs/
+
 # ---- 私钥/证书（run.sh 会自动生成）----
 data/certs/
 *.key

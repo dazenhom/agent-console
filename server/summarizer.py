@@ -1,15 +1,12 @@
 """行摘要：给会话列表生成一句话「这会话刚做了什么」。
 
-主路径用 Haiku 一次性概括（漂亮、像 agent view 的行摘要）；失败/超时回退到启发式截断。
-关键：这是**独立的一次性子进程**（不是会话的常驻进程），绝不碰会话上下文。
-复用 claude_runner._child_env() 剔除编排态环境变量（否则 403，见同模块注释）。
+主路径用便宜档 codex 模型（CHEAP_MODEL）一次性概括（漂亮、像 agent view 的行摘要）；
+失败/超时回退到启发式截断。这是**独立的一次性子进程**（不是会话的常驻进程），绝不碰会话上下文。
 """
-import asyncio
-import json
 import re
 
 from . import config
-from .claude_runner import _child_env
+from .codex_oneshot import run_codex_oneshot_text
 
 
 def _heuristic(user_text: str, reply_text: str, limit: int = 40) -> str:
@@ -33,41 +30,14 @@ def _build_prompt(user_text: str, reply_text: str) -> str:
 
 
 async def _haiku(user_text: str, reply_text: str) -> str:
-    """一次性 Haiku 概括。返回干净摘要字符串；任何异常/超时抛出由上层兜底。"""
-    cmd = [
-        config.CLAUDE_BIN, "--", "-p", _build_prompt(user_text, reply_text),
-        "--model", config.CLAUDE_MODEL_FAST, "--output-format", "json",
-        "--effort", config.CLAUDE_ONESHOT_EFFORT,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, env=_child_env(),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
+    """一次性便宜档概括。返回干净摘要字符串；失败/超时/无输出返回空串。"""
+    _, summary, _, status = await run_codex_oneshot_text(
+        "line_summary", _build_prompt(user_text, reply_text), config.SUMMARY_TIMEOUT,
+        model=config.CHEAP_MODEL,
     )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=config.SUMMARY_TIMEOUT)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        raise
-    # 输出里可能混有 "Update available..." 之类噪音行，挑出 JSON 那行解析
-    text = out.decode("utf-8", errors="replace")
-    summary = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("type") == "result" and not data.get("is_error"):
-            summary = (data.get("result") or "").strip()
-            break
-    # 清掉可能的引号/换行，限长
-    summary = re.sub(r"\s+", " ", summary).strip().strip('"""')
+    if status != "success":
+        return ""
+    summary = re.sub(r"\s+", " ", summary).strip().strip('"“”')
     return summary[:40]
 
 
@@ -84,7 +54,7 @@ async def summarize(user_text: str, reply_text: str) -> str:
 
 
 async def _gen_title_haiku(convo: str, current_title: str = "") -> str:
-    """一次性 Haiku 起标题：给一段对话内容取一个不超过 10 字的中文标题。任何异常/超时抛出由上层兜底。
+    """一次性便宜档起标题：给一段对话内容取一个不超过 10 字的中文标题。失败/超时/无输出返回空串。
 
     current_title 非空时改判「是否需要换标题」：话题仍延续则回固定标记 KEEP（上层转成空串保留原标题），
     仅当话题明显漂移或原标题不准时才输出新标题。"""
@@ -105,40 +75,13 @@ async def _gen_title_haiku(convo: str, current_title: str = "") -> str:
             "才输出一个不超过 40 个字、反映最近在做什么的新标题。不要仅因为想换个说法就改标题。"
             "只输出标记或标题本身，不要引号、标点或任何前后缀。"
         )
-    cmd = [
-        config.CLAUDE_BIN, "--", "-p", prompt,
-        "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
-        "--effort", config.CLAUDE_ONESHOT_EFFORT,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, env=_child_env(),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
+    _, result, _, status = await run_codex_oneshot_text(
+        "gen_title", prompt, config.SUMMARY_TIMEOUT, model=config.CHEAP_MODEL,
     )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=config.SUMMARY_TIMEOUT)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        raise
-    # 输出里可能混有 "Update available..." 之类噪音行，挑出 JSON 那行解析
-    text = out.decode("utf-8", errors="replace")
-    result = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("type") == "result" and not data.get("is_error"):
-            result = (data.get("result") or "").strip()
-            break
+    if status != "success":
+        return ""
     # 清掉可能的引号/换行，限长
-    result = re.sub(r"\s+", " ", result).strip().strip('"""')[:45]
+    result = re.sub(r"\s+", " ", result).strip().strip('"“”')[:45]
     # 模型判定话题仍延续时回固定标记 KEEP，转成空串让上层保留原标题。
     # 先剥掉常见引号/书名号/结尾标点噪音再比对，兼容『KEEP』、KEEP。等变体（仅用于判断，不污染返回值）。
     if re.sub(r"[\"'『』「」。.,!！]", "", result).strip().upper() == "KEEP":

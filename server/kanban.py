@@ -1,7 +1,7 @@
 """看板进展总结：读取会话 jsonl，用一次性子进程概括开发进展。
 
 与 summarizer 一脉相承：独立的一次性子进程，绝不碰会话的常驻上下文；
-复用 claude_runner._child_env() 剔除编排态环境变量（否则 403）。
+走 codex 引擎的便宜档 CHEAP_MODEL（见 codex_oneshot.run_codex_oneshot_text）。
 每个 todo 卡片带 mtime 缓存：jsonl 没变就复用上次的摘要，避免重复烧模型。
 """
 import json
@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from . import config, db
-from .job_store import run_logged_oneshot
+from .codex_oneshot import run_codex_oneshot_text
 
 
 def _slug(path: str) -> str:
@@ -68,38 +68,18 @@ async def summarize_progress(context_text: str, session_id: str | None = None) -
         "语言要具体、贴合上下文，不要空泛套话。"
         "只输出摘要正文本身，不要引号、标题或任何前后缀。\n\n" + context_text
     )
-    cmd = [
-        config.CLAUDE_BIN, "--", "-p", prompt,
-        "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
-        "--effort", config.CLAUDE_ONESHOT_EFFORT,
-    ]
-    jid, text, stderr_text, status = await run_logged_oneshot(
-        "kanban_progress", cmd, config.SUMMARY_TIMEOUT,
-        session_id=session_id, model=config.CLAUDE_MODEL_KANBAN,
-        input_summary="看板进展摘要",
+    jid, text, stderr_text, status = await run_codex_oneshot_text(
+        "kanban_progress", prompt, config.SUMMARY_TIMEOUT, model=config.CHEAP_MODEL,
+        session_id=session_id, input_summary="看板进展摘要",
     )
     if status == "timeout":
         return "进展获取超时"
     if status == "error":
         return "进展获取失败"
-    # 输出里可能混有噪音行，挑出 JSON 那行解析（与 summarizer 一致）
-    result = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("type") == "result" and not data.get("is_error"):
-            result = (data.get("result") or "").strip()
-            break
-    result = re.sub(r"\s+", " ", result).strip().strip('"“”')
+    result = re.sub(r"\s+", " ", text).strip().strip('"“”')
     if not result:
         # 解析不到结果：把子进程 stderr 前 200 字打出来，方便定位模型/CLI 报错
-        err_text = stderr_text[:200]
-        print(f"[kanban] summarize_progress: no result, stderr={err_text!r}")
+        print(f"[kanban] summarize_progress: no result, stderr={stderr_text!r}")
         return "暂无进展信息"
     result = result[:160]
     db.set_job_output(jid, result)

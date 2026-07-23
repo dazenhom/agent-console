@@ -347,6 +347,8 @@ async def _run_goal_verify(scid: str) -> None:
             db.update_schedule(scid, goal_status="running", last_feedback=fb)
             _broadcast_goal_progress(scid)
     except Exception as e:
+        import traceback
+        print(f"[goal_verify] scid={scid} 异常：\n{traceback.format_exc()}")
         db.update_schedule(scid, goal_status="running",
                           last_feedback=f"[verify异常:{type(e).__name__}]")
         sch = db.get_schedule(scid)
@@ -657,6 +659,8 @@ async def _run_goal_verify_planned(scid: str) -> None:
             db.update_schedule(scid, goal_status="running", active_subtask_id="", last_feedback=fb)
             _broadcast_goal_progress(scid)
     except Exception as e:
+        import traceback
+        print(f"[goal_verify_planned] scid={scid} 异常：\n{traceback.format_exc()}")
         db.update_schedule(scid, goal_status="running", active_subtask_id="",
                            last_feedback=f"[verify异常:{type(e).__name__}]")
         sch = db.get_schedule(scid)
@@ -738,6 +742,8 @@ async def _run_dispatch_verify(subtask_id: str) -> None:
         db.update_dispatch_subtask(subtask_id, status=("done" if done else "failed"),
                                    verdict=("done" if done else "failed"), feedback=reason)
     except Exception as e:
+        import traceback
+        print(f"[dispatch_verify] subtask_id={subtask_id} 异常：\n{traceback.format_exc()}")
         db.update_dispatch_subtask(subtask_id, status="failed", verdict="failed",
                                    feedback=f"[verify异常:{type(e).__name__}]")
     finally:

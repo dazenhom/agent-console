@@ -227,8 +227,10 @@ body.hub-resizing {
 .detail-head { flex: 0 0 auto; padding: 16px 18px 12px; border-bottom: 1px solid var(--line-soft); }
 .detail-head-row { display: flex; align-items: center; gap: 10px; }
 .detail-title { flex: 1; min-width: 0; font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.detail-head-btns { display: flex; gap: 4px; flex: 0 0 auto; }
-.detail-icon-btn { background: none; border: none; color: var(--muted); font-size: 17px; padding: 5px 7px; border-radius: 8px; line-height: 1; }
+.detail-head-btns { display: flex; gap: 2px; flex: 0 0 auto; }
+/* 图标+短文字并排，避免纯 emoji 含义不明 */
+.detail-icon-btn { display: inline-flex; align-items: center; gap: 3px; background: none; border: none; color: var(--muted); font-size: 15px; padding: 5px 6px; border-radius: 8px; line-height: 1; white-space: nowrap; }
+.detail-icon-btn span { font-size: 11px; }
 .detail-icon-btn:hover { background: var(--bg-3); color: var(--text); }
 .detail-icon-btn:disabled { opacity: .4; cursor: default; }
 /* 桌面双栏下详情常驻，"返回列表"无意义 → 隐藏；窄屏覆盖层时再显示（见响应式） */
@@ -445,12 +447,12 @@ body.hub-resizing {
 .mic-btn.disabled { opacity: .5; }
 .mic-btn.recording { background: var(--accent); border-color: var(--accent); color: #fff; transform: scale(1.06); box-shadow: 0 0 0 6px rgba(47,109,240,.16); }
 
-/* 详情面板底部操作按钮（Resume / Stop / Archive） */
-.detail-actions { flex: 0 0 auto; display: flex; gap: 10px; justify-content: space-around; padding: 10px 16px 14px; border-top: 1px solid var(--line-soft); }
-/* Resume / Archive / 仲裁 / 分派：一律为等大的方形图标按钮，视觉权重拉平 */
-.act-icon-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 46px; padding: 11px 0; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font-size: 18px; line-height: 1; }
-.act-icon-btn:hover { background: var(--bg-3); }
-.act-icon-btn:disabled { opacity: .4; cursor: default; }
+/* 详情面板底部操作按钮（Resume / Archive / 压缩） */
+.detail-actions { flex: 0 0 auto; display: flex; gap: 10px; justify-content: space-between; padding: 10px 16px 14px; border-top: 1px solid var(--line-soft); }
+/* 等重的文字按钮，均匀铺开占满宽度 */
+.act-btn { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 11px 4px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font-size: 13px; white-space: nowrap; }
+.act-btn:hover { background: var(--bg-3); }
+.act-btn:disabled { opacity: .4; cursor: default; }
 
 /* 待发图片预览条 */
 .img-tray { flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 16px; overflow-x: auto; background: var(--bg-2); border-top: 1px solid var(--line-soft); }
@@ -918,6 +920,11 @@ body.hub-resizing {
 .modal-actions { display: flex; gap: 10px; }
 .modal-actions button { flex: 1; padding: 11px; border-radius: 11px; font-size: 15px; font-weight: 600; border: 1px solid var(--line); }
 .modal-cancel { background: var(--bg-2); color: var(--text); }
+/* 「更多」操作面板：竖排列表，最后一项为取消 */
+.sheet-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+.sheet-option { width: 100%; text-align: left; padding: 13px 14px; border-radius: 11px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font-size: 15px; }
+.sheet-option:hover { background: var(--bg-3); }
+.sheet-cancel { text-align: center; color: var(--muted); border: none; margin-top: 4px; }
 .modal-ok { background: var(--grad-accent); color: #fff; border-color: var(--accent); box-shadow: 0 3px 12px var(--accent-glow); }
 .modal-ok.danger { background: linear-gradient(135deg, #e0413b, #c93832); border-color: var(--red); box-shadow: 0 3px 12px rgba(224,65,59,.25); }
 
@@ -1029,17 +1036,19 @@ body.hub-resizing {
     padding: calc(env(safe-area-inset-top,0px) + 12px) 14px 11px;
     display: flex; flex-direction: column; gap: 6px;
   }
-  /* 返回按钮移到标题左侧（像原生返回键），速览按钮在详情页内冗余 → 隐藏 */
-  #detail-peek-btn { display: none; }
+  /* 返回按钮移到标题左侧（像原生返回键） */
   .detail-head-btns { order: -1; }
   #detail-close-btn { display: inline-flex; align-items: center; justify-content: center; font-size: 24px; padding: 2px 6px; color: var(--text); }
+  #detail-close-btn span { display: none; }
   .detail-head-row { gap: 6px; }
   .detail-title { font-size: 16.5px; }
   .chat { padding: 14px 14px 6px; }
   .msg .bubble { max-width: 92%; }
 
-  /* 底部 Resume/Stop/Archive 在手机上冗余（输入框可继续、停止键运行时自现、归档可在列表删）→ 隐藏省高度 */
-  .detail-actions { display: none; }
+  /* Resume/Archive 在手机上冗余（输入框可继续、归档可在列表删）→ 隐藏；压缩仍常用，保留 */
+  #act-resume, #act-archive { display: none; }
+  .detail-actions { justify-content: center; }
+  .detail-actions #compact-btn { flex: 0 0 auto; min-width: 140px; }
   .composer { padding: 10px 12px calc(10px + var(--safe-b)); }
   .snippet-bar { padding: 8px 12px 2px; }
 
@@ -1409,6 +1418,9 @@ select[multiple] { min-height: 80px; height: auto; }
   font-size: 11.5px;
   color: var(--muted, #6b7280);
   line-height: 1.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 行操作按钮 */
@@ -1418,6 +1430,17 @@ select[multiple] { min-height: 80px; height: auto; }
   opacity: 0;
   transition: opacity 0.15s;
   flex-shrink: 0;
+}
+.kanban-show-all {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-2, #fff);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 /* ===== 待分诊收件箱（H3）===== */
@@ -1438,6 +1461,17 @@ select[multiple] { min-height: 80px; height: auto; }
   color: #b5841f;
   padding: 2px 2px 6px;
 }
+.triage-show-all {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 4px;
+  border: 1px solid #e8c57e;
+  border-radius: 6px;
+  background: var(--bg-2, #fff);
+  color: #9a6f16;
+  font-size: 13px;
+  font-weight: 600;
+}
 .triage-row {
   display: flex;
   align-items: center;
@@ -1447,7 +1481,6 @@ select[multiple] { min-height: 80px; height: auto; }
   background: var(--bg-2, #fff);
   min-height: 42px;
 }
-.triage-row:hover .triage-row-actions { opacity: 1; }
 .triage-row-main {
   flex: 1;
   min-width: 0;
@@ -1495,9 +1528,99 @@ select[multiple] { min-height: 80px; height: auto; }
 .triage-row-actions {
   display: flex;
   gap: 2px;
-  opacity: 0;
-  transition: opacity 0.15s;
   flex-shrink: 0;
+}
+.triage-row-actions .kanban-act-btn {
+  width: auto;
+  min-height: 32px;
+  padding: 0 7px;
+  font-size: 12px;
+}
+.triage-row[aria-busy="true"] { opacity: .65; }
+.triage-sheet-card {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+}
+.triage-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  margin-bottom: 12px;
+}
+.triage-sheet-head .modal-title { margin: 0; }
+.triage-sheet-close {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+.triage-sheet-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+/* 活跃任务完整列表：与待分诊 sheet 一致，内部独立滚动。 */
+.kanban-sheet-card {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+}
+.kanban-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  margin-bottom: 12px;
+}
+.kanban-sheet-head .modal-title { margin: 0; }
+.kanban-sheet-close {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+.kanban-sheet-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.kanban-sheet-list .kanban-row-actions {
+  opacity: 1;
+}
+.kanban-sheet-list .kanban-act-btn {
+  width: 30px;
+  min-height: 32px;
+}
+
+@media (hover: none) {
+  .kanban-row-actions { opacity: 1; }
+  .kanban-act-btn {
+    width: 30px;
+    min-height: 32px;
+  }
 }
 
 /* ===== 会话选择器 UI（任务弹窗关联会话，GitHub label 风格）===== */

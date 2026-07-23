@@ -1,8 +1,7 @@
 """Triage 自动分流（H3）：秘书晚报后，用便宜模型对当日数据做一次性分诊。
 
 与 kanban.summarize_progress / goal_verifier.verify 一脉相承：独立的一次性子进程，
-绝不碰会话常驻上下文；复用 claude_runner._child_env() 剔除编排态环境变量（否则 403），
-用 CLAUDE_MODEL_KANBAN（便宜模型），start_new_session=True + timeout 兜底。
+绝不碰会话常驻上下文；走 codex 引擎的便宜档 CHEAP_MODEL（见 codex_oneshot），timeout 兜底。
 
 设计原则：默认保守。任何分诊失败/超时/解析不到一律返回空、什么都不做，绝不误派。
 只有开了 TRIAGE_AUTO_DISPATCH、置信度够高、范围小、有明确完成标准且未超每日上限时，
@@ -17,7 +16,7 @@ import re
 from datetime import date, datetime
 
 from . import config, db, worktree
-from .job_store import run_logged_oneshot
+from .codex_oneshot import run_codex_oneshot_text
 
 _VALID_CATEGORIES = {"bugfix", "test", "chore", "investigate", "other"}
 _VALID_ACTIONS = {"auto", "triage", "ignore"}
@@ -70,14 +69,9 @@ def _build_triage_prompt(day_data: dict, todos: list) -> str:
 async def run_triage(day_data: dict, todos: list) -> list:
     """一次性子进程跑分诊，返回校验后的 items 列表。失败/超时/解析不到 → []。"""
     prompt = _build_triage_prompt(day_data, todos)
-    cmd = [
-        config.CLAUDE_BIN, "--", "-p", prompt,
-        "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
-        "--effort", config.CLAUDE_ONESHOT_EFFORT,
-    ]
-    jid, text, stderr_text, status = await run_logged_oneshot(
-        "triage", cmd, config.TRIAGE_TIMEOUT,
-        model=config.CLAUDE_MODEL_KANBAN, input_summary="每日分诊",
+    jid, result, stderr_text, status = await run_codex_oneshot_text(
+        "triage", prompt, config.TRIAGE_TIMEOUT, model=config.CHEAP_MODEL,
+        input_summary="每日分诊",
     )
     if status == "timeout":
         print("[triage] run_triage: timeout")
@@ -85,23 +79,8 @@ async def run_triage(day_data: dict, todos: list) -> list:
     if status == "error":
         print("[triage] run_triage: subprocess error")
         return []
-
-    # 挑出 JSON 那行取 result（与 kanban.summarize_progress 一致）
-    result = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("type") == "result" and not data.get("is_error"):
-            result = (data.get("result") or "").strip()
-            break
     if not result:
-        err_text = stderr_text[:200]
-        print(f"[triage] run_triage: no result, stderr={err_text!r}")
+        print(f"[triage] run_triage: no result, stderr={stderr_text!r}")
         return []
 
     # result 本身应是一行 JSON；模型偶尔套 markdown 代码块，剥一下再解析

@@ -1,14 +1,13 @@
 """目标循环总览总结：把所有 goal 循环的完成情况汇总，用一次性子进程生成一段中文小结。
 
 与 kanban.summarize_progress / goal_verifier.verify 一脉相承：独立的一次性子进程，
-绝不碰会话常驻上下文；复用 run_logged_oneshot（内部 _child_env 剔除编排态环境变量，否则 403）。
-模型用 CLAUDE_MODEL_KANBAN（与生产会话分离），点按钮才触发、不做缓存（KISS）。
+绝不碰会话常驻上下文；走 codex 引擎的便宜档 CHEAP_MODEL（见 codex_oneshot），点按钮才触发、
+不做缓存（KISS）。
 """
-import json
 import re
 
 from . import config, db
-from .job_store import run_logged_oneshot
+from .codex_oneshot import run_codex_oneshot_text
 
 
 def _classify(g: dict) -> str:
@@ -68,35 +67,16 @@ async def summarize_goals() -> tuple[bool, str]:
     goals = db.list_goal_loops(limit=100)
     if not goals:
         return True, "当前还没有任何目标循环。"
-    cmd = [
-        config.CLAUDE_BIN, "--", "-p", _build_prompt(goals),
-        "--model", config.CLAUDE_MODEL_KANBAN, "--output-format", "json",
-        "--effort", config.CLAUDE_ONESHOT_EFFORT,
-    ]
-    jid, text, stderr_text, status = await run_logged_oneshot(
-        "goal_summary", cmd, config.SUMMARY_TIMEOUT,
-        model=config.CLAUDE_MODEL_KANBAN, input_summary=f"目标循环总览（{len(goals)} 个）",
+    jid, result, stderr_text, status = await run_codex_oneshot_text(
+        "goal_summary", _build_prompt(goals), config.SUMMARY_TIMEOUT, model=config.CHEAP_MODEL,
+        input_summary=f"目标循环总览（{len(goals)} 个）",
     )
     if status == "timeout":
         return False, "总结生成超时"
     if status == "error":
         return False, "总结生成进程异常"
-    # 挑出 JSON 那行解析（与 kanban.summarize_progress 一致）
-    result = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("type") == "result" and not data.get("is_error"):
-            result = (data.get("result") or "").strip()
-            break
     if not result:
-        err_text = stderr_text[:200]
-        print(f"[goal_summary] no result, stderr={err_text!r}")
+        print(f"[goal_summary] no result, stderr={stderr_text!r}")
         return False, "总结无输出"
     db.set_job_output(jid, result[:200])
     return True, result

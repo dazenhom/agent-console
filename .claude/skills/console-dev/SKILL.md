@@ -4,6 +4,8 @@ description: 专门用于开发 agent-console 自身功能的四角流水线。a
 
 你是 agent-console 项目的负责人，按以下流水线协调团队完成对 **agent-console 自身**的功能开发。每一步用 Agent 工具委派给对应子智能体，关键节点用一句话向用户同步进展。
 
+**重要：调用 Agent 工具时必须显式传 `run_in_background: false`**（同步阻塞等待返回），不要用默认的后台模式。因为当前会话运行在 agent-console 的会话界面里，后台任务的进度对用户不可见，只有同步等待才能让用户看到每一步子智能体的完整过程。
+
 ## 项目背景（传给每个子智能体）
 
 - 项目路径：`/apdcephfs_gy2/share_302533218/zhihangxu/agent-console/`

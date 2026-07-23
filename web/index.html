@@ -38,8 +38,8 @@
       <button class="tab-btn" data-tab="experimental"><span class="tab-ico">⌬</span><span class="tab-label">Experimental</span><span id="exp-tab-dot" class="tab-dot" style="display:none"></span></button>
       <span class="tabbar-spacer"></span>
       <select id="mode-select" class="mode-select" title="模型">
-        <option value="claude-glm-5.2">GLM 5.2</option>
-        <option value="claude-glm-5.2[1m]">GLM 5.2 (1M)</option>
+        <option value="claude-sonnet-5">Sonnet 5</option>
+        <option value="claude-sonnet-5[1m]">Sonnet 5 长文</option>
         <option value="claude-sonnet-4-6">Sonnet 4.6</option>
         <option value="claude-sonnet-4-6[1m]">Sonnet 4.6 (1M)</option>
         <option value="claude-opus-4-8">Opus 4.8</option>
@@ -51,8 +51,8 @@
         <option value="claude-haiku-4-5">Haiku 4.5</option>
         <option value="claude-hy3">HY3</option>
         <option value="opusplan">Opus Plan</option>
-        <option value="claude-sonnet-5">Sonnet 5</option>
-        <option value="claude-sonnet-5[1m]">Sonnet 5 长文</option>
+        <option value="claude-glm-5.2">GLM 5.2</option>
+        <option value="claude-glm-5.2[1m]">GLM 5.2 (1M)</option>
         <option value="claude-deepseek-v4-pro">DeepSeek V4 Pro</option>
         <option value="claude-deepseek-v4-pro[1m]">DeepSeek V4 Pro 长文</option>
         <option value="claude-deepseek-v4-flash">DeepSeek V4 Flash</option>
@@ -158,8 +158,8 @@
                 </label>
                 <label>模型
                   <select id="nf-mode">
-                    <option value="claude-glm-5.2">GLM 5.2</option>
-                    <option value="claude-glm-5.2[1m]">GLM 5.2 (1M)</option>
+                    <option value="claude-sonnet-5">Sonnet 5</option>
+                    <option value="claude-sonnet-5[1m]">Sonnet 5 长文</option>
                     <option value="claude-sonnet-4-6">Sonnet 4.6</option>
                     <option value="claude-sonnet-4-6[1m]">Sonnet 4.6 (1M)</option>
                     <option value="claude-opus-4-8">Opus 4.8</option>
@@ -171,8 +171,8 @@
                     <option value="claude-haiku-4-5">Haiku 4.5</option>
                     <option value="claude-hy3">HY3</option>
                     <option value="opusplan">Opus Plan</option>
-                    <option value="claude-sonnet-5">Sonnet 5</option>
-                    <option value="claude-sonnet-5[1m]">Sonnet 5 长文</option>
+                    <option value="claude-glm-5.2">GLM 5.2</option>
+                    <option value="claude-glm-5.2[1m]">GLM 5.2 (1M)</option>
                     <option value="claude-deepseek-v4-pro">DeepSeek V4 Pro</option>
                     <option value="claude-deepseek-v4-pro[1m]">DeepSeek V4 Pro 长文</option>
                     <option value="claude-deepseek-v4-flash">DeepSeek V4 Flash</option>
@@ -254,10 +254,9 @@
           <div class="detail-head-row">
             <div class="detail-title" id="session-title">会话</div>
             <div class="detail-head-btns">
-              <button id="detail-subagent-btn" class="detail-icon-btn" title="展开全部子任务过程">🧩</button>
-              <button id="compact-btn" class="detail-icon-btn" title="压缩上下文：概括整段对话，降低后续 token">📉</button>
-              <button id="detail-peek-btn" class="detail-icon-btn" title="速览">👁</button>
-              <button id="detail-close-btn" class="detail-icon-btn" title="返回列表" aria-label="返回">&#8592;</button>
+              <button id="detail-subagent-btn" class="detail-icon-btn" title="展开全部子任务过程">🧩<span>子任务</span></button>
+              <button id="detail-more-btn" class="detail-icon-btn" title="更多操作">⋯<span>更多</span></button>
+              <button id="detail-close-btn" class="detail-icon-btn" title="返回列表" aria-label="返回">&#8592;<span>返回</span></button>
             </div>
           </div>
           <div class="detail-meta">
@@ -296,12 +295,11 @@
           <button id="send-btn" class="send-btn" aria-label="发送">&#9993; Send</button>
         </footer>
 
-        <!-- 底部操作：Resume 为主操作（醒目），其余三个收成纯图标按钮（停止走输入框旁的悬浮按钮） -->
+        <!-- 底部操作：常用的三个等重文字按钮；仲裁/分派用得少，收进「更多」面板 -->
         <div class="detail-actions">
-          <button id="act-resume" class="act-icon-btn" title="恢复/重连会话进程（预热已断开的常驻进程）">▷</button>
-          <button id="act-archive" class="act-icon-btn" title="归档会话">🗄</button>
-          <button id="act-arbitrate" class="act-icon-btn" title="背对背仲裁">⚖</button>
-          <button id="act-dispatch" class="act-icon-btn" title="分派子任务">🧭</button>
+          <button id="act-resume" class="act-btn" title="恢复/重连会话进程（预热已断开的常驻进程）">▷ Resume</button>
+          <button id="act-archive" class="act-btn">🗄 Archive</button>
+          <button id="compact-btn" class="act-btn" title="压缩上下文：概括整段对话，降低后续 token">📉 压缩</button>
         </div>
       </section>
     </div>
