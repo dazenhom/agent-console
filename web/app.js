@@ -29,6 +29,7 @@
     toolIdMap: {},       // tool_use_id -> tool_name（用于 tool_result 反查工具名）
     histMsgs: [],        // 当前会话全量历史消息（窗口渲染用）
     histShown: 0,        // 已渲染的末尾消息条数
+    historySessionId: "", // histMsgs 当前归属的会话；避免跨会话误用旧快照
     heartbeatTimer: null, // WS 应用层心跳定时器
     queue: [],           // 当前会话排队待执行的指令
     drafts: {},          // sessionId -> { text: string, images: [{path, dataUrl}] }（草稿按会话隔离）
@@ -40,6 +41,7 @@
     searchDebounce: null,    // 会话内容搜索的防抖定时器
     pendingHighlight: null,  // 从搜索结果切入会话后，待在消息内高亮/跳转的查询词，用后即清
     dispatchExpanded: new Set(), // 会话列表（Overview/Sessions Tab 共用）里已展开的调度批次 plan_id（仅内存，不持久化）
+    logoutPromise: null,
   };
 
   // ---------------- API ----------------
@@ -57,6 +59,12 @@
     for (let attempt = 1; attempt <= maxTries; attempt++) {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      const externalSignal = opts.signal;
+      const abortFromExternal = () => ctl.abort();
+      if (externalSignal) {
+        if (externalSignal.aborted) ctl.abort();
+        else externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+      }
       try {
         const res = await fetch(BASE + path, {
           ...opts,
@@ -67,18 +75,20 @@
             ...(opts.headers || {}),
           },
         });
-        clearTimeout(timer);
-        if (res.status === 401) { logout(); throw new Error("未授权"); }
+        if (res.status === 401) { await logout(); throw new Error("未授权"); }
         // 5xx 视为可重试（服务端瞬时问题）；4xx 是业务错误，直接抛不重试
         if (res.status >= 500 && attempt < maxTries) { lastErr = new Error("服务端错误 " + res.status); await _retryWait(attempt); continue; }
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "请求失败");
         return res.status === 204 ? null : res.json();
       } catch (e) {
-        clearTimeout(timer);
         // 网络层失败（Failed to fetch / abort 超时）→ 幂等请求重试
-        const retriable = idempotent && (e.name === "AbortError" || e.name === "TypeError" || /服务端错误/.test(e.message));
+        const retriable = idempotent && !externalSignal?.aborted
+          && (e.name === "AbortError" || e.name === "TypeError" || /服务端错误/.test(e.message));
         if (retriable && attempt < maxTries) { lastErr = e; await _retryWait(attempt); continue; }
         throw e;
+      } finally {
+        clearTimeout(timer);
+        if (externalSignal) externalSignal.removeEventListener("abort", abortFromExternal);
       }
     }
     throw lastErr || new Error("请求失败");
@@ -104,18 +114,29 @@
   };
   $("token-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-btn").click(); });
 
-  function logout() {
-    localStorage.removeItem("ac_token");
-    state.token = "";
-    closeWs();
-    closeMonitor();
-    $("app-view").classList.add("hidden");
-    $("manage-view").classList.add("hidden");
-    $("arb-view").classList.add("hidden");
-    $("dispatch-view").classList.add("hidden");
-    $("login-view").classList.remove("hidden");
+  async function logout() {
+    if (state.logoutPromise) return state.logoutPromise;
+    resetSwanlabFrame();
+    state.logoutPromise = (async () => {
+      await clearSwanlabSessionCookie(1000);
+      localStorage.removeItem("ac_token");
+      state.token = "";
+      closeWs();
+      closeMonitor();
+      $("app-view").classList.add("hidden");
+      $("manage-view").classList.add("hidden");
+      $("arb-view").classList.add("hidden");
+      $("dispatch-view").classList.add("hidden");
+      $("swanlab-view").classList.add("hidden");
+      $("login-view").classList.remove("hidden");
+    })();
+    try {
+      await state.logoutPromise;
+    } finally {
+      state.logoutPromise = null;
+    }
   }
-  $("logout-btn").onclick = logout;
+  $("logout-btn").onclick = () => { logout(); };
 
   // 登录态超时已关闭（用户反馈无必要）。保留 no-op 函数避免改动多处调用点。
   function loginExpired() { return false; }
@@ -667,6 +688,7 @@
   const CLAUDE_MODELS = [
     "claude-sonnet-5","claude-sonnet-5[1m]",
     "claude-sonnet-4-6","claude-sonnet-4-6[1m]",
+    "claude-opus-5","claude-opus-5[1m]",
     "claude-opus-4-8","claude-opus-4-8[1m]",
     "claude-opus-4-7","claude-opus-4-7[1m]",
     "claude-opus-4-6","claude-opus-4-6[1m]",
@@ -688,6 +710,8 @@
     "claude-opus-4-7[1m]":        { in: 15,   out: 75  },
     "claude-opus-4-8":            { in: 15,   out: 75  },
     "claude-opus-4-8[1m]":        { in: 15,   out: 75  },
+    "claude-opus-5":              { in: 15,   out: 75  },
+    "claude-opus-5[1m]":          { in: 15,   out: 75  },
   };
   // 目标循环成本上限默认值：来自后端 config.GOAL_MAX_COST_USD（enterApp 拉 /api/config 覆盖）。
   // 初值 20 仅兜底：接口 404/失败时不阻塞，UI 文案退回 20。
@@ -703,6 +727,8 @@
       "claude-glm-5.2[1m]": "GLM 5.2 (1M)",
       "claude-sonnet-4-6": "Sonnet 4.6",
       "claude-sonnet-4-6[1m]": "Sonnet 4.6 (1M)",
+      "claude-opus-5": "Opus 5",
+      "claude-opus-5[1m]": "Opus 5 (1M)",
       "claude-opus-4-8": "Opus 4.8",
       "claude-opus-4-8[1m]": "Opus 4.8 (1M)",
       "claude-opus-4-7": "Opus 4.7",
@@ -1981,7 +2007,7 @@
     const legacyMap = {
       fast: "claude-haiku-4-5",
       strong: "claude-sonnet-5",
-      super: "claude-opus-4-8[1m]",
+      super: "claude-opus-5[1m]",
     };
     // 重建 claude 模型 options（切回 claude 会话时覆盖 codex 会话残留的 options）
     sel.innerHTML = CLAUDE_MODELS.map((id) => `<option value="${id}">${modeLabel(id)}</option>`).join("");
@@ -2224,6 +2250,22 @@
 
   async function switchSession(id) {
     const prevId = state.sessionId;
+    // 重复点当前会话时不要重新拉历史、清空正文和重连 WS。
+    // 搜索命中需要扩大历史窗口并高亮时仍走完整加载流程。
+    if (prevId === id && state.historySessionId === id && !state.pendingHighlight) {
+      const cur = state.sessions.find((s) => s.id === id);
+      if (cur) {
+        $("session-title").textContent = cur.title;
+        updateWorkdirBar(cur.workdir);
+        updateSessionIdBar(cur.id);
+        markSeen(cur.id, cur.updated_at);
+      }
+      document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
+      syncModeSelect();
+      syncEffortSelect();
+      if (!state.ws || state.ws.readyState > 1) connectWs();
+      return;
+    }
     if (prevId && prevId !== id) saveDraft(prevId);   // 存旧会话草稿
     hideTyping();
     clearStream();
@@ -2294,52 +2336,124 @@
   // ---------------- 历史 ----------------
   const HISTORY_WINDOW = 200;  // 首屏渲染最近 N 条，"加载更早"每次再往前 N 条
 
-  async function loadHistory() {
-    const chat = $("chat");
-    const reqSid = state.sessionId;   // 快照：请求返回后若已切换会话则丢弃结果
-    chat.innerHTML = `<div class="chat-skel">${skeleton(3)}</div>`;
-    state._histGroups = {};
-    try {
-      const msgs = await api(`/api/sessions/${state.sessionId}/messages`);
-      if (reqSid !== state.sessionId) return;   // 用户已切走，勿覆盖新会话正文
-      chat.innerHTML = "";
-      if (!msgs.length) {
-        state.histMsgs = [];
-        syncEngineSelect();   // 无消息：底层 Agent 可切
-        chat.innerHTML = `<div class="chat-welcome"><div class="cw-emoji">💬</div>` +
-          `<div class="cw-title">开始新的对话</div>` +
-          `<div class="cw-sub">输入指令，或点下方快捷指令快速开始</div></div>`;
+  // 消息表是 append-only；实时 WS 消息没有数据库 id，因此用末尾几条的 role/content
+  // 判断静默校验结果是否真的变化。相同则保留现有 DOM，不制造“切回页面又刷新”的闪烁。
+  function sameHistorySnapshot(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    const start = Math.max(0, a.length - 3);
+    for (let i = start; i < a.length; i++) {
+      if (a[i].role !== b[i].role) return false;
+      if (JSON.stringify(a[i].content || {}) !== JSON.stringify(b[i].content || {})) return false;
+    }
+    return true;
+  }
+
+  // 把 WS 已确认落库的完整消息同步进内存快照。这样切后台回来再向服务器校验时，
+  // 若只是核对到相同内容，就不会因为 histMsgs 仍是旧长度而误判并重建整个聊天区。
+  function recordLiveHistory(role, content, extra = null) {
+    if (state.historySessionId !== state.sessionId) return;
+    state.histMsgs.push({ role, content, created_at: nowTs(), _live: true, ...(extra || {}) });
+    state.histShown = Math.min(state.histMsgs.length, Math.max(0, state.histShown) + 1);
+  }
+
+  function isSameLiveMessage(msg, role, content) {
+    return !!msg && msg.role === role
+      && JSON.stringify(msg.content || {}) === JSON.stringify(content || {});
+  }
+
+  // 当前页本地先画了 user 气泡，后端出队/其它标签页又广播同一条 user 时，
+  // 不应让内存快照重复计数，否则下一次静默校验会误判为“历史变化”而重绘。
+  function recordWsHistory(role, content) {
+    if (state.historySessionId !== state.sessionId) return;
+    if (role === "user") {
+      const last = state.histMsgs[state.histMsgs.length - 1];
+      if (last && last._liveLocal && isSameLiveMessage(last, role, content)) {
+        delete last._liveLocal;
+        last._live = true;
         return;
       }
-      state.histMsgs = msgs;
-      syncEngineSelect();   // 有消息：底层 Agent 置灰
-      const q = state.pendingHighlight;
-      let shown = Math.min(HISTORY_WINDOW, msgs.length);
-      let hitIdx = -1;
-      if (q) {
-        hitIdx = firstMatchIdx(msgs, q);
-        if (hitIdx >= 0) shown = Math.max(shown, msgs.length - hitIdx);
+    }
+    recordLiveHistory(role, content);
+  }
+
+  function renderHistorySnapshot(msgs, { preserveScroll = false } = {}) {
+    const chat = $("chat");
+    const hadContent = preserveScroll && !chat.querySelector(".chat-skel");
+    const wasNearBottom = hadContent ? isNearBottom() : true;
+    const previousTop = hadContent ? chat.scrollTop : 0;
+    const previousCount = state.historySessionId === state.sessionId ? state.histMsgs.length : 0;
+    const previousShown = state.historySessionId === state.sessionId ? state.histShown : 0;
+    chat.innerHTML = "";
+    state._histGroups = {};
+    state.histMsgs = msgs;
+    state.historySessionId = state.sessionId;
+    if (!msgs.length) {
+      state.histShown = 0;
+      syncEngineSelect();   // 无消息：底层 Agent 可切
+      chat.innerHTML = `<div class="chat-welcome"><div class="cw-emoji">💬</div>` +
+        `<div class="cw-title">开始新的对话</div>` +
+        `<div class="cw-sub">输入指令，或点下方快捷指令快速开始</div></div>`;
+      return;
+    }
+    syncEngineSelect();   // 有消息：底层 Agent 置灰
+    const q = state.pendingHighlight;
+    // 静默补消息时保留用户已展开的“更早消息”窗口，不退回只看末尾 200 条。
+    let shown = preserveScroll
+      ? Math.min(msgs.length, Math.max(HISTORY_WINDOW, previousShown + Math.max(0, msgs.length - previousCount)))
+      : Math.min(HISTORY_WINDOW, msgs.length);
+    let hitIdx = -1;
+    if (q) {
+      hitIdx = firstMatchIdx(msgs, q);
+      if (hitIdx >= 0) shown = Math.max(shown, msgs.length - hitIdx);
+    }
+    state.histShown = shown;
+    if (shown < msgs.length) renderLoadEarlierBtn();
+    const start = msgs.length - shown;
+    for (let i = start; i < msgs.length; i++) {
+      appendMsgWithPreview(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+    }
+    if (q) {
+      const firstMark = highlightChat(q);
+      state.pendingHighlight = null;
+      if (firstMark) requestAnimationFrame(() => firstMark.scrollIntoView({ block: "center", behavior: "smooth" }));
+      else scrollBottom(true);
+    } else if (hadContent && !wasNearBottom) {
+      // 用户正在翻旧消息时，后台校验发现新内容也不要把阅读位置拽到底部。
+      requestAnimationFrame(() => {
+        chat.scrollTop = Math.min(previousTop, Math.max(0, chat.scrollHeight - chat.clientHeight));
+      });
+    } else {
+      scrollBottom(true);
+    }
+  }
+
+  async function loadHistory({ silent = false, preserveScroll = false } = {}) {
+    const chat = $("chat");
+    const reqSid = state.sessionId;   // 快照：请求返回后若已切换会话则丢弃结果
+    const previous = state.historySessionId === reqSid ? state.histMsgs : null;
+    if (!silent) chat.innerHTML = `<div class="chat-skel">${skeleton(3)}</div>`;
+    try {
+      const msgs = await api(`/api/sessions/${reqSid}/messages`);
+      if (reqSid !== state.sessionId) return;   // 用户已切走，勿覆盖新会话正文
+      if (silent && previous && sameHistorySnapshot(previous, msgs)) {
+        // 用服务端版本替换含 _live 临时项的快照，但保留正在浏览的 DOM 和滚动位置。
+        state.histMsgs = msgs;
+        state.historySessionId = reqSid;
+        syncEngineSelect();
+        return;
       }
-      state.histShown = shown;
-      if (shown < msgs.length) renderLoadEarlierBtn();
-      const start = msgs.length - shown;
-      for (let i = start; i < msgs.length; i++) {
-        appendMsgWithPreview(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
-      }
-      if (q) {
-        const firstMark = highlightChat(q);
-        state.pendingHighlight = null;
-        if (firstMark) requestAnimationFrame(() => firstMark.scrollIntoView({ block: "center", behavior: "smooth" }));
-        else scrollBottom(true);
-      } else {
-        scrollBottom(true);
-      }
+      // 刚发送的本地气泡已显示、但服务端请求还没来得及落库时，远端快照可能短暂落后。
+      // 此时宁可保留当前内容，等下次 WS/前台校验追平，也不要让用户看到消息闪退。
+      if (silent && previous && msgs.length < previous.length && previous.some((m) => m._live)) return;
+      renderHistorySnapshot(msgs, { preserveScroll: silent || preserveScroll });
     } catch (e) {
       if (reqSid !== state.sessionId) return;   // 用户已切走，勿覆盖新会话正文
+      if (silent) return;                       // 后台静默校验失败不打断当前阅读
       state.pendingHighlight = null;
       chat.innerHTML = "";
       toast("加载历史失败：" + e.message, "error");
       state.histMsgs = [];
+      state.historySessionId = reqSid;
       syncEngineSelect();
     }
   }
@@ -3299,7 +3413,7 @@
       for (const f of files) await uploadFileTo(f, gfPending, gfTray);
     };
     // —— 成本上限自动预填（公式A：模型×模式×轮数×冗余；可改，用户改过后停止联动）——
-    const LEGACY_MODEL_MAP = { fast: "claude-haiku-4-5", strong: "claude-sonnet-5", super: "claude-opus-4-8[1m]" };
+    const LEGACY_MODEL_MAP = { fast: "claude-haiku-4-5", strong: "claude-sonnet-5", super: "claude-opus-5[1m]" };
     const maxCostEl = card.querySelector("#gf-maxcost");
     let costTouched = !!existing && Number(d.max_cost_usd) > 0;  // 编辑已有且已设值：保留、不预填、不联动
     function suggestCost() {
@@ -3526,28 +3640,131 @@
 
   // SwanLab iframe 面板
   const SWANLAB_DEFAULT = "@Speech_Model/zhihangxu_ct_exp";
+  let swanlabLoadTimer = null;
+  let swanlabLoadSeq = 0;
+  let swanlabSessionAbort = null;
+
+  function setSwanlabStatus(kind, message) {
+    const status = $("swanlab-status");
+    status.classList.toggle("hidden", kind === "ready");
+    status.classList.toggle("error", kind === "error");
+    $("swanlab-status-text").textContent = message || "";
+    $("swanlab-retry-btn").classList.toggle("hidden", kind !== "error");
+  }
+
+  function clearSwanlabTimer() {
+    if (swanlabLoadTimer) {
+      clearTimeout(swanlabLoadTimer);
+      swanlabLoadTimer = null;
+    }
+  }
+
+  function resetSwanlabFrame() {
+    swanlabLoadSeq++;
+    clearSwanlabTimer();
+    if (swanlabSessionAbort) {
+      swanlabSessionAbort.abort();
+      swanlabSessionAbort = null;
+    }
+    $("swanlab-frame").src = "about:blank";
+    setSwanlabStatus("loading", "正在连接 SwanLab…");
+  }
+
+  async function clearSwanlabSessionCookie(timeoutMs = 1000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      await fetch(BASE + "/api/swanlab/session/cookie", {
+        method: "DELETE",
+        keepalive: true,
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ public_base: BASE }),
+      });
+    } catch (_) {
+      // best effort：即使链路已断，也必须继续完成本地 logout/关闭。
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function loadSwanlab(path) {
+    path = (path || "").trim();
+    const seq = ++swanlabLoadSeq;
+    clearSwanlabTimer();
+    if (!path) {
+      setSwanlabStatus("error", "请输入 SwanLab 项目路径");
+      return;
+    }
+    const frame = $("swanlab-frame");
+    const goBtn = $("swanlab-go-btn");
+    if (swanlabSessionAbort) swanlabSessionAbort.abort();
+    const sessionAbort = new AbortController();
+    swanlabSessionAbort = sessionAbort;
+    setSwanlabStatus("loading", "正在建立安全会话…");
+    goBtn.disabled = true;
+    frame.src = "about:blank";
+    try {
+      const session = await api("/api/swanlab/session", {
+        method: "POST",
+        retry: true,
+        timeoutMs: 15000,
+        signal: sessionAbort.signal,
+        body: JSON.stringify({ path, public_base: BASE }),
+      });
+      if (seq !== swanlabLoadSeq) return;
+      if (!session || !session.url) throw new Error("服务端未返回 SwanLab 地址");
+      setSwanlabStatus("loading", "正在加载 SwanLab 项目…");
+      frame.src = session.url;
+      swanlabLoadTimer = setTimeout(() => {
+        if (seq !== swanlabLoadSeq) return;
+        setSwanlabStatus("error", "SwanLab 在 20 秒内未完成加载，请重试或检查服务状态。");
+      }, 20000);
+    } catch (e) {
+      if (seq === swanlabLoadSeq) {
+        setSwanlabStatus("error", "无法打开 SwanLab：" + e.message);
+      }
+    } finally {
+      if (swanlabSessionAbort === sessionAbort) swanlabSessionAbort = null;
+      if (seq === swanlabLoadSeq) goBtn.disabled = false;
+    }
+  }
+
   function openSwanlab() {
     $("app-view").classList.add("hidden");
     $("swanlab-view").classList.remove("hidden");
-    const frame = $("swanlab-frame");
-    if (!frame.getAttribute("data-loaded")) {
-      $("swanlab-url-input").value = SWANLAB_DEFAULT;
-      frame.src = BASE + "/proxy/swanlab/" + SWANLAB_DEFAULT;
-      frame.setAttribute("data-loaded", "1");
-    }
+    const input = $("swanlab-url-input");
+    if (!input.value.trim()) input.value = SWANLAB_DEFAULT;
+    loadSwanlab(input.value);
   }
   function closeSwanlab() {
+    resetSwanlabFrame();
     $("swanlab-view").classList.add("hidden");
     $("app-view").classList.remove("hidden");
+    clearSwanlabSessionCookie(1000);
   }
   $("open-swanlab-btn").onclick = openSwanlab;
   $("swanlab-back").onclick = closeSwanlab;
-  $("swanlab-go-btn").onclick = () => {
-    const path = $("swanlab-url-input").value.trim();
-    if (path) $("swanlab-frame").src = BASE + "/proxy/swanlab/" + path;
-  };
+  $("swanlab-go-btn").onclick = () => loadSwanlab($("swanlab-url-input").value);
+  $("swanlab-retry-btn").onclick = () => loadSwanlab($("swanlab-url-input").value);
   $("swanlab-url-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("swanlab-go-btn").click();
+  });
+  window.addEventListener("message", (event) => {
+    const frame = $("swanlab-frame");
+    if (
+      event.origin !== location.origin
+      || event.source !== frame.contentWindow
+      || !event.data
+      || typeof event.data !== "object"
+    ) return;
+    if (event.data.type === "swanlab-ready") {
+      clearSwanlabTimer();
+      setSwanlabStatus("ready", "");
+    } else if (event.data.type === "swanlab-error") {
+      clearSwanlabTimer();
+      setSwanlabStatus("error", event.data.message || "SwanLab 页面加载失败，请重试。");
+    }
   });
   $("secretary-trigger-btn").onclick = async () => {
     try {
@@ -4654,7 +4871,10 @@
     } else if (role === "compact") {
       // 上下文压缩标记：居中分割线 + 灰字标签，点击展开摘要全文
       node = el("div", "msg-compact");
-      const divider = el("div", "compact-divider", "— 以上上下文已压缩 —");
+      const dividerText = (content && content.pre_tokens != null && content.post_tokens != null)
+        ? `— 上下文已压缩 · ${content.pre_tokens}→${content.post_tokens} tokens —`
+        : "— 以上上下文已压缩 —";
+      const divider = el("div", "compact-divider", dividerText);
       const summary = el("div", "compact-summary");
       summary.textContent = (content && content.summary) || "";
       divider.onclick = () => node.classList.toggle("open");
@@ -4922,8 +5142,9 @@
     state._lastResync = now;
     // WS 断了就重连
     if (!state.ws || state.ws.readyState > 1) connectWs();
-    // 流式进行中不整体重渲染（会打断打字机）；否则补拉历史找回漏掉的消息
-    if (!state.streamEl) loadHistory().catch(() => {});
+    // 流式进行中不校验（会打断打字机）；否则静默核对历史。
+    // 内容没变化时完全不碰 DOM；有漏消息才更新，并尽量保持原阅读位置。
+    if (!state.streamEl) loadHistory({ silent: true, preserveScroll: true }).catch(() => {});
     // 按当前会话真实状态校正按钮态（保险：即使没等到 status 消息也能自愈卡死的输入框）
     loadSessions().then(() => {
       const cur = state.sessions.find((s) => s.id === state.sessionId);
@@ -5001,6 +5222,8 @@
         appendDelta(data.content.text || "");
         return;
       }
+      // 除增量/瞬时状态外，message 事件均对应后端已落库的完整消息。
+      recordWsHistory(data.role, data.content);
       // 权威 assistant 全文：若正在流式，用 markdown 重渲染替换流式气泡；否则新建
       if (data.role === "assistant") {
         hideTyping();
@@ -5243,6 +5466,7 @@
     const queued = state.running;
     if (!queued) {
       renderMessage("user", { text });
+      recordLiveHistory("user", { text }, { _liveLocal: true });
       // 如果是 HTML 文件路径，立即在 assistant 侧插入预览块（不等 agent 回复）
       const _previewPath = htmlFilePath(text);
       if (_previewPath) {
@@ -5277,8 +5501,15 @@
     const prevPlaceholder = inp.placeholder;
     inp.placeholder = "压缩中，请稍候…";
     try {
-      // 摘要生成可长达 COMPACT_TIMEOUT（约 180s），放宽超时避免请求在压缩完成前被中止。
-      await api(`/api/sessions/${state.sessionId}/compact`, { method: "POST", timeoutMs: 200000 });
+      // 原生 /compact 是一次真实回合，耗时与普通回合相当，放宽超时避免请求被中止。
+      const res = await api(`/api/sessions/${state.sessionId}/compact`, { method: "POST", timeoutMs: 200000 });
+      if (res && res.noop) {
+        const noopMsg = {
+          empty: "对话为空，无需压缩",
+          resume_failed: "上下文已失效，已自动重置，请再发消息后重试压缩",
+        }[res.reason] || "历史太短，无需压缩";
+        toast(noopMsg, "info", 2000);
+      }
     } catch (e) {
       // 409（回合进行中/会话为空等）与其它错误经 api() 抛出，统一 toast 出来。
       toast("压缩失败：" + e.message, "error");

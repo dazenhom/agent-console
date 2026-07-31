@@ -12,6 +12,8 @@ data/worktrees/
 data/backups/
 data/agent_console.db
 data/job_logs/
+# 本机运行密钥：由 start_dual.py 以 0600 权限读取/生成，绝不入库。
+data/.secrets/
 
 # ---- 私钥/证书（run.sh 会自动生成）----
 data/certs/
@@ -42,3 +44,6 @@ venv/
 
 # ---- Claude 本地配置 ----
 .claude/settings.local.json
+
+# ---- graphify 缓存（AST/语义缓存，纯可重新生成，不入库；graph.json/wiki 等产物仍跟踪）----
+graphify-out/cache/

@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import re
 import subprocess
@@ -20,6 +21,7 @@ from .session_hub import hub, Subscriber, _runner_for
 
 
 _uploads_cleanup_task = None
+logger = logging_util.get_logger(__name__)
 
 # 合法 mode：完整模型列表 + 兼容存量的旧档位值。
 _VALID_MODES = set(config.CLAUDE_MODELS) | set(config.CODEX_MODELS) | {"fast", "strong", "super"}
@@ -1620,53 +1622,448 @@ SWANLAB_SCRIPT = "/apdcephfs_gy2/share_302533218/zhihangxu/code/asr-code-release
 
 SWANLAB_HOST = "https://train-exp.taiji.woa.com"
 # 只允许反代 SwanLab 的已知路径前缀，防止代理被滥用去打其他内网接口。
-# 空串 "" 放行根路径（首页）。
-SWANLAB_ALLOWED_PREFIXES = ("_next/", "api/", "@", "login/", "static/", "favicon", "assets/", "")
+SWANLAB_ALLOWED_PREFIXES = (
+    "_next/", "api/", "@", "login/", "static/", "favicon", "assets/",
+    "activation/", "self-hosted/",
+)
+SWANLAB_ALLOWED_EXACT_PATHS = {
+    "",
+    "login",
+    "activation",
+    "self-hosted",
+    "icon.png",
+    "apple-icon.png",
+    "manifest.json",
+}
+SWANLAB_SESSION_COOKIE = "ac_swanlab_session"
 _swanlab_sid_cache: dict = {}
+_swanlab_login_lock = asyncio.Lock()
+_swanlab_rewrite_warnings: set[tuple[str, str]] = set()
+
+
+def _validate_swanlab_path(path: str) -> str:
+    """校验 SwanLab 上游路径；返回原样路径，避免隐式规范化造成策略绕过。"""
+    if not isinstance(path, str):
+        raise HTTPException(status_code=400, detail="SwanLab path 必须是字符串")
+    if len(path) > 2048:
+        raise HTTPException(status_code=400, detail="SwanLab path 过长")
+    if path.startswith("/") or "\\" in path or "//" in path or "%" in path:
+        raise HTTPException(status_code=400, detail="非法 SwanLab path")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+        raise HTTPException(status_code=400, detail="非法 SwanLab path")
+    segments = path.split("/")
+    if any(segment in {".", ".."} for segment in segments):
+        raise HTTPException(status_code=400, detail="非法 SwanLab path")
+    if path not in SWANLAB_ALLOWED_EXACT_PATHS and not any(
+        path.startswith(prefix) for prefix in SWANLAB_ALLOWED_PREFIXES
+    ):
+        raise HTTPException(status_code=403, detail="不允许访问该 SwanLab path")
+    return path
+
+
+def _normalize_swanlab_public_base(public_base: str) -> str:
+    """校验 Agent Console 的外层部署前缀，如 "" 或 "/proxy/80"。"""
+    if not isinstance(public_base, str):
+        raise HTTPException(status_code=400, detail="public_base 必须是字符串")
+    if len(public_base) > 256 or "\\" in public_base or "//" in public_base:
+        raise HTTPException(status_code=400, detail="非法 public_base")
+    if public_base in {"", "/"}:
+        return ""
+    public_base = public_base.rstrip("/")
+    if not public_base.startswith("/") or not re.fullmatch(
+        r"(?:/[A-Za-z0-9._~-]+)+", public_base
+    ):
+        raise HTTPException(status_code=400, detail="非法 public_base")
+    if any(segment in {".", ".."} for segment in public_base.split("/")):
+        raise HTTPException(status_code=400, detail="非法 public_base")
+    return public_base
+
+
+def _swanlab_proxy_base(public_base: str) -> str:
+    return f"{_normalize_swanlab_public_base(public_base)}/proxy/swanlab"
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _require_swanlab_session_secret() -> str:
+    secret = config.SWANLAB_SESSION_SECRET
+    if not secret:
+        raise HTTPException(status_code=503, detail="SwanLab 会话密钥未配置")
+    if len(secret) < 32:
+        raise HTTPException(status_code=503, detail="SwanLab 会话密钥长度不足")
+    return secret
+
+
+def _make_swanlab_session_token(public_base: str, now: int | None = None) -> tuple[str, int]:
+    public_base = _normalize_swanlab_public_base(public_base)
+    secret = _require_swanlab_session_secret()
+    issued_at = int(time.time() if now is None else now)
+    expires_at = issued_at + max(60, config.SWANLAB_SESSION_TTL)
+    payload = json.dumps(
+        {"exp": expires_at, "pb": public_base},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    encoded = _b64url_encode(payload)
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        encoded.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return f"{encoded}.{_b64url_encode(signature)}", expires_at
+
+
+def _verify_swanlab_session_token(token: str | None, now: int | None = None) -> dict:
+    secret = _require_swanlab_session_secret()
+    if not token or token.count(".") != 1:
+        raise HTTPException(status_code=401, detail="缺少 SwanLab 代理授权")
+    encoded, supplied_signature = token.split(".", 1)
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        encoded.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    try:
+        actual_signature = _b64url_decode(supplied_signature)
+        payload = json.loads(_b64url_decode(encoded))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        raise HTTPException(status_code=401, detail="SwanLab 代理授权无效")
+    if not hmac.compare_digest(actual_signature, expected_signature):
+        raise HTTPException(status_code=401, detail="SwanLab 代理授权无效")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=401, detail="SwanLab 代理授权无效")
+    expires_at = payload.get("exp")
+    if not isinstance(expires_at, int) or expires_at <= int(time.time() if now is None else now):
+        raise HTTPException(status_code=401, detail="SwanLab 代理授权已过期")
+    try:
+        public_base = _normalize_swanlab_public_base(payload.get("pb"))
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="SwanLab 代理授权无效")
+    return {"exp": expires_at, "public_base": public_base}
+
+
+def _set_swanlab_session_cookie(
+    response: Response,
+    public_base: str,
+    token: str | None = None,
+) -> int:
+    if token is None:
+        token, expires_at = _make_swanlab_session_token(public_base)
+    else:
+        expires_at = _verify_swanlab_session_token(token)["exp"]
+    response.set_cookie(
+        SWANLAB_SESSION_COOKIE,
+        token,
+        max_age=max(60, config.SWANLAB_SESSION_TTL),
+        path=_swanlab_proxy_base(public_base),
+        samesite="lax",
+        httponly=True,
+    )
+    return expires_at
+
+
+def _rewrite_swanlab_javascript(path: str, text: str, proxy_base: str) -> tuple[str, bool]:
+    """改写 Vite 资源根和 Vue Router history base；重复调用不会叠加前缀。"""
+    changed = False
+    vite_pattern = re.compile(r'return(["\'])/\1\+([A-Za-z_$][\w$]*)')
+
+    def replace_vite(match: re.Match) -> str:
+        nonlocal changed
+        changed = True
+        quote, variable = match.group(1), match.group(2)
+        return f"return{quote}{proxy_base}/{quote}+{variable}"
+
+    text = vite_pattern.sub(replace_vite, text)
+
+    router_pattern = re.compile(
+        r'(\bhistory\s*:\s*(?:[A-Za-z_$][\w$]*|\(0,\s*[A-Za-z_$][\w$]*\))'
+        r'\s*\(\s*)(["\'])/\2(\s*\))'
+    )
+    matches = list(router_pattern.finditer(text))
+    if len(matches) == 1:
+        text = router_pattern.sub(
+            lambda match: f"{match.group(1)}{json.dumps(proxy_base + '/')}{match.group(3)}",
+            text,
+            count=1,
+        )
+        changed = True
+    elif matches or "history:" in text:
+        warning_key = (path, proxy_base)
+        if warning_key not in _swanlab_rewrite_warnings:
+            _swanlab_rewrite_warnings.add(warning_key)
+            logger.warning(
+                "SwanLab router base rewrite expected one match, got %d for %s",
+                len(matches),
+                path,
+            )
+    return text, changed
+
+
+def _rewrite_swanlab_html(text: str, proxy_base: str) -> str:
+    """把 HTML 根路径资源改到当前公开代理基址，并注入运行时拦截与 ready 信号。"""
+    resource_revision = "ac_swanlab_proxy=2"
+    attr_pattern = re.compile(r'((?:src|href|action)=["\'])(/[^"\']*)', re.IGNORECASE)
+
+    def replace_attr(match: re.Match) -> str:
+        prefix, url = match.group(1), match.group(2)
+        if url.startswith("//") or url == proxy_base or url.startswith(proxy_base + "/"):
+            return match.group(0)
+        rewritten = proxy_base + url
+        if (
+            prefix.lower().startswith(("src=", "href="))
+            and url.startswith(("/assets/", "/_next/"))
+            and resource_revision not in rewritten
+        ):
+            rewritten += ("&" if "?" in rewritten else "?") + resource_revision
+        return prefix + rewritten
+
+    text = attr_pattern.sub(replace_attr, text)
+    marker = 'data-agent-console-swanlab-proxy="2"'
+    if marker in text:
+        return text
+    base_tag = f'<base {marker} href="{proxy_base}/">'
+    proxy_json = json.dumps(proxy_base)
+    interceptor = f"""<script>
+(function(){{
+  var _PROXY = {proxy_json};
+  var _ORIGIN = location.origin;
+  var _READY_SENT = false;
+  function rewrite(url) {{
+    if (typeof url !== 'string') return url;
+    if (url.startsWith(_ORIGIN + '/') && !url.startsWith(_ORIGIN + _PROXY)) {{
+      return _ORIGIN + _PROXY + url.slice(_ORIGIN.length);
+    }}
+    if (url.startsWith('/') && !url.startsWith(_PROXY)) {{
+      return _PROXY + url;
+    }}
+    return url;
+  }}
+  var _fetch = window.fetch;
+  window.fetch = function(input, init) {{
+    if (typeof input === 'string') input = rewrite(input);
+    else if (input && typeof input === 'object' && input.url) input = new Request(rewrite(input.url), input);
+    return _fetch.call(this, input, init);
+  }};
+  var _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {{
+    arguments[1] = rewrite(url);
+    return _open.apply(this, arguments);
+  }};
+  var _createElement = document.createElement.bind(document);
+  document.createElement = function(tag) {{
+    var el = _createElement(tag);
+    var t = String(tag).toLowerCase();
+    if (t === 'link') {{
+      Object.defineProperty(el, 'href', {{
+        set: function(v) {{ el.setAttribute('href', rewrite(v)); }},
+        get: function() {{ return el.getAttribute('href') || ''; }},
+        configurable: true
+      }});
+    }} else if (t === 'script') {{
+      Object.defineProperty(el, 'src', {{
+        set: function(v) {{ el.setAttribute('src', rewrite(v)); }},
+        get: function() {{ return el.getAttribute('src') || ''; }},
+        configurable: true
+      }});
+    }}
+    return el;
+  }};
+  function notifyReady() {{
+    if (_READY_SENT) return true;
+    var app = document.getElementById('app');
+    if (!app || !app.childElementCount) return false;
+    _READY_SENT = true;
+    if (window.parent !== window) {{
+      window.parent.postMessage({{type: 'swanlab-ready'}}, location.origin);
+    }}
+    return true;
+  }}
+  function watchReady() {{
+    if (notifyReady()) return;
+    var observer = new MutationObserver(function() {{
+      if (notifyReady()) observer.disconnect();
+    }});
+    observer.observe(document.documentElement, {{childList: true, subtree: true}});
+    setTimeout(function() {{ observer.disconnect(); notifyReady(); }}, 20000);
+  }}
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', watchReady, {{once: true}});
+  else watchReady();
+  window.addEventListener('error', function() {{
+    if (!_READY_SENT && window.parent !== window) window.parent.postMessage({{type: 'swanlab-error', message: 'SwanLab 页面脚本运行失败'}}, location.origin);
+  }});
+  window.addEventListener('unhandledrejection', function() {{
+    if (!_READY_SENT && window.parent !== window) window.parent.postMessage({{type: 'swanlab-error', message: 'SwanLab 页面加载失败'}}, location.origin);
+  }});
+}})();
+</script>"""
+    inject = base_tag + interceptor
+    if re.search(r"<head(?:\s[^>]*)?>", text, re.IGNORECASE):
+        return re.sub(
+            r"(<head(?:\s[^>]*)?>)",
+            lambda match: match.group(1) + inject,
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return inject + text
+
+
+async def _login_swanlab(force: bool = False) -> str:
+    import httpx
+
+    if not config.SWANLAB_API_KEY:
+        raise HTTPException(status_code=503, detail="SwanLab API key 未配置")
+    if not force and _swanlab_sid_cache.get("sid"):
+        return _swanlab_sid_cache["sid"]
+    async with _swanlab_login_lock:
+        if not force and _swanlab_sid_cache.get("sid"):
+            return _swanlab_sid_cache["sid"]
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+                response = await client.post(
+                    f"{SWANLAB_HOST}/api/login/api_key",
+                    headers={"authorization": config.SWANLAB_API_KEY},
+                )
+        except httpx.TimeoutException as exc:
+            logger.warning("SwanLab login timed out")
+            raise HTTPException(status_code=504, detail="SwanLab 登录超时") from exc
+        except httpx.RequestError as exc:
+            logger.warning("SwanLab login request failed: %s", type(exc).__name__)
+            raise HTTPException(status_code=502, detail="无法连接 SwanLab") from exc
+        if response.status_code in (401, 403):
+            raise HTTPException(status_code=503, detail="SwanLab API key 被拒绝")
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"SwanLab 登录异常（HTTP {response.status_code}）",
+            )
+        try:
+            sid = response.json().get("sid", "")
+        except (ValueError, AttributeError):
+            sid = ""
+        if not sid:
+            raise HTTPException(status_code=502, detail="SwanLab 登录响应缺少 sid")
+        _swanlab_sid_cache["sid"] = sid
+        return sid
 
 
 async def _swanlab_sid_warmup():
     """启动时预热 SwanLab sid，避免第一批并发请求各自登录。"""
-    import httpx
     try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post(
-                f"{SWANLAB_HOST}/api/login/api_key",
-                headers={"authorization": config.SWANLAB_API_KEY},
+        await _login_swanlab()
+    except HTTPException as exc:
+        logger.warning("SwanLab warmup failed: HTTP %d", exc.status_code)
+
+
+@app.post("/api/swanlab/session", dependencies=[Depends(require_auth)])
+async def create_swanlab_session(payload: dict):
+    path = _validate_swanlab_path((payload.get("path") or "").strip())
+    public_base = _normalize_swanlab_public_base(payload.get("public_base") or "")
+    _require_swanlab_session_secret()
+    await _login_swanlab()
+    token, expires_at = _make_swanlab_session_token(public_base)
+    response = JSONResponse(
+        {
+            "url": f"{_swanlab_proxy_base(public_base)}/{path}",
+            "expires_at": expires_at,
+        }
+    )
+    _set_swanlab_session_cookie(response, public_base, token)
+    return response
+
+
+@app.delete("/api/swanlab/session", dependencies=[Depends(require_auth)])
+async def revoke_swanlab_session(payload: dict):
+    public_base = _normalize_swanlab_public_base(payload.get("public_base") or "")
+    return _clear_swanlab_session_cookie(public_base)
+
+
+def _clear_swanlab_session_cookie(public_base: str) -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(
+        SWANLAB_SESSION_COOKIE,
+        path=_swanlab_proxy_base(public_base),
+        samesite="lax",
+        httponly=True,
+    )
+    return response
+
+
+@app.delete("/api/swanlab/session/cookie")
+async def clear_swanlab_session_cookie(payload: dict):
+    """仅让浏览器过期自身代理 Cookie；不读取敏感数据、不登录或请求上游。
+
+    该端点特意不要求 Bearer，使 Agent Console token 已失效的 401 登出路径仍能
+    清理 HttpOnly Cookie。public_base 仍经过严格校验，操作对象只有固定 Cookie 名。
+    """
+    public_base = _normalize_swanlab_public_base(payload.get("public_base") or "")
+    return _clear_swanlab_session_cookie(public_base)
+
+
+@app.get("/api/swanlab/status", dependencies=[Depends(require_auth)])
+async def get_swanlab_status():
+    import httpx
+
+    if not config.SWANLAB_API_KEY:
+        raise HTTPException(status_code=503, detail="SwanLab API key 未配置")
+    started = time.monotonic()
+    sid = await _login_swanlab(force=True)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            response = await client.get(
+                f"{SWANLAB_HOST}/api/self_hosted/info",
+                headers={"cookie": f"sid={sid}"},
             )
-            if r.status_code == 200:
-                _swanlab_sid_cache["sid"] = r.json().get("sid", "")
-    except Exception:
-        pass
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="SwanLab 状态检查超时") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="无法连接 SwanLab") from exc
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"SwanLab 状态异常（HTTP {response.status_code}）",
+        )
+    try:
+        info = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="SwanLab 状态响应格式异常") from exc
+    if not isinstance(info, dict):
+        raise HTTPException(status_code=502, detail="SwanLab 状态响应格式异常")
+    license_expired = (
+        info["expired"] if "expired" in info else info.get("license_expired")
+    )
+    license_expires_at = (
+        info["expiredAt"] if "expiredAt" in info else info.get("license_expires_at")
+    )
+    return {
+        "ok": True,
+        "configured": True,
+        "login_ok": True,
+        "upstream_status": response.status_code,
+        "latency_ms": round((time.monotonic() - started) * 1000),
+        "version": info.get("version"),
+        "license_expired": license_expired,
+        "license_expires_at": license_expires_at,
+    }
 
 
 @app.api_route("/proxy/swanlab/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"])
 async def swanlab_proxy(request: Request, path: str):
-    # 不加 require_auth：iframe 里的静态资源请求带不上鉴权 header，否则会 401
     import httpx
-    # 路径白名单：只放行 SwanLab 已知前缀，其余一律拒绝
-    if path and not any(path.startswith(p) for p in SWANLAB_ALLOWED_PREFIXES):
-        raise HTTPException(status_code=403, detail="不允许访问该路径")
 
-    async def _login_swanlab() -> str:
-        try:
-            async with httpx.AsyncClient(timeout=10) as lc:
-                r = await lc.post(
-                    f"{SWANLAB_HOST}/api/login/api_key",
-                    headers={"authorization": config.SWANLAB_API_KEY},
-                )
-                if r.status_code == 200:
-                    sid = r.json().get("sid", "")
-                    _swanlab_sid_cache["sid"] = sid
-                    return sid
-        except Exception:
-            pass
-        return ""
-
-    # sid：服务端缓存，避免每次重新登录
-    browser_sid = _swanlab_sid_cache.get("sid", "") or request.cookies.get("swanlab_sid", "")
-    if not browser_sid:
-        browser_sid = await _login_swanlab()
+    # iframe 静态资源无法携带 Authorization header，改用已鉴权 session API 签发的
+    # 短期 HttpOnly Cookie；Cookie 同时绑定外层 public_base，供内容改写使用。
+    session = _verify_swanlab_session_token(request.cookies.get(SWANLAB_SESSION_COOKIE))
+    public_base = session["public_base"]
+    proxy_base = _swanlab_proxy_base(public_base)
+    path = _validate_swanlab_path(path)
+    sid = await _login_swanlab()
 
     url = f"{SWANLAB_HOST}/{path}"
     params = dict(request.query_params)
@@ -1676,141 +2073,78 @@ async def swanlab_proxy(request: Request, path: str):
         "next-router-segment-prefetch", "next-url",
     }
     forward_headers = {k: v for k, v in request.headers.items() if k.lower() in FORWARD_HEADERS}
-    if browser_sid:
-        forward_headers["cookie"] = f"sid={browser_sid}"
+    forward_headers["cookie"] = f"sid={sid}"
     body = await request.body()
 
-    async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
-        resp = await client.request(
-            method=request.method, url=url, params=params,
-            headers=forward_headers, content=body,
-        )
+    async def forward():
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=False,
+                timeout=httpx.Timeout(30.0, connect=5.0),
+            ) as client:
+                return await client.request(
+                    method=request.method,
+                    url=url,
+                    params=params,
+                    headers=forward_headers,
+                    content=body,
+                )
+        except httpx.TimeoutException as exc:
+            raise HTTPException(status_code=504, detail="SwanLab 请求超时") from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail="无法连接 SwanLab") from exc
+
+    resp = await forward()
 
     # sid 过期（401）→ 重新登录并重试一次
     if resp.status_code == 401 and path.startswith("api/"):
         _swanlab_sid_cache.clear()
-        browser_sid = await _login_swanlab()
-        if browser_sid:
-            forward_headers["cookie"] = f"sid={browser_sid}"
-            async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
-                resp = await client.request(
-                    method=request.method, url=url, params=params,
-                    headers=forward_headers, content=body,
-                )
-    # set-cookie 也剔除：sid 由下面统一用 swanlab_sid 名字重新种，避免 SwanLab 原始 cookie 干扰
-    excluded = {"transfer-encoding", "content-encoding", "content-length", "connection", "set-cookie"}
+        sid = await _login_swanlab(force=True)
+        forward_headers["cookie"] = f"sid={sid}"
+        resp = await forward()
+    # 不向浏览器透传上游 sid；内容被改写后也不能保留上游长度/缓存校验头。
+    excluded = {
+        "transfer-encoding", "content-encoding", "content-length", "connection",
+        "set-cookie", "etag", "last-modified",
+    }
     resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
 
     # 重定向：把 Location 头里指向 SwanLab 的绝对/相对 URL 改写回代理路径
     if resp.status_code in (301, 302, 303, 307, 308):
         location = resp.headers.get("location", "")
         if location.startswith(SWANLAB_HOST):
-            location = "/proxy/swanlab/" + location[len(SWANLAB_HOST):].lstrip("/")
-        elif location.startswith("/") and not location.startswith("/proxy/swanlab"):
-            location = "/proxy/swanlab" + location
+            location = proxy_base + "/" + location[len(SWANLAB_HOST):].lstrip("/")
+        elif location.startswith("/") and not location.startswith(proxy_base):
+            location = proxy_base + location
         resp_headers["location"] = location
 
-    # HTML 路径重写：SwanLab 是 Vite SPA，资源路径和 JS 内 fetch('/api/...') 都是绝对路径，
-    # 在 iframe 里会打到 agent-console 自身导致 404/错误。三步处理：
-    # 1) 注入 <base> 让相对路径资源走代理
-    # 2) 正则重写 src/href/action 里的绝对路径
-    # 3) 注入 fetch/XHR 拦截器，把 JS 运行时的 /api/ 请求重定向到 /proxy/swanlab/api/
     content_type = resp.headers.get("content-type", "")
     content = resp.content
-    if "javascript" in content_type or (path.startswith("assets/") and "text" not in content_type and "image" not in content_type):
+    content_changed = False
+    if "javascript" in content_type or path.lower().endswith((".js", ".mjs")):
         try:
             text = content.decode("utf-8", errors="replace")
-            # Vite preload URL builder: function(e){return"/"+e} → patch to include proxy prefix
-            if 'return"/"+e' in text:
-                text = text.replace('return"/"+e', 'return"/proxy/swanlab/"+e')
+            text, content_changed = _rewrite_swanlab_javascript(path, text, proxy_base)
+            if content_changed:
                 content = text.encode("utf-8")
         except Exception:
-            pass
+            logger.exception("Failed to rewrite SwanLab JavaScript %s", path)
     if "text/html" in content_type:
         try:
             text = content.decode("utf-8", errors="replace")
-            # 第一步：正则重写 src/href/action 里的绝对路径（必须在注入 <base> 之前，否则会把注入的 base href 也重写一遍）
-            text = re.sub(r'((?:src|href|action)=["\'])(/(?!/))', r'\1/proxy/swanlab\2', text)
-            # 第二步：注入 fetch/XHR 拦截器 + Vue Router pathname 修正 + <base>，统一拼在 <head> 开头
-            base_tag = '<base href="/proxy/swanlab/">'
-            interceptor = """<script>
-(function(){
-  var _PROXY = '/proxy/swanlab';
-  var _ORIGIN = location.origin; // e.g. https://29.191.211.218.devcloud.woa.com
-  function rewrite(url) {
-    if (typeof url !== 'string') return url;
-    // absolute URL pointing to same origin: strip origin then add proxy prefix
-    if (url.startsWith(_ORIGIN + '/') && !url.startsWith(_ORIGIN + _PROXY)) {
-      return _ORIGIN + _PROXY + url.slice(_ORIGIN.length);
-    }
-    // root-relative path
-    if (url.startsWith('/') && !url.startsWith(_PROXY)) {
-      return _PROXY + url;
-    }
-    return url;
-  }
-  // 1. fetch interceptor — covers Vite preload polyfill's fetch(link.href) and API calls
-  var _fetch = window.fetch;
-  window.fetch = function(input, init) {
-    if (typeof input === 'string') input = rewrite(input);
-    else if (input && typeof input === 'object' && input.url) input = new Request(rewrite(input.url), input);
-    return _fetch.call(this, input, init);
-  };
-  // 2. XHR interceptor
-  var _open = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(method, url) {
-    arguments[1] = rewrite(url);
-    return _open.apply(this, arguments);
-  };
-  // 3. Intercept createElement so any <link href="/assets/..."> or <script src="/assets/...">
-  //    gets the proxy prefix BEFORE it is appended to the DOM.
-  var _createElement = document.createElement.bind(document);
-  document.createElement = function(tag) {
-    var el = _createElement(tag);
-    var t = tag.toLowerCase();
-    if (t === 'link') {
-      Object.defineProperty(el, 'href', {
-        set: function(v) { el.setAttribute('href', rewrite(v)); },
-        get: function() { return el.getAttribute('href') || ''; },
-        configurable: true,
-      });
-    } else if (t === 'script') {
-      Object.defineProperty(el, 'src', {
-        set: function(v) { el.setAttribute('src', rewrite(v)); },
-        get: function() { return el.getAttribute('src') || ''; },
-        configurable: true,
-      });
-    }
-    return el;
-  };
-  // 4. dynamic import() resolves relative to the current page URL which already has /proxy/swanlab/
-  //    so "./dynamic/App.js" resolves correctly. Nothing needed here.
-  // NOTE: do NOT override history.pushState/replaceState or location.pathname.
-  // Vue Router reads <base href="/proxy/swanlab/"> and sets its own base correctly.
-  // Overriding pushState causes an infinite navigation loop.
-})();
-</script>"""
-            inject = base_tag + interceptor
-            if "<head>" in text:
-                text = text.replace("<head>", f"<head>{inject}", 1)
-            else:
-                text = inject + text
+            text = _rewrite_swanlab_html(text, proxy_base)
             content = text.encode("utf-8")
+            content_changed = True
             resp_headers["content-type"] = "text/html; charset=utf-8"
         except Exception:
-            pass  # 解码/重写失败就原样透传
+            logger.exception("Failed to rewrite SwanLab HTML %s", path)
 
     response = Response(content=content, status_code=resp.status_code, headers=resp_headers)
-    if "text/html" in resp_headers.get("content-type", ""):
+    if content_changed:
         response.headers["cache-control"] = "no-store"
-    # 把 sid 种到浏览器 cookie，后续 JS 的 /api 请求会自动带上（转发时再取出塞进 sid cookie）
-    if browser_sid:
-        response.set_cookie(
-            "swanlab_sid", browser_sid,
-            path="/proxy/swanlab",
-            samesite="lax",
-            httponly=False,
-        )
+    # 活跃 iframe 在授权剩余不足一半时滑动续期，闲置会话仍会按短期 TTL 失效。
+    if session["exp"] - int(time.time()) < max(60, config.SWANLAB_SESSION_TTL) // 2:
+        _set_swanlab_session_cookie(response, public_base)
     return response
 
 @app.post("/api/swanlab/upload", dependencies=[Depends(require_auth)])

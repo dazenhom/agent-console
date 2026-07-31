@@ -48,20 +48,21 @@ CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() 
 
 # 模型档位 → tclaude 模型 ID。空字符串 = 不传 model 让 CLI 用默认。
 # 合法值见 `tclaude -- --model bogus` 的报错列表：
-#   claude-sonnet-4-6 / claude-sonnet-4-6[1m] / claude-opus-4-8[1m] /
-#   claude-opus-4-7[1m] / claude-opus-4-6[1m] / claude-haiku-4-5 / claude-hy3
+#   claude-sonnet-4-6 / claude-sonnet-4-6[1m] / claude-opus-5[1m] /
+#   claude-opus-4-8[1m] / claude-opus-4-7[1m] / claude-opus-4-6[1m] / claude-haiku-4-5 / claude-hy3
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
 # 看板进展摘要专用模型：用 hy3（tclaude 提供的档位模型），概括质量更好。
 # 注：已不再被 kanban/triage/goal_summary/summarizer 的便宜档一次性任务使用（见 CHEAP_MODEL）；
 # 仅 session_hub 的旧档位兼容映射（_LEGACY_MAP "fast"）还引用 CLAUDE_MODEL_FAST。
 CLAUDE_MODEL_KANBAN = os.environ.get("CLAUDE_MODEL_KANBAN", "claude-hy3")
 CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-5")
-CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-4-8[1m]")
+CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-5[1m]")
 # 前端可选的完整模型列表（mode 直接存模型 ID）。claude-sonnet-5 放首位作为默认（GLM 5.2 曾
 # 出过问题，撤下默认位，仍保留在列表里可手动选）。
 CLAUDE_MODELS = [
     "claude-sonnet-5", "claude-sonnet-5[1m]",
     "claude-sonnet-4-6", "claude-sonnet-4-6[1m]",
+    "claude-opus-5", "claude-opus-5[1m]",
     "claude-opus-4-8", "claude-opus-4-8[1m]",
     "claude-opus-4-7", "claude-opus-4-7[1m]",
     "claude-opus-4-6", "claude-opus-4-6[1m]",
@@ -193,15 +194,7 @@ TRIAGE_GOAL_MAX_ITERATIONS = int(os.environ.get("TRIAGE_GOAL_MAX_ITERATIONS", "6
 # Claude 模型综合仲裁。三次都是一次性子进程（run_logged_oneshot），互不干扰会话上下文。
 # 方案生成/仲裁可能较长，超时给足；ARBITER_MODEL 是仲裁用的强模型。
 ARBITRATION_TIMEOUT = float(os.environ.get("ARBITRATION_TIMEOUT", "600"))
-ARBITER_MODEL = os.environ.get("ARBITER_MODEL", "claude-opus-4-8[1m]")
-
-# ---- /compact 上下文压缩 ----
-# 用一次性子进程把整段对话概括成摘要，重置会话后作为前缀注入下一条消息，达到"截断历史再续"。
-# COMPACT_MODEL 用较强模型保证摘要质量；COMPACT_TIMEOUT 是概括子进程的超时（秒）。
-COMPACT_MODEL = os.environ.get("COMPACT_MODEL", CLAUDE_MODEL_STRONG)
-COMPACT_TIMEOUT = float(os.environ.get("COMPACT_TIMEOUT", "180"))
-# 喂给概括模型的转录文本上限（字）：超限时保留首尾两段，中间省略，兼顾整段概括与 prompt 体积。
-COMPACT_TRANSCRIPT_CHARS = int(os.environ.get("COMPACT_TRANSCRIPT_CHARS", "16000"))
+ARBITER_MODEL = os.environ.get("ARBITER_MODEL", "claude-opus-5[1m]")
 
 # ---- 会话标题异步刷新 ----
 # 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
@@ -268,9 +261,13 @@ WORKTREES_ROOT = os.environ.get("WORKTREES_ROOT", str(BASE_DIR / "data" / "workt
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "change-me-please")
 
 # ---- SwanLab 代理 ----
-# 反代 SwanLab（train-exp.taiji.woa.com）用的 API key。别硬编码在代码里，
-# 部署时用环境变量 SWANLAB_API_KEY 覆盖。
-SWANLAB_API_KEY: str = os.getenv("SWANLAB_API_KEY", "c9Jlk1bZLgldmuEujxY9C")
+# start_dual.py 会从进程环境或 data/.secrets/ 私有文件注入。这里不提供任何
+# 可由仓库内容推导的 fallback；缺失时 SwanLab 接口 fail closed。
+SWANLAB_API_KEY: str = os.getenv("SWANLAB_API_KEY", "").strip()
+# iframe 无法携带 Authorization header，因此先由已鉴权 API 签发短期代理 Cookie。
+# 必须是独立随机密钥，不能从 AUTH_TOKEN 或其他仓库固定值推导。
+SWANLAB_SESSION_SECRET: str = os.getenv("SWANLAB_SESSION_SECRET", "").strip()
+SWANLAB_SESSION_TTL: int = int(os.getenv("SWANLAB_SESSION_TTL", "3600"))
 
 # ---- 服务 ----
 HOST = os.environ.get("HOST", "0.0.0.0")

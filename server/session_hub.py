@@ -295,21 +295,23 @@ class SessionHub:
         return await self._start_expanded(sid, user_text, mode)
 
     async def compact(self, sid: str) -> dict:
-        """真实上下文压缩：把整段对话概括成摘要，重置会话（丢弃 claude_session_id），
-        摘要暂存 pending_compact_summary，下一条消息发给 CLI 时作前缀注入续接上下文。
+        """真实上下文压缩：对当前会话发一条 `/compact` 消息，触发 CLI 原生压缩
+        （同一个 claude_session_id 不变，历史被真实压缩，不再是"外部摘要+丢弃会话重开"）。
 
-        复用 resume 失败自愈的同一套动作（forget_session + claude_session_id=None + 摘要种子），
-        绝不碰会话常驻进程之外的东西。回合进行中直接拒绝（不入队，语义会混乱）。
+        回合进行中直接拒绝（不入队，语义会混乱）。从没跑过真实回合（无 claude_session_id）
+        时没有可压缩的历史，直接 noop。
 
-        摘要生成可长达 COMPACT_TIMEOUT，期间若不占位，is_running 会一直是 False，
-        用户此刻发消息就会起一个真实回合，等摘要返回后 compact 继续执行会 forget_session
-        杀掉正在跑的会话并与其写回竞态。故仿照 start_turn 往 self._turns[sid] 注册占位 task，
-        让整个压缩窗口内 is_running(sid) 保持为真，用户发的消息会被 submit_user_message 入队。"""
+        压缩本身是一次真实回合，耗时与普通回合相当。期间若不占位，is_running 会一直是
+        False，用户此刻发消息就会起一个真实回合，与压缩这次回合抢占同一个常驻进程。故仿照
+        start_turn 往 self._turns[sid] 注册占位 task，让整个压缩窗口内 is_running(sid)
+        保持为真，用户发的消息会被 submit_user_message 入队。"""
         if self.is_running(sid):
             return {"ok": False, "error": "回合进行中，稍后再压缩"}
         sess = db.get_session(sid)
         if not sess:
             return {"ok": False, "error": "会话不存在"}
+        if not sess.get("claude_session_id"):
+            return {"ok": True, "noop": True, "reason": "empty"}
         task = asyncio.ensure_future(self._run_compact(sid, sess))
         self._turns[sid] = task
         try:
@@ -321,24 +323,79 @@ class SessionHub:
             asyncio.ensure_future(self._drain_queue(sid))
 
     async def _run_compact(self, sid: str, sess: dict) -> dict:
-        from . import compactor
+        """发一条 `/compact` 消息触发 CLI 原生压缩，用专属 on_event 抓压缩边界事件与摘要。
+
+        stdout 事件序列（常驻 stream-json 模式实测）：
+          system/compact_boundary（compact_metadata 含 pre_tokens/post_tokens）
+          -> user 事件（message.content 是字符串，"This session is being continued..." 开头，
+             含摘要正文）-> result。历史太短时没有 compact_boundary，result 事件的 result
+             字段是 "Not enough messages to compact."（同时会带一条 assistant 文本），
+             用这条 result 文本精确识别 noop，不能靠"是否出现过 assistant 文本"判断——
+             该信号在历史太短场景下同样为真，会跟真正的 DISABLE_COMPACT 禁用混淆。
+             命令被 DISABLE_COMPACT 禁用时 CLI 也会把 /compact 当成普通问题回答
+             （出现 assistant 文本、无 boundary、result 文本不含 "Not enough messages"）。
+        """
+        if sess.get("engine") == "codex":
+            return {"ok": False, "error": "该会话使用 codex 引擎，暂不支持原生 /compact"}
         try:
             await self.broadcast(sid, {"type": "compacting"})
-            summary = await compactor.summarize_session(sid)
-            if not summary:
-                return {"ok": False, "error": "对话为空，无需压缩"}
-            # 重置会话：回收常驻进程、丢弃 claude_session_id，摘要暂存待下条消息注入
-            await _runner_for(sess).forget_session(sid)
-            db.update_session(sid, claude_session_id=None,
-                              pending_compact_summary=summary, compacted_at=time.time())
-            db.add_message(sid, "compact", {"summary": summary})
-            await self.broadcast(sid, {
-                "type": "message", "role": "compact", "content": {"summary": summary},
-            })
-            return {"ok": True}
+            model_name, effort = self._resolve_model_effort(sess)
+            captured = {"boundary": None, "summary": "", "saw_assistant_text": False, "result_text": ""}
+
+            async def on_event(evt: dict):
+                etype = evt.get("type")
+                if etype == "system" and evt.get("subtype") == "compact_boundary":
+                    captured["boundary"] = evt.get("compact_metadata") or {}
+                elif etype == "user":
+                    content = evt.get("message", {}).get("content")
+                    if isinstance(content, str) and content.startswith("This session is being continued"):
+                        captured["summary"] = content.split("Summary:", 1)[-1].strip()
+                elif etype == "assistant":
+                    for block in evt.get("message", {}).get("content", []):
+                        if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
+                            captured["saw_assistant_text"] = True
+                elif etype == "result":
+                    captured["result_text"] = evt.get("result") or ""
+
+            def _on_session_id(cid: str):
+                db.update_session(sid, claude_session_id=cid)
+
+            r = _runner_for(sess)
+            _turn_fn = r.send_turn if config.CLAUDE_PERSISTENT else r.run_turn
+            ret = await _turn_fn(
+                session_id=sid, message="/compact",
+                workdir=(sess or {}).get("workdir") or config.DEFAULT_WORKDIR,
+                resume_claude_session=sess.get("claude_session_id"),
+                on_event=on_event, model=model_name,
+                on_permission=None, on_session_id=_on_session_id, effort=effort,
+            )
+            if ret.get("error"):
+                return {"ok": False, "error": ret["error"]}
+            if ret.get("resume_failed"):
+                # resume 失效（缓存 sid 与 cwd 归属目录不一致）：自动重启丢弃坏 sid，
+                # 与 _run_turn 的自愈口径一致；此时历史仍在，不是"对话为空"。
+                await r.forget_session(sid)
+                db.update_session(sid, claude_session_id=None)
+                return {"ok": True, "noop": True, "reason": "resume_failed"}
+            if captured["boundary"]:
+                meta = captured["boundary"]
+                content = {
+                    "summary": captured["summary"],
+                    "pre_tokens": meta.get("pre_tokens"),
+                    "post_tokens": meta.get("post_tokens"),
+                }
+                db.update_session(sid, compacted_at=time.time())
+                db.add_message(sid, "compact", content)
+                await self.broadcast(sid, {"type": "message", "role": "compact", "content": content})
+                return {"ok": True}
+            if "not enough messages" in captured["result_text"].lower():
+                return {"ok": True, "noop": True, "reason": "not_enough"}
+            if captured["saw_assistant_text"]:
+                return {"ok": False, "error": "原生 /compact 不可用（可能被 DISABLE_COMPACT 禁用）"}
+            return {"ok": True, "noop": True, "reason": "not_enough"}
         except Exception as e:  # noqa
-            # forget_session/db 写库若抛异常（如常驻进程已死、kill 失败），兜住并走统一错误
-            # 响应路径，避免异常一路冒到 main.py 变成裸 500。_turns 的清理在 compact() 的 finally。
+            # 异常兜住走统一错误响应路径，避免一路冒到 main.py 变成裸 500。
+            # _turns 的清理在 compact() 的 finally。
             return {"ok": False, "error": f"压缩失败：{e}"}
 
     async def _drain_queue(self, sid: str) -> None:
@@ -358,6 +415,27 @@ class SessionHub:
             if not res.startswith("error"):
                 return  # 成功开跑，退出循环
             # skill 报错则跳过该项，继续循环取下一条
+
+    def _resolve_model_effort(self, sess: dict | None, model: str | None = None) -> tuple[str, str]:
+        """模型档位 → 模型名 + effort（按 engine 分流：codex 用 CODEX_MODELS，claude 走旧档位映射）。"""
+        engine = (sess or {}).get("engine")
+        sess_mode = (sess or {}).get("mode")
+        if engine == "codex":
+            # codex 会话的 mode 直接存模型 ID；脏值/空值回退到 CODEX_MODEL 或默认模型。
+            cand = model or sess_mode
+            model_name = cand if cand in config.CODEX_MODELS else (config.CODEX_MODEL or config.CODEX_DEFAULT_MODEL)
+        else:
+            sess_mode = sess_mode or config.CLAUDE_DEFAULT_MODE
+            # 旧档位值映射到具体模型；新会话的 mode 本身就是模型 ID，直接用。
+            _LEGACY_MAP = {
+                "fast": config.CLAUDE_MODEL_FAST,
+                "strong": config.CLAUDE_MODEL_STRONG,
+                "super": config.CLAUDE_MODEL_SUPER,
+            }
+            model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
+        # 会话级 effort（推理强度）：空则回落全局默认；不支持的 provider 接收后忽略。
+        effort = (sess or {}).get("effort") or config.CLAUDE_EFFORT
+        return model_name, effort
 
     async def _run_turn(self, sid: str, user_text: str, task_id: str, model: str | None) -> None:
         final_result: dict = {"status": "success"}
@@ -407,37 +485,11 @@ class SessionHub:
 
         try:
             sess = db.get_session(sid)
-            # 模型档位 → 模型名（按 engine 分流：codex 用 CODEX_MODELS，claude 走旧档位映射）
-            engine = (sess or {}).get("engine")
-            sess_mode = (sess or {}).get("mode")
-            if engine == "codex":
-                # codex 会话的 mode 直接存模型 ID；脏值/空值回退到 CODEX_MODEL 或默认模型。
-                cand = model or sess_mode
-                model_name = cand if cand in config.CODEX_MODELS else (config.CODEX_MODEL or config.CODEX_DEFAULT_MODEL)
-            else:
-                sess_mode = sess_mode or config.CLAUDE_DEFAULT_MODE
-                # 旧档位值映射到具体模型；新会话的 mode 本身就是模型 ID，直接用。
-                _LEGACY_MAP = {
-                    "fast": config.CLAUDE_MODEL_FAST,
-                    "strong": config.CLAUDE_MODEL_STRONG,
-                    "super": config.CLAUDE_MODEL_SUPER,
-                }
-                model_name = model or _LEGACY_MAP.get(sess_mode, sess_mode)
+            model_name, effort = self._resolve_model_effort(sess, model)
             db.update_task(task_id, resolved_model=model_name)
-            # 会话级 effort（推理强度）：空则回落全局默认；不支持的 provider 接收后忽略。
-            effort = (sess or {}).get("effort") or config.CLAUDE_EFFORT
             turn_extra = {"effort": effort}
             r = _runner_for(sess)
-            # /compact 遗留的摘要前缀：本回合即将全新开会话（无 claude_session_id）时，把摘要
-            # 拼进发给 CLI 的消息里帮 agent 续接上下文。只影响发给 CLI 的文本，DB 里的用户气泡
-            # 保持原样干净。拿到新 claude_session_id 后清空该字段（见回合末尾）。
             send_message = user_text
-            pending_summary = (sess or {}).get("pending_compact_summary") or ""
-            if pending_summary and not (sess or {}).get("claude_session_id"):
-                send_message = (
-                    "以下是之前对话经压缩后的摘要，请据此继续：\n\n"
-                    + pending_summary + "\n\n" + user_text
-                )
             # provider 统一按配置走 send_turn / run_turn；无常驻实现时基类会转发到 run_turn。
             _turn_fn = r.send_turn if config.CLAUDE_PERSISTENT else r.run_turn
             ret = await _turn_fn(
@@ -475,9 +527,6 @@ class SessionHub:
                 )
             if ret.get("claude_session_id"):
                 db.update_session(sid, claude_session_id=ret["claude_session_id"])
-                # 新会话已建立：/compact 遗留的摘要前缀已注入本回合，清空避免下回合重复拼接
-                if pending_summary:
-                    db.update_session(sid, pending_compact_summary="")
             if ret.get("error"):
                 final_result["status"] = "error"
                 db.add_message(sid, "error", {"message": ret["error"]})
