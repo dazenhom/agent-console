@@ -42,6 +42,8 @@
         <option value="claude-sonnet-5[1m]">Sonnet 5 长文</option>
         <option value="claude-sonnet-4-6">Sonnet 4.6</option>
         <option value="claude-sonnet-4-6[1m]">Sonnet 4.6 (1M)</option>
+        <option value="claude-opus-5">Opus 5</option>
+        <option value="claude-opus-5[1m]">Opus 5 (1M)</option>
         <option value="claude-opus-4-8">Opus 4.8</option>
         <option value="claude-opus-4-8[1m]">Opus 4.8 (1M)</option>
         <option value="claude-opus-4-7">Opus 4.7</option>
@@ -162,6 +164,8 @@
                     <option value="claude-sonnet-5[1m]">Sonnet 5 长文</option>
                     <option value="claude-sonnet-4-6">Sonnet 4.6</option>
                     <option value="claude-sonnet-4-6[1m]">Sonnet 4.6 (1M)</option>
+                    <option value="claude-opus-5">Opus 5</option>
+                    <option value="claude-opus-5[1m]">Opus 5 (1M)</option>
                     <option value="claude-opus-4-8">Opus 4.8</option>
                     <option value="claude-opus-4-8[1m]">Opus 4.8 (1M)</option>
                     <option value="claude-opus-4-7">Opus 4.7</option>
@@ -340,10 +344,17 @@
              placeholder="路径，如 @Speech_Model/zhihangxu_ct_exp" />
       <button id="swanlab-go-btn" class="mini-btn">Go</button>
     </header>
-    <iframe id="swanlab-frame"
-            style="width:100%;height:calc(100dvh - 48px);border:none;display:block"
-            src="about:blank">
-    </iframe>
+    <div class="swanlab-frame-shell">
+      <iframe id="swanlab-frame"
+              title="SwanLab"
+              src="about:blank">
+      </iframe>
+      <div id="swanlab-status" class="swanlab-status">
+        <div id="swanlab-spinner" class="swanlab-spinner" aria-hidden="true"></div>
+        <div id="swanlab-status-text" class="swanlab-status-text">正在连接 SwanLab…</div>
+        <button id="swanlab-retry-btn" class="mini-btn hidden" type="button">重试</button>
+      </div>
+    </div>
   </div>
 
   <!-- 背对背仲裁面板 -->
@@ -417,7 +428,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=72"></script>
+  <script src="app.js?v=73"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {
@@ -428,4 +439,3 @@
   </script>
 </body>
 </html>
-

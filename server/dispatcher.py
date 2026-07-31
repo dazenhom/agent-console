@@ -171,7 +171,7 @@ def _route(subtask: dict) -> tuple[str, str, str]:
         return "codex", codex_model, "codex"
     # R2：深度分析/架构/根因 → 强 Claude（Opus）
     if category == "deep" or _hit(_KW_DEEP):
-        return "claude", "claude-opus-4-8", "deep"
+        return "claude", "claude-opus-5", "deep"
     # R3：直接开发活 → codex 执行模型（可 env 覆盖回 Claude）
     if category == "dev" or _hit(_KW_DEV):
         return config.DISPATCH_EXEC_ENGINE, config.DISPATCH_EXEC_MODEL, "dev"
