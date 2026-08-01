@@ -225,6 +225,12 @@ async def remove_session(sid: str):
             status_code=409,
             detail="该会话已被智能看板任务关联，无法删除。请先在看板中解除关联：" + "、".join(linked[:5]),
         )
+    # 回合进行中不能删：out_of_turn_cb 之类的跨回合回调会继续对已删 sid 调
+    # db.add_message/update_session/start_task（无外键约束，静默产生孤儿行）。
+    if hub.is_running(sid):
+        raise HTTPException(status_code=409, detail="回合进行中，无法删除会话，请先停止或等待结束")
+    # 杀掉常驻进程（若有），避免删库后进程残留的 reader/回调继续写孤儿数据
+    await _runner_for(sess).forget_session(sid)
     # 隔离会话：物理删除时清理 worktree 目录（不删分支，合并/保留由人工决定）
     if sess.get("is_worktree") and sess.get("worktree_base"):
         await asyncio.to_thread(worktree.remove, sess.get("workdir"), sess.get("worktree_base"))
@@ -2235,11 +2241,15 @@ def version():
 
 @app.post("/api/notify")
 async def post_notify(payload: dict, request: Request, authorization: str | None = Header(default=None)):
-    """供 Agent（tclaude/tcodex 里跑的 Skill/Agent）主动推一条通知：本机（127.0.0.1）来源免鉴权
-    （避免 token 落进 messages 表——Agent 跑 curl 时命令行会被记进对话历史/日志），
-    非本机来源仍走标准 Bearer token 鉴权。"""
-    client_host = request.client.host if request.client else None
-    if client_host not in ("127.0.0.1", "::1"):
+    """供 Agent（tclaude/tcodex 里跑的 Skill/Agent）主动推一条通知：携带正确的
+    X-Local-Secret（本机共享密钥，见 config.get_local_notify_secret）免鉴权
+    （避免 token 落进 messages 表——Agent 跑 curl 时命令行会被记进对话历史/日志）。
+    **不能用 request.client.host 判断"是否本机"**：本项目对外访问经 ssh -L 本地转发，
+    公网流量在服务器端看到的 TCP 对端地址同样是 127.0.0.1，那样判断等于对公网免鉴权。
+    共享密钥不匹配（含密钥生成失败、请求未带头）时回落到标准 Bearer token 鉴权。"""
+    local_secret = request.headers.get("x-local-secret", "")
+    expected_secret = config.get_local_notify_secret()
+    if not (expected_secret and hmac.compare_digest(local_secret, expected_secret)):
         require_auth(authorization)
     title = str(payload.get("title") or "Agent 通知")
     text = str(payload.get("text") or "")

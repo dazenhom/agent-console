@@ -226,14 +226,25 @@ class SessionHub:
         return any(not s.hidden for s in self._subs.get(sid, ()))
 
     async def _notify_turn_done(self, sid: str, user_text: str, reply_text: str,
-                                final_result: dict, *, kind: str = "turn") -> None:
-        """统一的回合完成提醒出口：广播前端事件，并视条件发送企业微信。"""
+                                final_result: dict, *, kind: str = "turn",
+                                elapsed: float | None = None) -> None:
+        """统一的回合完成提醒出口：广播前端事件，并视条件发送企业微信。
+
+        elapsed: 本回合实际耗时（秒），由调用方在清掉 self._turn_started[sid] 之前算好显式
+        传入——这里不读 self._turn_started，因为 _run_turn 的 finally 块里
+        self._turn_started.pop(sid, ...) 早于本方法调用，到这里读已经拿不到起始时间。
+        长回合（elapsed 达到 config.NOTIFY_LONG_TURN_SEC）即使有前台订阅者也要发企微：
+        用户开着页面切去干别的事、或手机锁屏但 WS 仍连着，都属于"人不在看"的场景，
+        不能被 _has_foreground_sub 一刀切挡掉。"""
         status = final_result.get("status", "success")
         await self.broadcast(sid, {"type": "turn_done", "kind": kind, "status": status})
         await self.broadcast_monitor({
             "type": "turn_done", "session_id": sid, "kind": kind, "status": status,
         })
-        if config.WECOM_ENABLED and not self._has_foreground_sub(sid) and not db.has_active_goal(sid):
+        is_long_turn = elapsed is not None and elapsed >= config.NOTIFY_LONG_TURN_SEC
+        if config.WECOM_ENABLED and not db.has_active_goal(sid) and (
+            not self._has_foreground_sub(sid) or is_long_turn
+        ):
             sess = db.get_session(sid)
             ok, detail = await wecom_notify.notify(
                 title=(sess or {}).get("title") or "会话",
@@ -249,6 +260,11 @@ class SessionHub:
     def _bind_out_of_turn(self, sid: str) -> None:
         """给常驻 Claude 进程绑定回合外续跑事件回调，避免后台 Agent 汇报被吞。"""
         sess = db.get_session(sid)
+        if sess is None:
+            # 会话已被删除（如 remove_session 并发执行）：不能静默 fallback 到
+            # _runner_for(None)（会落到 claude_runner，把"会话不存在"这个信号吞掉），
+            # 直接放弃绑定，避免继续对已删 sid 写孤儿数据。
+            return
         r = _runner_for(sess)
         sessions = getattr(r, "_sessions", None)
         if not sessions:
@@ -323,6 +339,7 @@ class SessionHub:
                     f"该回合已 {int(info.get('elapsed', 0))}s 无新输出",
                     {"status": "stuck"},
                     kind="stuck",
+                    elapsed=info.get("elapsed"),
                 )
         return _on_progress
 
@@ -676,6 +693,10 @@ class SessionHub:
             self._activity[sid] = ""
             self._pending_perms.pop(sid, None)  # 回合结束：清掉本会话所有待确认权限
             self._turns.pop(sid, None)
+            # 必须在 pop self._turn_started 之前算好 elapsed 再传给 _notify_turn_done——
+            # pop 之后就读不到起始时间了，_notify_turn_done 本身也不读这个字典。
+            _started_at = self._turn_started.get(sid)
+            turn_elapsed = (time.monotonic() - _started_at) if _started_at is not None else None
             self._turn_started.pop(sid, None)
             self._progress.pop(sid, None)
             self._stuck_notified.discard(sid)
@@ -693,7 +714,7 @@ class SessionHub:
                 asyncio.ensure_future(self._auto_title_by_ai(sid))
             asyncio.ensure_future(self._auto_progress_by_ai(sid))
             await self._emit_session_update(sid)
-            await self._notify_turn_done(sid, user_text, reply_text, final_result, kind="turn")
+            await self._notify_turn_done(sid, user_text, reply_text, final_result, kind="turn", elapsed=turn_elapsed)
 
             # 本回合结束后自动出队执行下一条（_turns.pop 已在上方执行，is_running 为假）
             asyncio.ensure_future(self._drain_queue(sid))

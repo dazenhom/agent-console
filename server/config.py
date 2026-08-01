@@ -1,5 +1,6 @@
 """集中配置：全部可通过环境变量覆盖，方便部署时调整。"""
 import os
+import secrets
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -271,6 +272,51 @@ WORKTREES_ROOT = os.environ.get("WORKTREES_ROOT", str(BASE_DIR / "data" / "workt
 # ---- 鉴权 ----
 # 手机登录用的口令，务必改掉默认值
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "change-me-please")
+
+# ---- 本机免鉴权共享密钥（/api/notify）----
+# 本项目对外访问链路（见 agent-tunnel.sh）是 手机 → Tailscale Funnel → Mac → ssh -L
+# 本地转发 → 服务器 uvicorn。ssh -L 转发的公网流量在服务器端看到的 TCP 对端地址同样是
+# 127.0.0.1，所以绝不能拿 request.client.host 当"是否本机"的安全边界（等于对公网免鉴权）。
+# 改用只有本机进程/文件系统可读的共享密钥：优先读 LOCAL_NOTIFY_SECRET 环境变量，
+# 否则惰性生成一个随机 token 写入 data/notify_secret（0600，仅当前用户可读），
+# 下次启动读回同一个文件复用。惰性加载（首次调用 get_local_notify_secret() 才计算），
+# 避免模块 import 时就产生文件 IO 副作用（测试环境也会 import 这个模块）。
+LOCAL_NOTIFY_SECRET_PATH = os.environ.get(
+    "LOCAL_NOTIFY_SECRET_PATH", str(BASE_DIR / "data" / "notify_secret")
+)
+_local_notify_secret_cache: str | None = None
+
+
+def get_local_notify_secret() -> str:
+    """返回 /api/notify 本机免鉴权用的共享密钥；生成/读取失败返回空串（调用方据此
+    一律回落到标准 Bearer token 鉴权，不能因为密钥拿不到就放行）。"""
+    global _local_notify_secret_cache
+    if _local_notify_secret_cache is not None:
+        return _local_notify_secret_cache
+    env_secret = os.environ.get("LOCAL_NOTIFY_SECRET", "").strip()
+    if env_secret:
+        _local_notify_secret_cache = env_secret
+        return env_secret
+    path = Path(LOCAL_NOTIFY_SECRET_PATH)
+    try:
+        if path.exists():
+            secret = path.read_text(encoding="utf-8").strip()
+            if secret:
+                _local_notify_secret_cache = secret
+                return secret
+        path.parent.mkdir(parents=True, exist_ok=True)
+        secret = secrets.token_hex(32)
+        fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, secret.encode("utf-8"))
+        finally:
+            os.close(fd)
+        _local_notify_secret_cache = secret
+        return secret
+    except Exception:
+        _local_notify_secret_cache = ""
+        return ""
+
 
 # ---- SwanLab 代理 ----
 # start_dual.py 会从进程环境或 data/.secrets/ 私有文件注入。这里不提供任何

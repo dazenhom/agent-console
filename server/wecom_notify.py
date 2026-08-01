@@ -41,6 +41,9 @@ def build_markdown(*, title: str, user_text: str, reply_text: str,
         head = '<font color="warning">⚠️ Agent 回合出错</font>'
     elif status == "cancelled":
         head = '<font color="comment">⏹️ Agent 回合已取消</font>'
+    elif status == "stuck":
+        # 长时间无新输出的进度提醒：回合还没结束，不能标"已完成"，否则用户会误判已经跑完。
+        head = '<font color="warning">⏳ Agent 长时间无新输出</font>'
     else:
         head = '<font color="info">✅ Agent 已完成</font>'
 
