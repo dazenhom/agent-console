@@ -419,6 +419,17 @@ body.hub-resizing {
 }
 .composer textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .composer textarea:disabled { opacity: .6; cursor: not-allowed; }
+.run-bar {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+.run-bar.stuck {
+  color: #b45309;
+  background: #fff7ed;
+}
 .char-count { position: absolute; right: 10px; bottom: 6px; font-size: 11px; color: var(--muted-2); background: var(--bg-2); padding: 1px 6px; border-radius: 6px; pointer-events: none; }
 .send-btn {
   flex: 0 0 auto; height: 44px; padding: 0 20px; border-radius: 12px; border: none;
@@ -880,6 +891,30 @@ body.hub-resizing {
   cursor: pointer;
 }
 .memo-banner-btn:hover { background: rgba(255,255,255,0.4); }
+.turn-done-banner {
+  margin: 6px 8px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: #e8f8ef;
+  color: #18794e;
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: bannerSlideIn 0.3s ease;
+}
+.turn-done-banner.is-error { background: #fff0f0; color: var(--red); }
+.turn-done-banner-body { flex: 1; }
+.turn-done-banner-close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
 @keyframes bannerSlideIn {
   from { transform: translateY(-100%); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }
@@ -974,9 +1009,9 @@ body.hub-resizing {
 @media (prefers-reduced-motion: reduce) { .voice-wave span { animation: none; } }
 
 /* 会话状态点（侧栏旧用，保留兼容） */
-.s-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: transparent; }
+.s-dot { flex: 0 0 auto; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: transparent; }
 .s-dot.running { background: var(--yellow); animation: connPulse 1.2s ease-in-out infinite; }
-.s-dot.unread { background: var(--accent); }
+.s-dot.unread { background: var(--red); }
 .msg-resend { align-self: flex-end; margin: 0 0 5px; padding: 3px 10px; font-size: 12px; background: var(--bg-2); border: 1px solid var(--line); color: var(--muted); border-radius: 8px; opacity: 0; transition: opacity var(--ease); }
 .msg.user:hover .msg-resend, .msg.user:focus-within .msg-resend { opacity: 1; }
 

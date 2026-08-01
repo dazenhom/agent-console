@@ -285,6 +285,9 @@
         <!-- 排队待执行的指令 -->
         <div id="queue-tray" class="queue-tray hidden"></div>
 
+        <!-- 常驻运行中提示条：展示当前会话有没有在跑、跑了多久、是否卡住 -->
+        <div id="run-bar" class="run-bar hidden"></div>
+
         <!-- Reply 输入区 -->
         <footer class="composer">
           <button id="cancel-btn" class="cancel-btn hidden">停止</button>
@@ -428,7 +431,7 @@
   <div id="toast-root" class="toast-root"></div>
   <div id="modal-root" class="modal-root hidden"></div>
 
-  <script src="app.js?v=73"></script>
+  <script src="app.js?v=74"></script>
   <script>
     // service worker 仅在根路径访问时注册（PWA 添加到主屏用）。
     if ("serviceWorker" in navigator && (location.pathname === "/" || location.pathname === "/index.html")) {

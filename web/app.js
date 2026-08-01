@@ -642,6 +642,10 @@
     const badge = el("span", "badge " + st.badgeCls, st.label);
     const title = el("span", "s-title", escapeHtml(s.title));
     row1.append(badge, title);
+    const seen = loadSeenMap()[s.id] || 0;
+    if (s.updated_at > seen && s.id !== state.sessionId) {
+      row1.prepend(el("span", "s-dot unread"));
+    }
     const sub = el("div", "s-sub", escapeHtml(sessionSubtitle(s)));
     const meta = el("div", "s-meta");
     meta.appendChild(el("span", null, fmtTime(s.updated_at) || ""));
@@ -1729,8 +1733,38 @@
 
   // 会话副标题：在跑显示「当前活动」，空闲显示行摘要
   function sessionSubtitle(s) {
-    if (s.status === "running") return s.activity || "运行中…";
+    if (s.status === "running") {
+      if (typeof s.elapsed === "number" && s.elapsed > 0) {
+        const mins = Math.max(1, Math.round(s.elapsed / 60));
+        return `⏳ ${mins}m` + (s.activity ? " · " + s.activity : "");
+      }
+      return s.activity || "运行中…";
+    }
     return s.summary || "";
+  }
+
+  // 常驻运行中提示条：composer 上方，展示当前会话是否在跑、跑了多久、卡没卡住。
+  // 数据源优先 WS 实时 turn_progress，没收到过时首屏兜底走 GET /api/progress。
+  function updateRunBar(info) {
+    const bar = $("run-bar");
+    if (!bar) return;
+    if (!info) { bar.classList.add("hidden"); bar.textContent = ""; return; }
+    const mins = Math.max(0, Math.round((info.elapsed || 0) / 60));
+    bar.classList.remove("hidden");
+    bar.classList.toggle("stuck", !!info.stuck);
+    const activity = info.activity ? " · " + info.activity : "";
+    bar.textContent = info.stuck
+      ? `⏳ 运行中 ${mins}分 · 最近 10 分钟无新输出${activity}`
+      : `⏳ 运行中 ${mins}分${activity}`;
+  }
+
+  // 首屏/刷新兜底：WS 进度事件在页面刚加载时可能还没收到过，主动拉一次快照对齐当前会话的 run-bar。
+  async function primeRunBarFromApi() {
+    try {
+      const list = await api("/api/progress");
+      const mine = (list || []).find((p) => p.session_id === state.sessionId);
+      updateRunBar(mine || null);
+    } catch (e) { /* 静默：run-bar 只是体验增强，拉不到就留空 */ }
   }
 
   // ---------------- 监控通道：所有会话状态实时更新 ----------------
@@ -1794,6 +1828,27 @@
       setMemoBadge(data.count || 0);
       return;
     }
+    if (data.type === "turn_done") {
+      showTurnDoneBanner(data.session_id, data.status, data.kind);
+      if (data.session_id !== state.sessionId) maybeNotify({ status: data.status, kind: data.kind, sessionId: data.session_id });
+      return;
+    }
+    if (data.type === "turn_progress") {
+      const s = state.sessions.find((x) => x.id === data.session_id);
+      if (s) {
+        const mins = Math.max(1, Math.round((data.elapsed || 0) / 60));
+        s.status = "running";
+        s.elapsed = data.elapsed;
+        s.stuck = !!data.stuck;
+        s.activity = data.stuck ? `已运行 ${mins} 分钟，暂无新输出` : `已运行 ${mins} 分钟`;
+        patchSessionRow(s);
+      }
+      return;
+    }
+    if (data.type === "agent_notify") {
+      toast(`📣 ${data.title}${data.text ? "：" + data.text : ""}`, data.level === "error" ? "error" : "info", 6000);
+      return;
+    }
     // 目标循环状态变更（达成/终止）：目标视图开着就就地刷新，并给一条 toast
     if (data.type === "goal_update") {
       const done = data.goal_status === "done";
@@ -1838,6 +1893,8 @@
       // 更新内存里的会话对象，并就地 patch DOM（避免整体重渲染打断滚动/输入）
       s.status = data.status;
       s.activity = data.activity || "";
+      if (typeof data.elapsed === "number") s.elapsed = data.elapsed;
+      s.stuck = !!data.stuck;
       s.summary = data.summary || s.summary;
       if (data.title) s.title = data.title;
       s.updated_at = data.updated_at || s.updated_at;
@@ -2264,6 +2321,7 @@
       syncModeSelect();
       syncEffortSelect();
       if (!state.ws || state.ws.readyState > 1) connectWs();
+      primeRunBarFromApi();
       return;
     }
     if (prevId && prevId !== id) saveDraft(prevId);   // 存旧会话草稿
@@ -2292,6 +2350,7 @@
     await loadHistory();
     if (prevId !== id) restoreDraft(id);      // 恢复新会话草稿（同会话不覆盖当前输入）
     connectWs();
+    primeRunBarFromApi();
   }
 
   // workdir 显示栏（点击可编辑）
@@ -5075,8 +5134,11 @@
     state.typingEl.appendChild(bub);
     $("chat").appendChild(state.typingEl);
     scrollBottom();
-    // 实时计时：让 4-5s 的云端推理等待可见、不显得卡死
-    const t0 = Date.now();
+    // 优先用当前会话的进度快照反推起始时间（切后台/刷新后计时不归零）；没有快照时退回 Date.now()。
+    const curSess = (state.sessions || []).find((s) => s.id === state.sessionId);
+    const t0 = (curSess && typeof curSess.elapsed === "number" && curSess.elapsed > 0)
+      ? Date.now() - curSess.elapsed * 1000
+      : Date.now();
     state.typingTimer = setInterval(() => {
       const s = (Date.now() - t0) / 1000;
       clock.textContent = "已思考 " + s.toFixed(s < 10 ? 1 : 0) + "s";
@@ -5256,17 +5318,34 @@
         if (!isAsk) showTyping();
       }
     } else if (data.type === "status") {
-      if (data.status === "running") { setRunning(true); showTyping(); }
+      if (data.status === "running") { setRunning(true); updateRunBar({ elapsed: 0 }); showTyping(); }
       else if (data.sync) {
         // 订阅时的状态对齐（非真实回合结束）：只解禁/复位按钮，不触发完成通知等副作用。
         // 修复：超长回合期间断线 → 回合后台跑完的 status:idle 被错过 → 重连卡在 running。
-        setRunning(false); hideTyping(); clearStream();
-      } else { setRunning(false); hideTyping(); clearStream(); loadTasks(); maybeNotify(data.result); document.querySelectorAll(".perm-overlay").forEach(o => o.remove()); _permQueue.length = 0; }
+        setRunning(false); updateRunBar(null); hideTyping(); clearStream();
+      } else { setRunning(false); updateRunBar(null); hideTyping(); clearStream(); loadTasks(); maybeNotify({ ...data.result, sessionId: state.sessionId }); document.querySelectorAll(".perm-overlay").forEach(o => o.remove()); _permQueue.length = 0; }
+    } else if (data.type === "turn_done") {
+      maybeNotify({ status: data.status, kind: data.kind, sessionId: data.session_id || state.sessionId });
+      return;
+    } else if (data.type === "turn_progress") {
+      const mins = Math.max(1, Math.round((data.elapsed || 0) / 60));
+      if (!data.session_id || data.session_id === state.sessionId) {
+        const cur = state.sessions.find((s) => s.id === state.sessionId);
+        if (cur) {
+          cur.status = "running";
+          cur.elapsed = data.elapsed;
+          cur.stuck = !!data.stuck;
+        }
+        updateRunBar({ elapsed: data.elapsed, stuck: data.stuck, activity: cur && cur.activity });
+      }
+      toast(data.stuck ? `回合已运行 ${mins} 分钟，暂时没有新输出` : `回合仍在运行，已持续 ${mins} 分钟`, data.stuck ? "error" : "info", 6000);
+      return;
     } else if (data.type === "error") {
       hideTyping();
       clearStream();
       renderMessage("error", { message: data.message });
       setRunning(false);
+      updateRunBar(null);
       document.querySelectorAll(".perm-overlay").forEach(o => o.remove());
       _permQueue.length = 0;
     } else if (data.type === "queue_update") {
@@ -6374,6 +6453,29 @@
     root.appendChild(banner);
   }
 
+  // 回合完成横幅：前台在线也不错过完成通知（对齐 maybeNotify 去掉 document.hidden 门）。
+  function showTurnDoneBanner(sid, status, kind) {
+    const root = $("memo-banner-root");
+    if (!root) return;
+    const existing = root.querySelector(".turn-done-banner");
+    if (existing) existing.remove();
+    const banner = el("div", "turn-done-banner" + (status === "error" ? " is-error" : ""));
+    const icon = el("span", "turn-done-banner-icon", status === "error" ? "⚠️" : kind === "stuck" ? "⏳" : "✅");
+    const body = el("div", "turn-done-banner-body");
+    const label = kind === "stuck" ? "长时间无新输出" : status === "error" ? "回合出错" : kind === "resume" ? "后台续跑已完成" : "回合已完成";
+    body.textContent = label;
+    const closeBtn = el("button", "turn-done-banner-close", "✕");
+    closeBtn.onclick = () => banner.remove();
+    banner.append(icon, body, closeBtn);
+    banner.onclick = (e) => {
+      if (e.target === closeBtn) return;
+      if (sid && sid !== state.sessionId) switchSession(sid);
+      banner.remove();
+    };
+    root.appendChild(banner);
+    setTimeout(() => { if (banner.parentElement) banner.remove(); }, 8000);
+  }
+
   // 备忘录入口角标 + Experimental tab 红点：count>0 显示，否则隐藏
   function setMemoBadge(count) {
     const badge = $("memo-badge");
@@ -6600,14 +6702,16 @@
     updateNotifyBtn();
   }
 
-  // 回合结束时：已授权 + 页面在后台 才弹通知（前台不打扰）
+  // 回合结束时：只要已授权就弹通知，前台也不能吞掉用户明确开启的完成提醒。
   function maybeNotify(result) {
     if (!notifyEnabled() || !notifySupported() || Notification.permission !== "granted") return;
-    if (!document.hidden) return;
     const st = result && result.status;
-    const body = st === "error" ? "任务执行出错，点击查看" : st === "cancelled" ? "任务已取消" : "Agent 已完成任务，点击查看";
+    const kind = result && result.kind;
+    const body = kind === "stuck" ? "任务长时间没有新输出，点击查看" : st === "error" ? "任务执行出错，点击查看" : st === "cancelled" ? "任务已取消" : "Agent 已完成任务，点击查看";
+    // tag 按会话区分：不同会话各自独立提醒，避免后一条覆盖前一条未读通知。
+    const tag = "agent-done-" + ((result && result.sessionId) || state.sessionId || "");
     try {
-      const n = new Notification("Agent Console", { body, tag: "agent-done" });
+      const n = new Notification("Agent Console", { body, tag });
       n.onclick = () => { window.focus(); n.close(); };
       if (navigator.vibrate) navigator.vibrate(200);
     } catch (e) { /* 部分环境构造通知会抛错，静默降级 */ }
@@ -6648,6 +6752,7 @@
     await loadTasks();      // 先建 taskBySession 映射，再 loadSessions 才能算对徽章/看板
     await loadSessions();
     if (state.sessionId) await switchSession(state.sessionId);  // 含 loadHistory + 第一条 WS
+    primeRunBarFromApi();
     loadSnippets();         // 非关键，放最后
     connectMonitor();       // 监控 WS 最后连，错开与 switchSession 里那条 WS 的建连峰值
     refreshMemoBadge();     // 初始化备忘角标（今日仍待提醒条数）
