@@ -5318,7 +5318,13 @@
         if (!isAsk) showTyping();
       }
     } else if (data.type === "status") {
-      if (data.status === "running") { setRunning(true); updateRunBar({ elapsed: 0 }); showTyping(); }
+      if (data.status === "running") {
+        // 新回合开始：清掉上一回合遗留的 elapsed，否则 showTyping 会拿上轮的旧值起算计时
+        // （PROGRESS_FIRST_SEC 默认 300s，没到这个阈值前不会有 turn_progress 事件来刷新它）。
+        const curSess = state.sessions.find((s) => s.id === state.sessionId);
+        if (curSess) curSess.elapsed = 0;
+        setRunning(true); updateRunBar({ elapsed: 0 }); showTyping();
+      }
       else if (data.sync) {
         // 订阅时的状态对齐（非真实回合结束）：只解禁/复位按钮，不触发完成通知等副作用。
         // 修复：超长回合期间断线 → 回合后台跑完的 status:idle 被错过 → 重连卡在 running。
