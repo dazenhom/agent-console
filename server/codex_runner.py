@@ -28,6 +28,7 @@ from .logging_util import get_logger
 logger = get_logger(__name__)
 
 EventCallback = Callable[[dict], Awaitable[None]]
+ProgressCallback = Callable[[dict], Awaitable[None]]
 
 
 class CodexRunner(AgentProvider):
@@ -92,6 +93,7 @@ class CodexRunner(AgentProvider):
         on_permission=None,
         on_session_id=None,
         effort: str | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> dict:
         """跑一个回合。返回 {claude_session_id, returncode, error, cancelled}。
 
@@ -135,6 +137,7 @@ class CodexRunner(AgentProvider):
         # 等待型（sleep 轮询）调用豁免：把这段"主动等待长任务"（如等 GPU 训练完成）的时长
         # 从有效工作时间倒计时里扣除，避免正常轮询被 CODEX_TURN_TIMEOUT 误杀。
         start_time = loop.time()
+        last_active = start_time
         committed_waived = 0.0    # 已完成等待型调用的累计豁免秒数
         pending_wait: dict = {}    # item_id -> 开始时刻，记录在飞的等待型调用
         wait_notice_sent = False   # 是否已推过一次"检测到等待型调用"提示，避免刷屏
@@ -156,7 +159,7 @@ class CodexRunner(AgentProvider):
 
         async def _read_stdout():
             nonlocal conv_id, error_msg, item_seen, thread_started_at
-            nonlocal committed_waived, wait_notice_sent
+            nonlocal committed_waived, wait_notice_sent, last_active
             while True:
                 try:
                     line = await proc.stdout.readline()
@@ -181,6 +184,7 @@ class CodexRunner(AgentProvider):
                     evt = json.loads(text)
                 except json.JSONDecodeError:
                     continue
+                last_active = loop.time()
 
                 etype = evt.get("type")
 
@@ -319,6 +323,7 @@ class CodexRunner(AgentProvider):
                     pass
 
         read_task = asyncio.create_task(_read_stdout())
+        last_progress_at = 0.0
         try:
             # 看门狗：每 CODEX_WATCHDOG_INTERVAL 秒醒一次核对超时预算。stdout 读完（进程正常
             # 收尾）即退出；否则按"有效工作时间"（扣除等待豁免）和"墙钟绝对上限"两条线判杀。
@@ -339,6 +344,22 @@ class CodexRunner(AgentProvider):
                 # 还在跑：算"当前豁免总量"。把在飞的 pending_wait 也实时计入（单次封顶），
                 # 避免一个正在进行的长 sleep 期间豁免没被计入、导致提前被杀。
                 now = loop.time()
+                elapsed = now - start_time
+                idle = now - last_active
+                if (
+                    on_progress
+                    and elapsed >= config.PROGRESS_FIRST_SEC
+                    and (not last_progress_at or elapsed - last_progress_at >= config.PROGRESS_EVERY_SEC)
+                ):
+                    try:
+                        await on_progress({
+                            "elapsed": elapsed,
+                            "idle": idle,
+                            "stuck": idle > config.PROGRESS_STUCK_IDLE_SEC,
+                        })
+                    except Exception:
+                        pass
+                    last_progress_at = elapsed
                 waived_now = min(
                     config.CODEX_WAIT_WAIVE_TOTAL_MAX,
                     committed_waived + sum(

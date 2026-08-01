@@ -13,6 +13,9 @@ import time
 from datetime import date, timedelta
 
 from . import db, config
+from .logging_util import get_logger
+
+logger = get_logger(__name__)
 
 
 def _should_remind(m: dict, today) -> bool:
@@ -102,7 +105,9 @@ async def run_reminder(force: bool = False) -> int:
     try:
         from . import wecom_notify
         if getattr(config, "WECOM_ENABLED", False):
-            await wecom_notify.notify_memo(title=title, memos=memos)
+            ok, detail = await wecom_notify.notify_memo(title=title, memos=memos)
+            if not ok:
+                logger.warning("wecom 推送失败: %s", detail)
     except Exception:
         pass
 

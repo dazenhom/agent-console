@@ -351,6 +351,18 @@ def init_db() -> None:
                     (s["id"], s["label"], s["text"], i),
                 )
         _conn.commit()
+        # 幂等迁移：三条团队 snippet 历史上存的是纯文本快照（不经 skill_store.expand()），
+        # 与磁盘 SKILL.md 正文逐渐漂移。改成存 slash 触发文本，让展开时始终读最新 SKILL.md。
+        _SNIPPET_SLASH_FIX = {
+            "devops-team-skill": "/devops-team ",
+            "6c49232d95c5": "/console-dev ",
+            "6cfa818facaf": "/quant-dev ",
+        }
+        for _sid, _slash in _SNIPPET_SLASH_FIX.items():
+            _row = _conn.execute("SELECT text FROM snippets WHERE id=?", (_sid,)).fetchone()
+            if _row and not _row[0].startswith("/") and len(_row[0]) > 200:
+                _conn.execute("UPDATE snippets SET text=? WHERE id=?", (_slash, _sid))
+        _conn.commit()
         # 回填老数据：把 todos.session_id 迁进关联表（INSERT OR IGNORE 幂等，可重复执行）
         _conn.execute(
             """

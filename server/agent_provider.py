@@ -8,6 +8,7 @@ from typing import Awaitable, Callable
 
 
 EventCallback = Callable[[dict], Awaitable[None]]
+ProgressCallback = Callable[[dict], Awaitable[None]]
 
 
 def is_sleep_command(command) -> bool:
@@ -93,6 +94,7 @@ class AgentProvider(ABC):
         on_permission=None,
         on_session_id=None,
         effort: str | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> dict:
         """跑一个 agent 回合。"""
 

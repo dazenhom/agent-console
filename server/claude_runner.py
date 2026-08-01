@@ -24,6 +24,7 @@ from .logging_util import get_logger
 logger = get_logger(__name__)
 
 EventCallback = Callable[[dict], Awaitable[None]]
+ProgressCallback = Callable[[dict], Awaitable[None]]
 
 
 class LoopDetector:
@@ -201,6 +202,7 @@ class ClaudeRunner(AgentProvider):
         on_permission=None,
         on_session_id=None,
         effort: str | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> dict:
         """跑一个回合。返回 {claude_session_id, returncode, error}。
 
@@ -380,7 +382,7 @@ class ClaudeRunner(AgentProvider):
             "proc": proc, "stdin": proc.stdin, "claude_sid": resume,
             "last_active": time.monotonic(), "turn_active": False,
             "cancelled": False, "on_event": None, "on_permission": None,
-            "on_session_id": None,
+            "on_session_id": None, "out_of_turn_cb": None,
             "result_evt": None, "workdir": workdir,
             "model": model,
             # 看门狗：循环检测器 + 循环命中标记（reader 里喂事件，send_turn 里轮询判定）
@@ -465,7 +467,7 @@ class ClaudeRunner(AgentProvider):
                     if ev:
                         ev.set()
                     continue  # 不转发这条坏 result
-            cb = sess.get("on_event")
+            cb = sess.get("on_event") if sess.get("turn_active") else sess.get("out_of_turn_cb")
             if cb:
                 try:
                     await cb(evt)
@@ -484,7 +486,8 @@ class ClaudeRunner(AgentProvider):
     async def send_turn(self, session_id: str, message: str, workdir: str,
                         resume_claude_session: str | None, on_event: EventCallback,
                         model: str | None = None, on_permission=None,
-                        on_session_id=None, effort: str | None = None) -> dict:
+                        on_session_id=None, effort: str | None = None,
+                        on_progress: ProgressCallback | None = None) -> dict:
         """常驻进程模式跑一回合。进程不存在/已死则拉起（带 resume），写 stdin，等本回合 result。"""
         sess = self._sessions.get(session_id)
         proc_dead = (not sess) or (sess["proc"].returncode is not None)
@@ -529,6 +532,7 @@ class ClaudeRunner(AgentProvider):
         # 安全上限时才主动终止。
         error = ""
         start = time.monotonic()
+        last_progress_at = 0.0
         while True:
             try:
                 await asyncio.wait_for(result_evt.wait(), timeout=config.CLAUDE_WATCHDOG_INTERVAL)
@@ -540,6 +544,22 @@ class ClaudeRunner(AgentProvider):
                 cur = self._sessions.get(session_id)
                 if cur is None:
                     break
+                idle = now - cur.get("last_active", start)
+                elapsed = now - start
+                if (
+                    on_progress
+                    and elapsed >= config.PROGRESS_FIRST_SEC
+                    and (not last_progress_at or elapsed - last_progress_at >= config.PROGRESS_EVERY_SEC)
+                ):
+                    try:
+                        await on_progress({
+                            "elapsed": elapsed,
+                            "idle": idle,
+                            "stuck": idle > config.PROGRESS_STUCK_IDLE_SEC,
+                        })
+                    except Exception:
+                        pass
+                    last_progress_at = elapsed
                 # 循环检测
                 if cur.get("loop_detected"):
                     reason = cur.get("loop_reason", "未知循环")
@@ -548,14 +568,12 @@ class ClaudeRunner(AgentProvider):
                     await self._kill_session(session_id)
                     break
                 # 空闲超时
-                idle = now - cur.get("last_active", start)
                 if idle > config.CLAUDE_IDLE_TIMEOUT:
                     error = f"Agent {int(idle)}s 内无任何输出，判定卡死，已终止。"
                     logger.warning("session %s: idle timeout after %ds", session_id, int(idle))
                     await self._kill_session(session_id)
                     break
                 # 绝对上限
-                elapsed = now - start
                 if elapsed > config.CLAUDE_TURN_MAX:
                     error = f"Agent 回合超过安全上限 {config.CLAUDE_TURN_MAX}s，已终止。"
                     logger.warning("session %s: hard ceiling %ds reached", session_id, int(elapsed))

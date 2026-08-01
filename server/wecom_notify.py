@@ -11,10 +11,14 @@
 """
 import asyncio
 import json
+import time
 
 import httpx
 
-from . import config
+from . import config, db
+from .logging_util import get_logger
+
+logger = get_logger(__name__)
 
 _WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send"
 
@@ -72,41 +76,87 @@ def _post_sync(content: str) -> tuple[bool, str]:
     if config.WECOM_CHATID:
         payload["chatid"] = config.WECOM_CHATID
     proxy = config.WECOM_PROXY or None
+    retries = max(1, config.WECOM_RETRY)
+    detail = ""
+    for attempt in range(retries):
+        try:
+            with httpx.Client(proxy=proxy, timeout=config.WECOM_TIMEOUT) as client:
+                r = client.post(_WEBHOOK, params={"key": key}, json=payload)
+            data = r.json()
+            if data.get("errcode") == 0:
+                return True, "ok"
+            detail = f"errcode={data.get('errcode')} {data.get('errmsg')}"
+            if data.get("errcode") == 44004:
+                return False, detail
+        except Exception as e:  # 网络/代理/解析异常都不该影响主流程
+            detail = f"{type(e).__name__}: {e}"
+        if attempt < retries - 1:
+            time.sleep(1 if attempt == 0 else 3)
+    return False, detail
+
+
+def _start_notify_job(title: str) -> str | None:
     try:
-        with httpx.Client(proxy=proxy, timeout=config.WECOM_TIMEOUT) as client:
-            r = client.post(_WEBHOOK, params={"key": key}, json=payload)
-        data = r.json()
-        if data.get("errcode") == 0:
-            return True, "ok"
-        return False, f"errcode={data.get('errcode')} {data.get('errmsg')}"
-    except Exception as e:  # 网络/代理/解析异常都不该影响主流程
-        return False, f"{type(e).__name__}: {e}"
+        return db.start_job(kind="notify", session_id=None, input_summary=title)
+    except Exception as e:
+        logger.warning("notify job start failed: %s", e)
+        return None
+
+
+def _finish_notify_job(jid: str | None, ok: bool, detail: str) -> None:
+    if not jid:
+        return
+    try:
+        db.finish_job(
+            jid,
+            "success" if ok else "error",
+            output=detail if ok else "",
+            error=detail if not ok else "",
+        )
+    except Exception as e:
+        logger.warning("notify job finish failed: %s", e)
 
 
 async def notify(*, title: str, user_text: str, reply_text: str,
                  status: str, duration_ms: int | None = None,
                  num_turns: int | None = None) -> tuple[bool, str]:
     """异步发送企业微信通知。永不抛异常——失败只返回 (False, 原因) 供调用方记日志。"""
+    jid = _start_notify_job(title)
     if not config.WECOM_ENABLED or not config.WECOM_WEBHOOK_KEY:
-        return False, "disabled"
+        ok, detail = False, "disabled"
+        _finish_notify_job(jid, ok, detail)
+        logger.warning("wecom notify failed: %s", detail)
+        return ok, detail
     content = build_markdown(
         title=title, user_text=user_text, reply_text=reply_text,
         status=status, duration_ms=duration_ms, num_turns=num_turns,
     )
     try:
-        return await asyncio.to_thread(_post_sync, content)
+        ok, detail = await asyncio.to_thread(_post_sync, content)
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        ok, detail = False, f"{type(e).__name__}: {e}"
+    _finish_notify_job(jid, ok, detail)
+    if not ok:
+        logger.warning("wecom notify failed: %s", detail)
+    return ok, detail
 
 
 async def notify_memo(*, title: str, memos: list) -> tuple[bool, str]:
     """备忘提醒专用推送，用橙色警示格式，与 agent 任务完成通知视觉区分。永不抛异常。"""
+    jid = _start_notify_job(title)
     if not config.WECOM_ENABLED or not config.WECOM_WEBHOOK_KEY:
-        return False, "disabled"
+        ok, detail = False, "disabled"
+        _finish_notify_job(jid, ok, detail)
+        logger.warning("wecom memo notify failed: %s", detail)
+        return ok, detail
     lines = [f"> **{i + 1}.** {m['content']}" for i, m in enumerate(memos)]
     body = "\n".join(lines)
     content = _clip(f'<font color="warning">📌 {title}</font>\n\n{body}', 4096)
     try:
-        return await asyncio.to_thread(_post_sync, content)
+        ok, detail = await asyncio.to_thread(_post_sync, content)
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        ok, detail = False, f"{type(e).__name__}: {e}"
+    _finish_notify_job(jid, ok, detail)
+    if not ok:
+        logger.warning("wecom memo notify failed: %s", detail)
+    return ok, detail

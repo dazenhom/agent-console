@@ -5,6 +5,9 @@ import time
 from datetime import date, datetime, timedelta
 
 from . import config, db
+from .logging_util import get_logger
+
+logger = get_logger(__name__)
 
 _running_lock = asyncio.Lock()
 
@@ -226,12 +229,14 @@ async def run_report(report_type: str) -> None:
         try:
             from . import wecom_notify
             if getattr(config, "WECOM_ENABLED", False):
-                await wecom_notify.notify(
+                ok, detail = await wecom_notify.notify(
                     title=wecom_title,
                     user_text="",
                     reply_text=report_content[:1200],
                     status="success",
                 )
+                if not ok:
+                    logger.warning("wecom 推送失败: %s", detail)
         except Exception:
             pass
 

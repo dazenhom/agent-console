@@ -42,6 +42,16 @@ CLAUDE_TURN_MAX = int(os.environ.get("CLAUDE_TURN_MAX", "14400"))          # 4h�
 CLAUDE_LOOP_REPEAT = int(os.environ.get("CLAUDE_LOOP_REPEAT", "8"))        # 相同工具调用连续N次 → 循环
 CLAUDE_LOOP_ERRORS = int(os.environ.get("CLAUDE_LOOP_ERRORS", "10"))       # 连续报错N次 → 循环
 CLAUDE_WATCHDOG_INTERVAL = int(os.environ.get("CLAUDE_WATCHDOG_INTERVAL", "15"))  # 看门狗检查间隔
+# 是否向会话与总览推送长回合进度快照。
+PROGRESS_PUSH_ENABLED = os.environ.get("PROGRESS_PUSH_ENABLED", "true").lower() == "true"
+# 回合开始多久后首次推送进度，避免短任务产生无意义提示。
+PROGRESS_FIRST_SEC = int(os.environ.get("PROGRESS_FIRST_SEC", "300"))
+# 首次进度后再次推送的最小间隔，保守控制提醒频率。
+PROGRESS_EVERY_SEC = int(os.environ.get("PROGRESS_EVERY_SEC", "1800"))
+# 多久无新输出标记为 stuck 并提醒；仅用于提醒，不同于 CLAUDE_IDLE_TIMEOUT 的判死终止。
+PROGRESS_STUCK_IDLE_SEC = int(os.environ.get("PROGRESS_STUCK_IDLE_SEC", "600"))
+# 回合超过该时长后允许发送长任务完成提醒。
+NOTIFY_LONG_TURN_SEC = int(os.environ.get("NOTIFY_LONG_TURN_SEC", "600"))
 # 是否加 --include-partial-messages：开启后 CLI 逐字推送文本增量，前端做打字机效果。
 # 关掉则回到整段输出（向后兼容）。
 CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() == "true"
@@ -245,6 +255,8 @@ WECOM_WEBHOOK_KEY = os.environ.get("WECOM_WEBHOOK_KEY", "")
 WECOM_PROXY = os.environ.get("WECOM_PROXY", "http://star-proxy.oa.com:3128")
 WECOM_CHATID = os.environ.get("WECOM_CHATID", "")
 WECOM_TIMEOUT = float(os.environ.get("WECOM_TIMEOUT", "15"))
+# 企业微信发送失败时的最大尝试次数（含首次请求）。
+WECOM_RETRY = int(os.environ.get("WECOM_RETRY", "3"))
 
 # Agent 默认工作目录（它在哪个目录里干活）
 DEFAULT_WORKDIR = os.environ.get("AGENT_WORKDIR", str(BASE_DIR.parent))

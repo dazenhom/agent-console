@@ -17,8 +17,18 @@ import time
 from datetime import datetime, timedelta, date
 
 from . import db, config
+from .logging_util import get_logger
+
+logger = get_logger(__name__)
 
 TICK_SEC = 30
+
+
+async def _notify_and_log(**kwargs) -> None:
+    from . import wecom_notify
+    ok, detail = await wecom_notify.notify(**kwargs)
+    if not ok:
+        logger.warning("wecom 推送失败: %s", detail)
 
 
 def compute_next_run(kind: str, interval_min, at_hhmm, *, after: float | None = None) -> float | None:
@@ -380,7 +390,6 @@ def _broadcast_goal_progress(scid: str) -> None:
 
 async def _finish_goal(scid: str, sess: dict, status: str, reason: str) -> None:
     """落终态并停用，推企微 + 广播 monitor。"""
-    from . import wecom_notify
     from .session_hub import hub
     _fields = {"goal_status": status, "enabled": 0}
     if status in ("exhausted", "done"):
@@ -393,7 +402,7 @@ async def _finish_goal(scid: str, sess: dict, status: str, reason: str) -> None:
         print(f"[work_items] goal status update failed: {type(e).__name__}: {e}")
     title = (sess or {}).get("title") or "会话"
     head = "🎯 目标已达成" if status == "done" else "⏹️ 目标循环终止"
-    asyncio.ensure_future(wecom_notify.notify(
+    asyncio.ensure_future(_notify_and_log(
         title=title,
         user_text=head,
         reply_text=reason,

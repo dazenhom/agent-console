@@ -24,6 +24,9 @@ from typing import Awaitable, Callable
 from . import config, db, wecom_notify
 from .claude_runner import runner as claude_runner
 from .codex_runner import runner as codex_runner
+from .logging_util import get_logger
+
+logger = get_logger(__name__)
 
 _PROVIDERS = {"claude": claude_runner, "codex": codex_runner}
 
@@ -71,6 +74,8 @@ def translate_event(evt: dict) -> list[dict]:
                 c = {"id": block.get("id"), "name": block.get("name"), "input": block.get("input", {})}
                 if pid:
                     c["parent"] = pid
+                if block.get("input", {}).get("run_in_background"):
+                    c["bg"] = True
                 out.append({"role": "tool_use", "content": c})
 
     elif etype == "user":
@@ -146,6 +151,9 @@ class SessionHub:
         self._monitor: set[Subscriber] = set()           # 全局监控订阅者
         self._turns: dict[str, asyncio.Task] = {}        # session_id -> 当前回合 task
         self._activity: dict[str, str] = {}              # session_id -> 当前活动一行
+        self._turn_started: dict[str, float] = {}        # session_id -> 本回合起始 time.monotonic()
+        self._progress: dict[str, dict] = {}              # session_id -> 最近一次进度快照
+        self._stuck_notified: set[str] = set()            # 本回合已发过 stuck 提醒的 session_id
         # session_id -> {request_id: {request_id, tool_name, input}} 待用户确认的权限请求。
         # 用户回应/回合取消后清空；WS 重连时重发，避免弹窗因断线丢失。
         self._pending_perms: dict[str, dict] = {}
@@ -170,6 +178,9 @@ class SessionHub:
     def is_running(self, sid: str) -> bool:
         t = self._turns.get(sid)
         return bool(t and not t.done())
+
+    def running_sids(self) -> list[str]:
+        return [sid for sid, t in self._turns.items() if t and not t.done()]
 
     def activity(self, sid: str) -> str:
         return self._activity.get(sid, "")
@@ -204,12 +215,116 @@ class SessionHub:
             "title": (sess or {}).get("title", ""),
             "updated_at": (sess or {}).get("updated_at", 0),
         }
+        prog = self._progress.get(sid) or {}
+        payload["elapsed"] = prog.get("elapsed")
+        payload["stuck"] = bool(prog.get("stuck"))
         payload.update(extra)
         await self.broadcast_monitor(payload)
 
     def _has_foreground_sub(self, sid: str) -> bool:
         """该会话是否有「处于前台」的订阅者。无 → 回合结束发企业微信。"""
         return any(not s.hidden for s in self._subs.get(sid, ()))
+
+    async def _notify_turn_done(self, sid: str, user_text: str, reply_text: str,
+                                final_result: dict, *, kind: str = "turn") -> None:
+        """统一的回合完成提醒出口：广播前端事件，并视条件发送企业微信。"""
+        status = final_result.get("status", "success")
+        await self.broadcast(sid, {"type": "turn_done", "kind": kind, "status": status})
+        await self.broadcast_monitor({
+            "type": "turn_done", "session_id": sid, "kind": kind, "status": status,
+        })
+        if config.WECOM_ENABLED and not self._has_foreground_sub(sid) and not db.has_active_goal(sid):
+            sess = db.get_session(sid)
+            ok, detail = await wecom_notify.notify(
+                title=(sess or {}).get("title") or "会话",
+                user_text=user_text,
+                reply_text=reply_text,
+                status=status,
+                duration_ms=final_result.get("duration_ms"),
+                num_turns=final_result.get("num_turns"),
+            )
+            if not ok:
+                logger.warning("wecom notify failed sid=%s reason=%s", sid, detail)
+
+    def _bind_out_of_turn(self, sid: str) -> None:
+        """给常驻 Claude 进程绑定回合外续跑事件回调，避免后台 Agent 汇报被吞。"""
+        sess = db.get_session(sid)
+        r = _runner_for(sess)
+        sessions = getattr(r, "_sessions", None)
+        if not sessions:
+            return
+        sess_rec = sessions.get(sid)
+        if not sess_rec or sess_rec.get("out_of_turn_cb"):
+            return
+        reply_parts: list[str] = []
+        resume_running = False
+
+        async def _on_out_of_turn(evt: dict):
+            nonlocal resume_running
+            translated = translate_event(evt)
+            for msg in translated:
+                role = msg["role"]
+                if role not in ("assistant_delta", "status"):
+                    db.add_message(sid, role, msg["content"])
+                if role == "assistant":
+                    text = (msg["content"] or {}).get("text", "")
+                    if text:
+                        reply_parts.append(text)
+                await self.broadcast(sid, {"type": "message", **msg})
+                label = _activity_label(msg)
+                if label and not resume_running:
+                    resume_running = True
+                    db.update_session(sid, status="running")
+                    self._activity[sid] = label
+                    await self._emit_session_update(sid)
+                elif label:
+                    self._activity[sid] = label
+                    await self._emit_session_update(sid)
+                if role == "result":
+                    content = msg["content"]
+                    final_result = {
+                        "status": "error" if content.get("is_error") else "success",
+                        "duration_ms": content.get("duration_ms"),
+                        "cost_usd": content.get("cost_usd"),
+                        "num_turns": content.get("num_turns"),
+                    }
+                    task_id = db.start_task(sid, "续跑汇报")
+                    db.finish_task(
+                        task_id,
+                        final_result["status"],
+                        duration_ms=final_result.get("duration_ms"),
+                        cost_usd=final_result.get("cost_usd"),
+                        num_turns=final_result.get("num_turns"),
+                    )
+                    db.update_session(sid, status="idle")
+                    self._activity[sid] = ""
+                    await self._emit_session_update(sid)
+                    reply_text = "\n".join(reply_parts)
+                    await self._notify_turn_done(
+                        sid, "", reply_text, final_result, kind="resume",
+                    )
+                    reply_parts.clear()
+                    resume_running = False
+
+        # 常驻进程的 reader 在普通回合结束后仍继续读，只能直接挂这条跨回合回调。
+        sess_rec["out_of_turn_cb"] = _on_out_of_turn
+
+    async def _make_on_progress(self, sid: str):
+        """构造给 runner 回合看门狗使用的进度回调。"""
+        async def _on_progress(info: dict) -> None:
+            self._progress[sid] = info
+            await self.broadcast(sid, {"type": "turn_progress", "session_id": sid, **info})
+            await self.broadcast_monitor({"type": "turn_progress", "session_id": sid, **info})
+            if info.get("stuck") and sid not in self._stuck_notified:
+                self._stuck_notified.add(sid)
+                await self._notify_turn_done(
+                    sid,
+                    "",
+                    f"该回合已 {int(info.get('elapsed', 0))}s 无新输出",
+                    {"status": "stuck"},
+                    kind="stuck",
+                )
+        return _on_progress
 
     async def _emit_todo_progress(self, tid: str, progress: str, progress_at: float) -> None:
         await self.broadcast_monitor({
@@ -440,8 +555,12 @@ class SessionHub:
     async def _run_turn(self, sid: str, user_text: str, task_id: str, model: str | None) -> None:
         final_result: dict = {"status": "success"}
         reply_parts: list[str] = []
+        self._turn_started[sid] = time.monotonic()
+        self._stuck_notified.discard(sid)
+        self._bind_out_of_turn(sid)
 
         async def on_event(evt: dict):
+            self._bind_out_of_turn(sid)
             for msg in translate_event(evt):
                 # assistant_delta（打字机增量）、status（瞬时状态提示）不落库：前者靠后续权威
                 # assistant 全文入库，后者纯前端提示、不该进聊天记录/摘要/通知。
@@ -482,12 +601,15 @@ class SessionHub:
             """claude_sid 首次落定时即刻落库：即便本回合中途崩溃、走不到末尾兜底，
             下次也能凭它 resume 续接，避免每次都从空会话重开。"""
             db.update_session(sid, claude_session_id=cid)
+            self._bind_out_of_turn(sid)
 
         try:
             sess = db.get_session(sid)
             model_name, effort = self._resolve_model_effort(sess, model)
             db.update_task(task_id, resolved_model=model_name)
             turn_extra = {"effort": effort}
+            if config.PROGRESS_PUSH_ENABLED:
+                turn_extra["on_progress"] = await self._make_on_progress(sid)
             r = _runner_for(sess)
             send_message = user_text
             # provider 统一按配置走 send_turn / run_turn；无常驻实现时基类会转发到 run_turn。
@@ -503,6 +625,7 @@ class SessionHub:
                 on_session_id=_on_session_id,
                 **turn_extra,
             )
+            self._bind_out_of_turn(sid)
             # resume 失败：缓存的 claude_sid 与当前 cwd 归属目录不一致，tclaude 立即报
             # "No conversation found"。此时自动重启（丢弃坏 sid，全新 spawn），并把近期
             # 对话摘录拼到消息前面注入，让 agent 续接上下文。本回合最多重试一次，避免递归。
@@ -525,6 +648,7 @@ class SessionHub:
                     on_session_id=_on_session_id,
                     **turn_extra,
                 )
+                self._bind_out_of_turn(sid)
             if ret.get("claude_session_id"):
                 db.update_session(sid, claude_session_id=ret["claude_session_id"])
             if ret.get("error"):
@@ -552,6 +676,9 @@ class SessionHub:
             self._activity[sid] = ""
             self._pending_perms.pop(sid, None)  # 回合结束：清掉本会话所有待确认权限
             self._turns.pop(sid, None)
+            self._turn_started.pop(sid, None)
+            self._progress.pop(sid, None)
+            self._stuck_notified.discard(sid)
             await self.broadcast(sid, {"type": "status", "status": "idle", "result": final_result})
 
             # 行摘要（Haiku + 兜底）：后台跑，不阻塞。写 sessions.summary 后再推一次监控。
@@ -566,20 +693,7 @@ class SessionHub:
                 asyncio.ensure_future(self._auto_title_by_ai(sid))
             asyncio.ensure_future(self._auto_progress_by_ai(sid))
             await self._emit_session_update(sid)
-
-            # 企业微信：该会话没有任何前台订阅者就发（含 0 订阅者）。
-            # 但目标循环（kind=goal）的每轮迭代不逐轮推送——只在 _finish_goal 终态推一次，
-            # 避免自迭代过程刷屏。
-            if config.WECOM_ENABLED and not self._has_foreground_sub(sid) and not db.has_active_goal(sid):
-                sess2 = db.get_session(sid)
-                asyncio.ensure_future(wecom_notify.notify(
-                    title=(sess2 or {}).get("title") or "会话",
-                    user_text=user_text,
-                    reply_text=reply_text,
-                    status=final_result.get("status", "success"),
-                    duration_ms=final_result.get("duration_ms"),
-                    num_turns=final_result.get("num_turns"),
-                ))
+            await self._notify_turn_done(sid, user_text, reply_text, final_result, kind="turn")
 
             # 本回合结束后自动出队执行下一条（_turns.pop 已在上方执行，is_running 为假）
             asyncio.ensure_future(self._drain_queue(sid))

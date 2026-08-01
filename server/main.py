@@ -2233,6 +2233,46 @@ def version():
     }
 
 
+@app.post("/api/notify")
+async def post_notify(payload: dict, request: Request, authorization: str | None = Header(default=None)):
+    """供 Agent（tclaude/tcodex 里跑的 Skill/Agent）主动推一条通知：本机（127.0.0.1）来源免鉴权
+    （避免 token 落进 messages 表——Agent 跑 curl 时命令行会被记进对话历史/日志），
+    非本机来源仍走标准 Bearer token 鉴权。"""
+    client_host = request.client.host if request.client else None
+    if client_host not in ("127.0.0.1", "::1"):
+        require_auth(authorization)
+    title = str(payload.get("title") or "Agent 通知")
+    text = str(payload.get("text") or "")
+    level = str(payload.get("level") or "info")
+    await hub.broadcast_monitor({
+        "type": "agent_notify", "title": title, "text": text, "level": level,
+    })
+    ok, detail = await wecom_notify.notify(
+        title=title, user_text="", reply_text=text,
+        status="error" if level == "error" else "success",
+    )
+    return {"ok": True, "wecom_ok": ok, "wecom_detail": detail if not ok else ""}
+
+
+@app.get("/api/progress", dependencies=[Depends(require_auth)])
+async def get_progress():
+    """返回当前正在跑的会话的进度快照（内存态，不查库不加列），供前端首屏/刷新兜底展示运行中横幅。"""
+    out = []
+    for sid in hub.running_sids():
+        prog = hub._progress.get(sid) or {}
+        started = hub._turn_started.get(sid)
+        elapsed = prog.get("elapsed")
+        if elapsed is None and started is not None:
+            elapsed = time.monotonic() - started
+        out.append({
+            "session_id": sid,
+            "activity": hub.activity(sid),
+            "elapsed": elapsed,
+            "stuck": bool(prog.get("stuck")),
+        })
+    return out
+
+
 # ---------------- 静态前端 ----------------
 # 缓存策略：让浏览器每次都向服务器核对（no-cache=必须 revalidate）。
 # StaticFiles 本身带 ETag/Last-Modified，配合 no-cache：文件没变返回 304（省流量），
