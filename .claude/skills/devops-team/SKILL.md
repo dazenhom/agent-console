@@ -26,3 +26,13 @@ description: 四角色团队协作流水线：analyst 拆解需求 → developer
 
 <command-args>
 </command-args>
+
+## 主动提醒用户（重要）
+
+流水线里任何一个子智能体（analyst/developer/reviewer/ops）需要提醒用户"某件事已完成/需要关注"时，不要只在正文里说"我会通知你"，必须实际执行：
+
+```bash
+curl -s -X POST http://127.0.0.1/api/notify -H "Content-Type: application/json" -d "{\"title\":\"<一句话标题>\",\"text\":\"<简要说明>\"}"
+```
+
+这个接口走 127.0.0.1 免鉴权（仅本机可用），会同时推一条页面内通知和企业微信消息，是唯一能真正送达用户的提醒方式。

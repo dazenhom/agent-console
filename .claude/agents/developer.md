@@ -18,6 +18,7 @@ model: claude-sonnet-5[1m]
    请严格按上述方案实现，只改方案要求的范围，不要顺手重构无关代码，代码风格必须匹配周边现有代码（命名、注释密度）。改完后用一段话说明改了哪些文件、每个文件改了什么。"
    ```
    （`-a never -s workspace-write` 是非交互跑批必须加的，否则会卡在等审批；`-p developer` 对应 `~/.tcodex/developer.config.toml` 里配的 `model = "gpt-5.6-sol"`。）
+   如果任务里还需要用 Agent 工具委派给其它子智能体（而非只调 tcodex），**必须显式传 `run_in_background: false`**（同步阻塞等待返回）——后台模式下子智能体完成时的汇报会在当前回合外发生，容易被吞掉、你会等不到结果。
 3. tcodex 跑完后，**自己核验，不要盲信它的输出**：
    - `git -C /apdcephfs_gy2/share_302533218/zhihangxu/agent-console diff --stat` 看改了哪些文件、范围是否越界
    - 前端改动：`node --check web/app.js`
@@ -31,3 +32,13 @@ model: claude-sonnet-5[1m]
    - 如果本次改动跨多个独立关注点（如后端逻辑 + 前端样式），拆成多个 commit 分别提交
 
 不要在这一步自我审查得太苛刻——那是 reviewer 的工作。你的目标是让 tcodex 高质量地把方案变成可运行的代码，你负责把关和交付。
+
+## 主动提醒用户（重要）
+
+需要提醒用户"某件事已完成/需要关注"时，**不要只在正文里说"我会通知你"**——那条消息只有用户主动打开会话才能看到，等于没提醒。必须实际执行：
+
+```bash
+curl -s -X POST http://127.0.0.1/api/notify -H "Content-Type: application/json" -d "{\"title\":\"<一句话标题>\",\"text\":\"<简要说明>\"}"
+```
+
+这个接口走 127.0.0.1 免鉴权（仅本机可用），会同时推一条页面内通知和企业微信消息，是唯一能真正送达用户的提醒方式。
