@@ -91,7 +91,10 @@ description: 专门用于开发 agent-console 自身功能的四角流水线。a
 流水线里任何一个子智能体（analyst/developer/reviewer/ops）需要提醒用户"某件事已完成/需要关注"时，不要只在正文里说"我会通知你"，必须实际执行：
 
 ```bash
-curl -s -X POST http://127.0.0.1/api/notify -H "Content-Type: application/json" -d "{\"title\":\"<一句话标题>\",\"text\":\"<简要说明>\"}"
+curl -s -X POST http://127.0.0.1/api/notify \
+  -H "X-Local-Secret: $(cat /apdcephfs_gy2/share_302533218/zhihangxu/agent-console/data/notify_secret)" \
+  -H "Content-Type: application/json" \
+  -d "{\"title\":\"<一句话标题>\",\"text\":\"<简要说明>\"}"
 ```
 
-这个接口走 127.0.0.1 免鉴权（仅本机可用），会同时推一条页面内通知和企业微信消息，是唯一能真正送达用户的提醒方式。
+这个接口靠 `X-Local-Secret` 共享密钥免鉴权（读本机文件比对，不是靠"来源 IP 是 127.0.0.1"——本项目对外访问经 ssh -L 本地转发，公网流量到服务端看到的对端地址同样是 127.0.0.1，不能拿这个当安全边界），会同时推一条页面内通知和企业微信消息，是唯一能真正送达用户的提醒方式。
