@@ -241,7 +241,12 @@ class SessionHub:
         await self.broadcast_monitor({
             "type": "turn_done", "session_id": sid, "kind": kind, "status": status,
         })
-        is_long_turn = elapsed is not None and elapsed >= config.NOTIFY_LONG_TURN_SEC
+        # kind == "resume" 是续跑汇报：tclaude 后台任务跑完后 CLI 自发起的回合，
+        # 用户此时必然不在前台等待（否则不会走后台续跑），无条件视为"长回合"，
+        # 不能被 elapsed is None 挡掉，也不能被 _has_foreground_sub 挡掉。
+        is_long_turn = kind == "resume" or (
+            elapsed is not None and elapsed >= config.NOTIFY_LONG_TURN_SEC
+        )
         if config.WECOM_ENABLED and not db.has_active_goal(sid) and (
             not self._has_foreground_sub(sid) or is_long_turn
         ):

@@ -70,3 +70,29 @@ def test_foreground_and_turn_just_under_threshold_does_not_notify(monkeypatch, t
     # elapsed 恰好卡在阈值之下：不该被误判为长回合。
     n = _notify(monkeypatch, temp_db, foreground=True, elapsed=599.9)
     assert n == 0
+
+
+def test_resume_kind_notifies_even_with_foreground_and_no_elapsed(monkeypatch, temp_db):
+    """kind="resume" 是续跑汇报（tclaude 后台任务跑完后 CLI 自发起的回合），用户此时
+    必然不在前台等待，无条件视为长回合，即使有前台订阅者、且没有 elapsed（续跑分支
+    调用 _notify_turn_done 时本就不传 elapsed）也要发企微，不能被 _has_foreground_sub
+    挡住——这正是痛点 2 的核心场景。"""
+    sess = temp_db.create_session("测试会话", "/tmp", engine="claude")
+    sid = sess["id"]
+
+    monkeypatch.setattr(config, "WECOM_ENABLED", True)
+    monkeypatch.setattr(config, "NOTIFY_LONG_TURN_SEC", 600)
+
+    called = {"n": 0}
+
+    async def fake_notify(**kwargs):
+        called["n"] += 1
+        return True, "ok"
+
+    monkeypatch.setattr(session_hub.wecom_notify, "notify", fake_notify)
+
+    hub = _make_hub_with_sub(sid, hidden=False)  # 前台订阅者在场
+    asyncio.run(hub._notify_turn_done(
+        sid, "", "回复", {"status": "success"}, kind="resume", elapsed=None,
+    ))
+    assert called["n"] == 1
