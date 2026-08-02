@@ -1745,17 +1745,45 @@
 
   // 常驻运行中提示条：composer 上方，展示当前会话是否在跑、跑了多久、卡没卡住。
   // 数据源优先 WS 实时 turn_progress，没收到过时首屏兜底走 GET /api/progress。
-  function updateRunBar(info) {
+  // 计时本地自增：后端 turn_progress 首推在 300s、之后每 1800s 才推一次，纯事件驱动
+  // 会让"运行中 N分"在两次推送之间僵死半小时。所以收到一次进度就记下基准
+  // （elapsed + 收到时刻），由 _runBarTimer 每秒按真实流逝时间重算文字。
+  let _runBarState = null;   // { elapsed, stuck, activity, at }  at = 收到该 elapsed 的本地时刻
+  let _runBarTimer = null;
+
+  function renderRunBar() {
     const bar = $("run-bar");
     if (!bar) return;
-    if (!info) { bar.classList.add("hidden"); bar.textContent = ""; return; }
-    const mins = Math.max(0, Math.round((info.elapsed || 0) / 60));
+    if (!_runBarState) { bar.classList.add("hidden"); bar.textContent = ""; return; }
+    const st = _runBarState;
+    // 基准 elapsed 加上"收到之后又过去的时间"，得到当前真实耗时
+    const live = (st.elapsed || 0) + (Date.now() - st.at) / 1000;
+    const mins = Math.max(0, Math.round(live / 60));
     bar.classList.remove("hidden");
-    bar.classList.toggle("stuck", !!info.stuck);
-    const activity = info.activity ? " · " + info.activity : "";
-    bar.textContent = info.stuck
+    bar.classList.toggle("stuck", !!st.stuck);
+    const activity = st.activity ? " · " + st.activity : "";
+    bar.textContent = st.stuck
       ? `⏳ 运行中 ${mins}分 · 最近 10 分钟无新输出${activity}`
       : `⏳ 运行中 ${mins}分${activity}`;
+  }
+
+  function updateRunBar(info) {
+    if (!info) {
+      _runBarState = null;
+      if (_runBarTimer) { clearInterval(_runBarTimer); _runBarTimer = null; }
+      renderRunBar();
+      return;
+    }
+    // activity 可能本次没带（只推了 elapsed/stuck），沿用上一次的，避免文字忽然掉一截
+    const prevActivity = _runBarState && _runBarState.activity;
+    _runBarState = {
+      elapsed: info.elapsed || 0,
+      stuck: !!info.stuck,
+      activity: info.activity !== undefined ? info.activity : prevActivity,
+      at: Date.now(),
+    };
+    renderRunBar();
+    if (!_runBarTimer) _runBarTimer = setInterval(renderRunBar, 1000);
   }
 
   // 首屏/刷新兜底：WS 进度事件在页面刚加载时可能还没收到过，主动拉一次快照对齐当前会话的 run-bar。

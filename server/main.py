@@ -2271,9 +2271,11 @@ async def get_progress():
     for sid in hub.running_sids():
         prog = hub._progress.get(sid) or {}
         started = hub._turn_started.get(sid)
-        elapsed = prog.get("elapsed")
-        if elapsed is None and started is not None:
-            elapsed = time.monotonic() - started
+        # elapsed 一律按 _turn_started 现算，不读 _progress 缓存里的值：
+        # _progress 只在 watchdog 回调（首推 PROGRESS_FIRST_SEC、之后每 PROGRESS_EVERY_SEC）
+        # 时更新，两次推送之间隔了 30 分钟，读缓存会让耗时冻在上一次推送的数字上，
+        # 状态条显示"运行中 5分"半小时不动，看着像卡死。stuck 仍取缓存（它只有 watchdog 判得出）。
+        elapsed = (time.monotonic() - started) if started is not None else prog.get("elapsed")
         out.append({
             "session_id": sid,
             "activity": hub.activity(sid),

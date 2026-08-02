@@ -216,7 +216,13 @@ class SessionHub:
             "updated_at": (sess or {}).get("updated_at", 0),
         }
         prog = self._progress.get(sid) or {}
-        payload["elapsed"] = prog.get("elapsed")
+        # elapsed 按 _turn_started 现算而非读 _progress 缓存：watchdog 两次进度推送之间
+        # 隔了 PROGRESS_EVERY_SEC(30分钟)，读缓存会让列表里的耗时冻在上次推送的数字上。
+        # 同 /api/progress 的处理。stuck 只有 watchdog 判得出，仍取缓存。
+        started = self._turn_started.get(sid)
+        payload["elapsed"] = (
+            time.monotonic() - started if started is not None else prog.get("elapsed")
+        )
         payload["stuck"] = bool(prog.get("stuck"))
         payload.update(extra)
         await self.broadcast_monitor(payload)
