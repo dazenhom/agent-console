@@ -14,6 +14,8 @@ data/agent_console.db
 data/job_logs/
 # 本机运行密钥：由 start_dual.py 以 0600 权限读取/生成，绝不入库。
 data/.secrets/
+data/notify_secret
+data/.lock
 
 # ---- 私钥/证书（run.sh 会自动生成）----
 data/certs/

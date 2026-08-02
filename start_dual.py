@@ -7,14 +7,20 @@
 用法：python3 start_dual.py
   （脚本 Popen 出两个 detached uvicorn 后立即退出，进程独立存活）
 """
-import fcntl
 import os
 import secrets
-import stat
 import subprocess
-from contextlib import contextmanager
 from pathlib import Path
 
+from server.secret_store import (
+    atomic_write_private_at,
+    load_or_create_local_notify_secret,
+    locked_secret_dir,
+    open_lock_file,
+    open_secret_dir,
+    read_private_value_at,
+    validate_owned_mode,
+)
 
 ROOT = Path("/apdcephfs_gy2/share_302533218/zhihangxu/agent-console")
 CERT_DIR = ROOT / "data" / "certs"
@@ -22,186 +28,15 @@ SECRET_DIR = ROOT / "data" / ".secrets"
 SWANLAB_API_KEY_FILE = SECRET_DIR / "swanlab_api_key"
 SWANLAB_SESSION_SECRET_FILE = SECRET_DIR / "swanlab_session_secret"
 SWANLAB_SECRET_LOCK_FILE = SECRET_DIR / ".lock"
+LOCAL_NOTIFY_SECRET_FILE = ROOT / "data" / "notify_secret"
 
 
-def _validate_owned_mode(
-    metadata: os.stat_result,
-    label: str,
-    expected_type: str,
-    expected_mode: int,
-) -> None:
-    if metadata.st_uid != os.geteuid():
-        raise RuntimeError(f"{label} owner 必须是当前运行用户")
-    if expected_type == "directory":
-        valid_type = stat.S_ISDIR(metadata.st_mode)
-    else:
-        valid_type = stat.S_ISREG(metadata.st_mode)
-    if not valid_type:
-        raise RuntimeError(f"{label} 必须是普通{expected_type}")
-    actual_mode = stat.S_IMODE(metadata.st_mode)
-    if actual_mode != expected_mode:
-        raise RuntimeError(f"{label} 权限必须精确为 {expected_mode:04o}")
-
-
-def _open_secret_dir(secret_dir: Path) -> int:
-    """安全打开 secret 目录，返回调用方负责关闭的目录 FD。"""
-    try:
-        initial_metadata = secret_dir.lstat()
-    except FileNotFoundError:
-        initial_metadata = None
-    if initial_metadata is not None:
-        _validate_owned_mode(
-            initial_metadata, "SwanLab secret 目录", "directory", 0o700
-        )
-
-    parent_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    try:
-        parent_fd = os.open(secret_dir.parent, parent_flags)
-    except OSError as exc:
-        raise RuntimeError("SwanLab secret 父目录无法安全打开") from exc
-    try:
-        try:
-            metadata = os.stat(secret_dir.name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            try:
-                os.mkdir(secret_dir.name, 0o700, dir_fd=parent_fd)
-            except FileExistsError:
-                pass
-            metadata = os.stat(secret_dir.name, dir_fd=parent_fd, follow_symlinks=False)
-        _validate_owned_mode(metadata, "SwanLab secret 目录", "directory", 0o700)
-        flags = (
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-        )
-        try:
-            directory_fd = os.open(secret_dir.name, flags, dir_fd=parent_fd)
-        except OSError as exc:
-            raise RuntimeError("SwanLab secret 目录无法安全打开") from exc
-        try:
-            opened_metadata = os.fstat(directory_fd)
-            _validate_owned_mode(
-                opened_metadata, "SwanLab secret 目录", "directory", 0o700
-            )
-            if (
-                metadata.st_dev != opened_metadata.st_dev
-                or metadata.st_ino != opened_metadata.st_ino
-            ):
-                raise RuntimeError("SwanLab secret 目录在打开期间被替换")
-            return directory_fd
-        except Exception:
-            os.close(directory_fd)
-            raise
-    finally:
-        os.close(parent_fd)
-
-
-def _open_lock_file(directory_fd: int) -> int:
-    flags = (
-        os.O_RDWR
-        | os.O_CREAT
-        | os.O_NONBLOCK
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    try:
-        lock_fd = os.open(".lock", flags, 0o600, dir_fd=directory_fd)
-    except OSError as exc:
-        raise RuntimeError("SwanLab secret 锁文件无法安全打开") from exc
-    try:
-        _validate_owned_mode(
-            os.fstat(lock_fd), "SwanLab secret 锁文件", "file", 0o600
-        )
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        return lock_fd
-    except Exception:
-        os.close(lock_fd)
-        raise
-
-
-def _read_private_value_at(directory_fd: int, name: str, label: str) -> str:
-    flags = (
-        os.O_RDONLY
-        | os.O_NONBLOCK
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    try:
-        fd = os.open(name, flags, dir_fd=directory_fd)
-    except OSError as exc:
-        raise RuntimeError(f"{label} 私有文件无法安全打开") from exc
-    try:
-        _validate_owned_mode(os.fstat(fd), f"{label} 私有文件", "file", 0o600)
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            fd = -1
-            value = handle.read().strip()
-    finally:
-        if fd >= 0:
-            os.close(fd)
-    if not value:
-        raise RuntimeError(f"{label} 私有文件为空")
-    return value
-
-
-def _atomic_write_private_at(
-    directory_fd: int,
-    name: str,
-    value: str,
-) -> None:
-    temp_name = f".{name}.{secrets.token_hex(16)}.tmp"
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    fd = os.open(temp_name, flags, 0o600, dir_fd=directory_fd)
-    try:
-        os.fchmod(fd, 0o600)
-        _validate_owned_mode(
-            os.fstat(fd), f"{name} 临时私有文件", "file", 0o600
-        )
-        payload = (value + "\n").encode("utf-8")
-        written = 0
-        while written < len(payload):
-            written += os.write(fd, payload[written:])
-        os.fsync(fd)
-        os.close(fd)
-        fd = -1
-        os.replace(
-            temp_name,
-            name,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-        )
-        os.fsync(directory_fd)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        try:
-            os.unlink(temp_name, dir_fd=directory_fd)
-        except FileNotFoundError:
-            pass
-
-
-@contextmanager
-def _locked_secret_dir(secret_dir: Path):
-    directory_fd = _open_secret_dir(secret_dir)
-    lock_fd = -1
-    try:
-        lock_fd = _open_lock_file(directory_fd)
-        yield directory_fd
-    finally:
-        if lock_fd >= 0:
-            os.close(lock_fd)
-        os.close(directory_fd)
+_validate_owned_mode = validate_owned_mode
+_open_secret_dir = open_secret_dir
+_open_lock_file = open_lock_file
+_read_private_value_at = read_private_value_at
+_atomic_write_private_at = atomic_write_private_at
+_locked_secret_dir = locked_secret_dir
 
 
 def load_swanlab_api_key(
@@ -262,6 +97,7 @@ def build_base_env(
     environ: dict[str, str] | None = None,
     api_key_path: Path = SWANLAB_API_KEY_FILE,
     session_secret_path: Path = SWANLAB_SESSION_SECRET_FILE,
+    notify_secret_path: Path = LOCAL_NOTIFY_SECRET_FILE,
 ) -> dict[str, str]:
     source_env = os.environ if environ is None else environ
     # 剔除继承来的编排态环境变量（否则 tclaude 子进程会连父会话代理导致 403）
@@ -308,6 +144,9 @@ def build_base_env(
             "SWANLAB_API_KEY": load_swanlab_api_key(source_env, api_key_path),
             "SWANLAB_SESSION_SECRET": load_or_create_swanlab_session_secret(
                 source_env, session_secret_path
+            ),
+            "LOCAL_NOTIFY_SECRET": load_or_create_local_notify_secret(
+                source_env, notify_secret_path
             ),
         }
     )
@@ -362,7 +201,7 @@ def launch(
 
 
 def main() -> None:
-    base_env = build_base_env()
+    base_env = build_base_env(notify_secret_path=LOCAL_NOTIFY_SECRET_FILE)
     if not (os.environ.get("SWANLAB_API_KEY") or "").strip():
         print(
             "警告：SwanLab API key 来自本机迁移文件；"

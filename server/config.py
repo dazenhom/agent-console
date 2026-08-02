@@ -1,8 +1,11 @@
 """集中配置：全部可通过环境变量覆盖，方便部署时调整。"""
+import logging
 import os
-import secrets
 from pathlib import Path
 
+from . import secret_store
+
+logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ---- Claude Code CLI (tclaude wrapper) ----
@@ -300,21 +303,23 @@ def get_local_notify_secret() -> str:
     path = Path(LOCAL_NOTIFY_SECRET_PATH)
     try:
         if path.exists():
-            secret = path.read_text(encoding="utf-8").strip()
+            directory_fd = secret_store.open_secret_dir(
+                path.parent, expected_mode=None, label="notify secret"
+            )
+            try:
+                secret = secret_store.read_private_value_at(
+                    directory_fd, path.name, "LOCAL_NOTIFY_SECRET"
+                )
+            finally:
+                os.close(directory_fd)
             if secret:
                 _local_notify_secret_cache = secret
                 return secret
-        path.parent.mkdir(parents=True, exist_ok=True)
-        secret = secrets.token_hex(32)
-        fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, secret.encode("utf-8"))
-        finally:
-            os.close(fd)
+        secret = secret_store.load_or_create_local_notify_secret(os.environ, path)
         _local_notify_secret_cache = secret
         return secret
-    except Exception:
-        _local_notify_secret_cache = ""
+    except RuntimeError as exc:
+        logger.warning("本机 notify secret 加载或生成失败：%s", exc)
         return ""
 
 
