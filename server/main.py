@@ -2249,7 +2249,13 @@ async def post_notify(payload: dict, request: Request, authorization: str | None
     共享密钥不匹配（含密钥生成失败、请求未带头）时回落到标准 Bearer token 鉴权。"""
     local_secret = request.headers.get("x-local-secret", "")
     expected_secret = config.get_local_notify_secret()
-    if not (expected_secret and hmac.compare_digest(local_secret, expected_secret)):
+    if not (
+        expected_secret
+        and hmac.compare_digest(
+            local_secret.encode("utf-8", "surrogateescape"),
+            expected_secret.encode("utf-8", "surrogateescape"),
+        )
+    ):
         require_auth(authorization)
     title = str(payload.get("title") or "Agent 通知")
     text = str(payload.get("text") or "")
