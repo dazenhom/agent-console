@@ -702,28 +702,44 @@
     "claude-deepseek-v4-flash","claude-deepseek-v4-flash[1m]",
   ];
   const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-  const PRICE_TABLE = {
-    "claude-haiku-4-5":           { in: 0.80, out: 4   },
-    "claude-sonnet-4-6":          { in: 3,    out: 15  },
-    "claude-sonnet-4-6[1m]":      { in: 3,    out: 15  },
-    "claude-sonnet-5":            { in: 3,    out: 15  },
-    "claude-sonnet-5[1m]":        { in: 3,    out: 15  },
-    "claude-opus-4-6":            { in: 15,   out: 75  },
-    "claude-opus-4-6[1m]":        { in: 15,   out: 75  },
-    "claude-opus-4-7":            { in: 15,   out: 75  },
-    "claude-opus-4-7[1m]":        { in: 15,   out: 75  },
-    "claude-opus-4-8":            { in: 15,   out: 75  },
-    "claude-opus-4-8[1m]":        { in: 15,   out: 75  },
-    "claude-opus-5":              { in: 15,   out: 75  },
-    "claude-opus-5[1m]":          { in: 15,   out: 75  },
+  // 倍率数据来自 2026-08-03 用户截图，采集档位 High。
+  // claude-opus-5[1m]、claude-sonnet-4-6 为截图未覆盖的同价推断值。
+  // 以下模型截图未覆盖，故倍率表缺席（保留模型定义，查不到时不显示徽章）：
+  // claude-haiku-4-5、claude-hy3、opusplan、claude-glm-5.2、claude-glm-5.2[1m]、
+  // gpt-5.1-codex、gpt-5.1-codex-mini、glm-5.2-ioa、hy3-ioa。
+  // Gemini-3.5-Flash 在 CLAUDE_MODELS/CODEX_MODELS 中均无对应模型 ID，本次不接入。
+  const RATE_TABLE = {
+    "claude-opus-5":                    3.33,
+    "claude-opus-5[1m]":                3.33,
+    "claude-sonnet-5":                  1.33,
+    "claude-sonnet-5[1m]":              1.33,
+    "claude-sonnet-4-6[1m]":            2.00,
+    "claude-sonnet-4-6":                2.00,
+    "claude-opus-4-8[1m]":              3.33,
+    "claude-opus-4-8":                  3.33,
+    "claude-opus-4-7[1m]":              3.33,
+    "claude-opus-4-7":                  3.33,
+    "claude-opus-4-6[1m]":              3.33,
+    "claude-opus-4-6":                  3.33,
+    "claude-deepseek-v4-flash":         0.05,
+    "claude-deepseek-v4-flash[1m]":     0.05,
+    "claude-deepseek-v4-pro":           0.13,
+    "claude-deepseek-v4-pro[1m]":       0.13,
+    "gpt-5.6-sol":                      3.47,
+    "gpt-5.6-terra":                    1.39,
+    "gpt-5.6-luna":                     0.14,
+    "gpt-5.5":                          3.31,
+    "gpt-5.4":                          1.65,
+    "gpt-5.3-codex":                    1.25,
   };
+  const RATE_BASE = 1.33;
   // 目标循环成本上限默认值：来自后端 config.GOAL_MAX_COST_USD（enterApp 拉 /api/config 覆盖）。
   // 初值 20 仅兜底：接口 404/失败时不阻塞，UI 文案退回 20。
   let GOAL_COST_DEFAULT = 20;
-  function modePriceStr(m) {
-    const p = PRICE_TABLE[m];
-    if (!p) return null;
-    return `$${p.in}/$${p.out}/M`;
+  function modeRateStr(m) {
+    const rate = RATE_TABLE[m];
+    if (!rate) return null;
+    return `${rate}x`;
   }
   function modeLabel(m) {
     const labels = {
@@ -2085,7 +2101,7 @@
       }
       sel.value = mode;
       const hint = $("mode-price-hint");
-      if (hint) hint.textContent = modePriceStr(sel.value) || "";
+      if (hint) hint.textContent = modeRateStr(sel.value) || "";
       return;
     }
     // 旧档位迁移映射（与后端 session_hub 的 _LEGACY_MAP 保持一致）
@@ -2112,7 +2128,7 @@
     if (mode) sel.value = mode;
     sel.disabled = false;
     const hint = $("mode-price-hint");
-    if (hint) hint.textContent = modePriceStr(sel.value) || "";
+    if (hint) hint.textContent = modeRateStr(sel.value) || "";
   }
   // 切换档位：持久化到会话（后端 PATCH），下一回合即生效
   $("mode-select").onchange = async (e) => {
@@ -2123,7 +2139,7 @@
       const cur = state.sessions.find((s) => s.id === state.sessionId);
       if (cur) cur.mode = mode;
       const hint = $("mode-price-hint");
-      if (hint) hint.textContent = modePriceStr(mode) || "";
+      if (hint) hint.textContent = modeRateStr(mode) || "";
     } catch (err) { /* ignore，下次切会话会重新同步 */ }
   };
 
@@ -2193,7 +2209,7 @@
   // New Tab 高级配置：自定义标题/目录/档位新建会话
   $("nf-mode").onchange = (e) => {
     const hint = $("nf-mode-price-hint");
-    if (hint) hint.textContent = modePriceStr(e.target.value) || "";
+    if (hint) hint.textContent = modeRateStr(e.target.value) || "";
   };
   // 目标选「本系统」时强制隔离：自动勾上并禁用手动取消（走 agent-console 仓库的 worktree）
   const nfTarget = $("nf-target");
@@ -3506,8 +3522,8 @@
     function suggestCost() {
       const sess = state.sessions.find((s) => s.id === card.querySelector("#gf-session").value);
       const model = sess ? (LEGACY_MODEL_MAP[sess.mode] || sess.mode) : "";
-      const p = PRICE_TABLE[model];                       // 查不到（glm/deepseek/hy3/codex/脏值）→ 系数 1
-      const priceFactor = p ? p.out / 15 : 1;             // 相对 sonnet 归一：haiku≈0.27 / sonnet 1 / opus 5
+      const rate = RATE_TABLE[model];                     // 查不到（未采集模型/脏值）→ 系数 1
+      const priceFactor = rate ? rate / RATE_BASE : 1;    // 相对 sonnet-5 归一：sonnet 1 / opus-5≈2.5 / sol≈2.6
       const team = card.querySelector("#gf-mode").value === "team" ? 4 : 1;
       const iter = Math.max(1, parseInt(card.querySelector("#gf-maxiter").value, 10) || 1);
       return Math.max(2, Math.ceil(0.5 * priceFactor * team * iter * 1.5)); // 向上取整到$1、下限$2
