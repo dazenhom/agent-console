@@ -25,33 +25,19 @@ description: 专门用于开发 agent-console 自身功能的四角流水线。a
 - **图谱结论未必是真问题，需要代码核实**：例如它曾报 scheduler.py/secretary.py/triage.py 三者互为 import 环，但三处全是函数体内延迟 import（Python 打破循环依赖的标准写法），不是 bug。凡是图谱报的"环/低内聚/异常连接"，先用 Grep/Read 核实再下结论，不要直接照图谱措辞下结论。
 - **图谱是静态快照，可能滞后于最新改动**，跨大改动后如果发现图谱信息明显过时，提醒用户重新生成，不要死信旧图。
 
-## 项目现状规模（速查，传给每个子智能体，2026-07-24 用 graphify 图谱核对过一轮，数字已交叉验证）
+## 项目现状规模（速查，传给每个子智能体；数量级仅供参考，精确值以现查为准——`ls server/*.py`、`grep -c '@app\.\(get\|post\|put\|delete\|patch\)(' server/main.py`）
 
-- **后端模块**：33 个，除 session_hub.py/claude_runner.py/codex_runner.py/db.py/main.py 外，还有委派编排相关（dispatcher.py、arbiter.py、triage.py、scheduler.py、goal_verifier.py、goal_summary.py、verifier.py）、隔离与子进程相关（worktree.py、job_store.py、codex_oneshot.py、agent_provider.py——2026-07-23 新增的 provider 统一契约基类）、其余（summarizer.py、skill_store.py、knot_runner.py、kanban.py、secretary.py、asr_client.py、fs_util.py、memory_store.py、memo_reminder.py、agent_store.py、session_import.py、wecom_notify.py、backlog_import.py、compactor.py、llms_doc.py、logging_util.py、healthcheck.py、config.py）。
-- **REST 路由**：60+ 个，功能域：会话管理、消息队列、任务看板、Memory 记忆库、Subagent 管理（`/api/agents*`）、委派编排（`/api/dispatch`）、仲裁（`/api/arbitrate`）、job 运行记录（`/api/jobs`）、快捷指令、会话导入、定时任务、待办清单/智能看板、备忘录、日报/秘书、文件预览、上传、语音识别（/api/asr）
+- **后端模块**：数十个（2026-09-10 核对为 36 个 .py），除 session_hub.py/claude_runner.py/codex_runner.py/db.py/main.py 外，还有委派编排相关（dispatcher.py、arbiter.py、triage.py、scheduler.py、goal_verifier.py、goal_summary.py、verifier.py）、隔离与子进程相关（worktree.py、job_store.py、codex_oneshot.py、agent_provider.py——provider 统一契约基类）、其余（summarizer.py、skill_store.py、knot_runner.py、kanban.py、secretary.py、asr_client.py、fs_util.py、memory_store.py、memo_reminder.py、agent_store.py、session_import.py、wecom_notify.py、backlog_import.py、compactor.py、llms_doc.py、logging_util.py、healthcheck.py、config.py）。此清单可能不全，新增模块以现查为准。
+- **REST 路由**：上百个（2026-09-10 核对为 100+ 装饰器），功能域：会话管理、消息队列、任务看板、Memory 记忆库、Subagent 管理（`/api/agents*`）、委派编排（`/api/dispatch`）、仲裁（`/api/arbitrate`）、job 运行记录（`/api/jobs`）、快捷指令、会话导入、定时任务、待办清单/智能看板、备忘录、日报/秘书、文件预览、上传、语音识别（/api/asr）
 - **WebSocket**：`/ws`（会话流式）+ `/ws/monitor`（全局监控通道）
 - **数据库**：17 张表（sessions、messages、tasks、snippets、schedules、todos、todo_sessions、reports、queue_items、memos、artifacts、job_runs、arbitrations、dispatch_subtasks、goal_iterations、goal_subtasks、work_items）
-- **前端**：5 个顶部 Tab（Overview 调度台、Sessions 会话、New 新建/接续、Review、Experimental）；app.js 约 6434 行
+- **前端**：5 个顶部 Tab（Overview 调度台、Sessions 会话、New 新建/接续、Review、Experimental）；app.js 行数以 `wc -l web/app.js` 现查为准（2026-09-10 约 6825 行，持续增长中）
 - **运行模式**：`CLAUDE_PERSISTENT=true` 常驻进程模式，session_hub 负责进程生命周期和看门狗，**非每回合 resume 新进程**
 - **文档警告**：README.md 和 IMPLEMENTATION.md 严重滞后（停留在 MVP 6 接口/3 表描述），排查功能**以代码为准**，不要信这两份文档
-- **knot_runner.py**：未接线的实验模块（AG-UI 协议），当前未被任何文件 import，勿误以为在用
+- **knot_runner.py**：未接线的实验模块（AG-UI 协议），当前无 import 依赖它（仅 codex_runner.py 注释里提到），勿误以为在用
 - **AgentProvider 抽象**：`claude_runner.ClaudeRunner`/`codex_runner.CodexRunner` 现在都继承 `agent_provider.AgentProvider`（ABC），统一了 run_turn/send_turn/ensure_warm 等契约，`session_hub._runner_for` 用字典查表分发。加新 engine 时参照这个基类实现即可，不要再手写平行 runner。
 
-## 低内聚社区拆分候选清单（未来重构参考，非当前任务）
-
-以下是 graphify 图谱按内聚度（cohesion）评出的**低分社区**——分数越低，说明"这堆函数被算法归到一组，但彼此调用关系稀疏、弱相关"，通常是历史上功能不断往同一个大文件（`web/app.js` / `server/main.py` / `server/db.py`）里堆、缺乏模块边界的信号。**这份清单只是将来真要拆分这些大文件时的参考名单，不是现在就要动**：接普通需求时不要因为改到了这些区域就顺手重构，除非需求本身就是"拆分/重组某模块"。数据取自 `graphify-out/GRAPH_REPORT.md`（2026-07-24），cohesion ≤ 0.07 的社区：
-
-| Cohesion | 社区名 | 规模 | 拆分时大致落点（改前用 graphify 核实） |
-| --- | --- | --- | --- |
-| 0.04 | REST API Routes (Todos/Memos/Queue) | 57 节点 | `server/main.py` 路由层 |
-| 0.04 | DB Query Helpers | 56 节点 | `server/db.py` 查询函数 |
-| 0.06 | Frontend Chat UI | 56 节点 | `web/app.js` 聊天界面 |
-| 0.06 | Env Config & run.sh | 31 节点 | `server/config.py` + 启动脚本 |
-| 0.07 | Goal Loop Iteration Queries | 57 节点 | `server/db.py` 目标循环相关查询 |
-| 0.07 | WebSocket Session Monitoring | 22 节点 | `server/main.py` WS + `session_hub.py` |
-| 0.07 | Backlog Import & Goal Prompt Building | 41 节点 | `backlog_import.py` / `triage.py` |
-
-其中 **Frontend Chat UI（0.06）和 REST API Routes（0.04）是图谱 Suggested Questions 里明确点名 "should be split into smaller, more focused modules" 的两个**，优先级最高。注意：低内聚 ≠ 有 bug（见上面"先查图谱，再读代码"一节的核实原则），列进来只为将来重构立项时有据可依；"拆分时大致落点"一列是推断，动手前务必用 `graphify explain` 核实实际文件。
+**重构参考清单**（低内聚社区拆分候选，非当前任务）已挪到 `docs/refactor-candidates.md`，真要立项拆分 `web/app.js`/`server/main.py`/`server/db.py` 时再读，日常派单不需要。
 
 ## 流水线
 
