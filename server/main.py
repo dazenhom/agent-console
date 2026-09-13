@@ -207,7 +207,7 @@ async def set_session_workdir(sid: str, payload: dict):
     if not old:
         raise HTTPException(status_code=404, detail="会话不存在")
     if (old.get("workdir") or "").strip() != workdir:
-        db.update_session(sid, workdir=workdir, claude_session_id=None)
+        db.update_session(sid, workdir=workdir, claude_session_id=None, codex_usage_baseline="")
         await _runner_for(old).forget_session(sid)
     else:
         db.update_session(sid, workdir=workdir)
@@ -1067,6 +1067,18 @@ async def todos_unarchive(tid: str):
         raise HTTPException(status_code=404, detail="待办不存在")
     db.update_todo(tid, archived=0)
     return {"ok": True, "archived": False}
+
+
+@app.post("/api/todos/bulk_cleanup", dependencies=[Depends(require_auth)])
+async def todos_bulk_cleanup(payload: dict):
+    scope = payload.get("scope")
+    if scope not in ("archive_finished", "purge_archived"):
+        raise HTTPException(status_code=400, detail="scope 非法")
+    try:
+        result = db.bulk_cleanup_todos(scope)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="scope 非法")
+    return {"ok": True, "scope": result["scope"], "affected": result["affected"]}
 
 
 # ---------------- Triage 待分诊收件箱（H3）----------------

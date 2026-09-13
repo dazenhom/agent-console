@@ -836,6 +836,11 @@
       addBtn.disabled = archived;
       addBtn.title = archived ? "请返回活跃任务后新建" : "新建任务";
     }
+    const cleanBtn = $("kanban-clean-btn");
+    if (cleanBtn) {
+      cleanBtn.textContent = archived ? "🧹 清空归档" : "🧹 清理";
+      cleanBtn.title = archived ? "彻底删除全部归档任务" : "归档已完成/已取消的任务";
+    }
     let todos;
     try { todos = await api(archived ? "/api/todos?archived=1" : "/api/todos"); }
     catch (e) { return { ok: false, items: null }; }
@@ -1161,6 +1166,16 @@
       return { ok: false, submitted: false };
     }
     return refreshKanbanAfterTodoMutation("已删除");
+  }
+  async function cleanupTodos(scope) {
+    let res;
+    try {
+      res = await api("/api/todos/bulk_cleanup", { method: "POST", body: JSON.stringify({ scope }) });
+    } catch (e) {
+      toast("清理失败：" + e.message, "error");
+      return { ok: false, submitted: false };
+    }
+    return refreshKanbanAfterTodoMutation(`已清理 ${res.affected} 项`);
   }
 
   // 单行看板（列表模式）：左侧状态色点 + 标题 + 单行截断的进展摘要 + hover 操作按钮
@@ -2251,6 +2266,40 @@
     e.currentTarget.textContent = state.kanbanView === "archived" ? "🗄 返回" : "🗄 归档";
     renderKanban();
   };
+  $("kanban-clean-btn").onclick = async (e) => {
+    const button = e.currentTarget;
+    const archived = state.kanbanView === "archived";
+    const scope = archived ? "purge_archived" : "archive_finished";
+    let items;
+    try {
+      items = await api(archived ? "/api/todos?archived=1" : "/api/todos");
+    } catch (err) {
+      toast("清理失败：" + err.message, "error");
+      return;
+    }
+    const n = scope === "archive_finished"
+      ? items.filter(t => (t.status === "done" || t.status === "cancelled") && !t.archived).length
+      : items.filter(t => t.archived && t.status !== "triage" && t.status !== "in_progress").length;
+    if (!n) {
+      toast("没有可清理的任务", "info", 1800);
+      return;
+    }
+    const root = $("modal-root");
+    if (root._sheetOwner && root._sheetOwner.close) root._sheetOwner.close({ suppressFocus: true });
+    const yes = archived
+      ? await confirmDialog(`确定彻底删除 ${n} 项归档任务？此操作无法恢复。`, { danger: true })
+      : await confirmDialog(`确定归档 ${n} 项已完成/已取消的任务？`);
+    if (!yes) return;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = "清理中…";
+    try {
+      await cleanupTodos(scope);
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  };
   { const b = $("kanban-col-refresh"); if (b) b.onclick = (e) => { e.stopPropagation(); refreshKanbanAll(); }; }
 
   // 接续电脑/终端聊过的会话：列出 → 单击某个即接续并切过去（带完整上下文）
@@ -2608,9 +2657,11 @@
           const li = document.createElement("li");
           li.className = t.status;
           const dur = t.duration_ms ? (t.duration_ms / 1000).toFixed(1) + "s" : "—";
-          const cost = t.cost_usd != null ? " · $" + t.cost_usd.toFixed(4) : "";
+          const sess = state.sessions.find((x) => x.id === t.session_id);
+          const isCodex = sess && sess.engine === "codex";
+          const cost = t.cost_usd != null ? ` · ${isCodex ? "~" : ""}$${t.cost_usd.toFixed(4)}` : "";
           li.innerHTML = `<div>${escapeHtml(t.summary || "")}</div>
-            <div class="t-meta">${t.status} · ${dur}${cost} · ${fmtTime(t.started_at)}</div>`;
+            <div class="t-meta"${isCodex ? ' title="按倍率估算，非精确账单"' : ""}>${t.status} · ${dur}${cost} · ${fmtTime(t.started_at)}</div>`;
           if (t.resolved_model) {
             const mline = document.createElement('div');
             mline.className = 't-meta';
@@ -3416,7 +3467,10 @@
         let metaText = `原始迭代号 #${it.iter_no}`;
         if (it.task) {
           if (it.task.duration_ms) metaText += ` · 耗时 ${(it.task.duration_ms / 1000).toFixed(1)}s`;
-          if (it.task.cost_usd != null) metaText += ` · $${it.task.cost_usd.toFixed(4)}`;
+          if (it.task.cost_usd != null) {
+            const isCodex = it.task.engine === "codex" || (sess && sess.engine === "codex");
+            metaText += ` · ${isCodex ? "~" : ""}$${it.task.cost_usd.toFixed(4)}`;
+          }
         }
         bodyEl.appendChild(el("div", "e-desc", escapeHtml(metaText)));
         if (sess) {
@@ -4237,7 +4291,26 @@
     listEl.innerHTML = '<div class="entity-loading">加载中…</div>';
     try {
       const items = await api("/api/todos");
+      const hasCleanable = items.some(it => it.status === "done" || it.status === "cancelled");
       listEl.innerHTML = "";
+      if (hasCleanable) {
+        const cleanBtn = el("button", "btn-sm danger", "🧹 一键清理");
+        cleanBtn.onclick = async () => {
+          const n = items.filter(it => it.status === "done" || it.status === "cancelled").length;
+          if (!(await confirmDialog(`确定归档 ${n} 项已完成/已取消的待办？`))) return;
+          try {
+            const res = await api("/api/todos/bulk_cleanup", {
+              method: "POST",
+              body: JSON.stringify({ scope: "archive_finished" }),
+            });
+            toast(`已清理 ${res.affected} 项`, "success");
+            showTodoList();
+          } catch (e) {
+            toast("清理失败：" + e.message, "error");
+          }
+        };
+        listEl.appendChild(cleanBtn);
+      }
       if (!items.length) {
         listEl.innerHTML = '<div class="entity-empty"><div class="empty-emoji">✅</div><div>暂无待办</div></div>';
         return;

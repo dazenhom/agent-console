@@ -283,6 +283,8 @@ def init_db() -> None:
             _add_col("sessions", "pending_compact_summary TEXT DEFAULT ''")
         if "compacted_at" not in cols:
             _add_col("sessions", "compacted_at REAL DEFAULT 0")
+        # codex usage 是会话累计值；持久化上次累计值，供下一回合按字段差分计费。
+        _add_col("sessions", "codex_usage_baseline TEXT DEFAULT ''")
         # 看板进展摘要三列：正文 / 生成时间 / 生成时所依据的 jsonl mtime（用于缓存判断）
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")
@@ -891,6 +893,30 @@ def delete_todo(tid: str) -> bool:
         cur = _conn.execute("DELETE FROM todos WHERE id=?", (tid,))
         _conn.commit()
     return cur.rowcount > 0
+
+
+def bulk_cleanup_todos(scope: str) -> dict:
+    if scope == "archive_finished":
+        cur = _exec(
+            "UPDATE todos SET archived=1, updated_at=? "
+            "WHERE status IN ('done','cancelled') AND (archived=0 OR archived IS NULL)",
+            (_now(),),
+        )
+        affected = cur.rowcount
+    elif scope == "purge_archived":
+        with _lock:
+            _conn.execute(
+                "DELETE FROM todo_sessions WHERE todo_id IN "
+                "(SELECT id FROM todos WHERE archived=1 AND status NOT IN ('triage','in_progress'))"
+            )
+            cur = _conn.execute(
+                "DELETE FROM todos WHERE archived=1 AND status NOT IN ('triage','in_progress')"
+            )
+            _conn.commit()
+        affected = cur.rowcount
+    else:
+        raise ValueError("invalid cleanup scope")
+    return {"scope": scope, "affected": affected}
 
 
 # ---------- reports（日报）----------
