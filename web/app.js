@@ -2657,11 +2657,9 @@
           const li = document.createElement("li");
           li.className = t.status;
           const dur = t.duration_ms ? (t.duration_ms / 1000).toFixed(1) + "s" : "—";
-          const sess = state.sessions.find((x) => x.id === t.session_id);
-          const isCodex = sess && sess.engine === "codex";
-          const cost = t.cost_usd != null ? ` · ${isCodex ? "~" : ""}$${t.cost_usd.toFixed(4)}` : "";
+          const cost = t.cost_usd != null ? " · $" + t.cost_usd.toFixed(4) : "";
           li.innerHTML = `<div>${escapeHtml(t.summary || "")}</div>
-            <div class="t-meta"${isCodex ? ' title="按倍率估算，非精确账单"' : ""}>${t.status} · ${dur}${cost} · ${fmtTime(t.started_at)}</div>`;
+            <div class="t-meta">${t.status} · ${dur}${cost} · ${fmtTime(t.started_at)}</div>`;
           if (t.resolved_model) {
             const mline = document.createElement('div');
             mline.className = 't-meta';
@@ -3467,10 +3465,7 @@
         let metaText = `原始迭代号 #${it.iter_no}`;
         if (it.task) {
           if (it.task.duration_ms) metaText += ` · 耗时 ${(it.task.duration_ms / 1000).toFixed(1)}s`;
-          if (it.task.cost_usd != null) {
-            const isCodex = it.task.engine === "codex" || (sess && sess.engine === "codex");
-            metaText += ` · ${isCodex ? "~" : ""}$${it.task.cost_usd.toFixed(4)}`;
-          }
+          if (it.task.cost_usd != null) metaText += ` · $${it.task.cost_usd.toFixed(4)}`;
         }
         bodyEl.appendChild(el("div", "e-desc", escapeHtml(metaText)));
         if (sess) {
