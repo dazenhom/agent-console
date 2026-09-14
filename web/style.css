@@ -202,15 +202,18 @@ body.hub-resizing {
 .s-title { font-weight: 600; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .s-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .s-sub:empty { display: none; }
+.s-todo { font-size: 11.5px; color: var(--accent); opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s-meta { font-size: 11px; color: var(--muted-2); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .s-meta .dot-sep { opacity: .5; }
 .s-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
-.s-peek, .s-del {
+.s-peek, .s-del, .s-pin {
   background: none; border: none; color: var(--muted-2); border-radius: 7px;
   padding: 3px 6px; font-size: 15px; line-height: 1;
 }
 .s-peek:hover { color: var(--accent); background: var(--bg-3); }
 .s-del:hover { color: var(--red); background: var(--bg-3); }
+.s-pin:hover { color: var(--accent); background: var(--bg-3); }
+.s-pin.pinned { color: var(--accent); }
 
 /* 状态徽章 */
 .badge {
@@ -240,6 +243,12 @@ body.hub-resizing {
 .workdir-bar:hover { color: var(--accent); }
 .sid-bar { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--muted-2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sid-bar:hover { color: var(--accent); }
+.todo-bar { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font-size: 11.5px; color: var(--accent); opacity: .85; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-bar:hover { opacity: 1; }
+.todo-bar.expanded { flex: 1 1 100%; max-width: 100%; white-space: pre-wrap; word-break: break-word; overflow: visible; text-overflow: clip; align-items: flex-start; }
+.todo-bar-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-bar.expanded .todo-bar-text { overflow: visible; }
+.todo-bar-toggle { font-size: 11px; color: var(--accent); opacity: .8; flex: 0 0 auto; }
 #engine-select {
   flex: 0 0 auto; background: var(--bg-3); color: var(--text);
   border: 1px solid var(--line); border-radius: 8px;
@@ -1058,7 +1067,7 @@ body.hub-resizing {
   .s-sub { font-size: 12.5px; -webkit-line-clamp: 2; }
   .s-meta { font-size: 11.5px; gap: 5px; }
   .badge { font-size: 11px; padding: 3px 9px; }
-  .s-peek, .s-del { padding: 5px 7px; font-size: 16px; }   /* 触控热区放大 */
+  .s-peek, .s-del, .s-pin { padding: 5px 7px; font-size: 16px; }   /* 触控热区放大 */
   .pane-head { font-size: 18px; }
 
   /* 详情：从右滑入的全屏覆盖层 */
@@ -1077,6 +1086,7 @@ body.hub-resizing {
   #detail-close-btn span { display: none; }
   .detail-head-row { gap: 6px; }
   .detail-title { font-size: 16.5px; }
+  .todo-bar { max-width: 100%; font-size: 12px; }
   .chat { padding: 14px 14px 6px; }
   .msg .bubble { max-width: 92%; }
 

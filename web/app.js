@@ -352,7 +352,10 @@
     renderKanban();
     const cur = state.sessions.find((s) => s.id === state.sessionId);
     $("session-title").textContent = cur ? cur.title : "会话";
-    if (cur) markSeen(cur.id, cur.updated_at);  // 当前会话标记已读
+    if (cur) {
+      updateLinkedTodoBar(cur);
+      markSeen(cur.id, cur.updated_at);  // 当前会话标记已读
+    }
     syncModeSelect();
     syncEffortSelect();
   }
@@ -393,7 +396,6 @@
       return;
     }
     // 混合排序项：普通会话取自身 updated_at，分组取组内最大 updated_at 作锚点。
-    // 源数组已按 updated_at 降序，故每组首次遇到的成员即锚点。
     const items = [];        // [{ ts, kind: "session"|"group", ... }]
     const groupMap = {};     // plan_id -> item
     for (const s of sessions) {
@@ -401,16 +403,18 @@
         let g = groupMap[s.dispatch_plan_id];
         if (!g) {
           g = { ts: s.updated_at, kind: "group", planId: s.dispatch_plan_id,
-                title: s.dispatch_plan_title || "未命名批次", children: [] };
+                title: s.dispatch_plan_title || "未命名批次", pinned: false, children: [] };
           groupMap[s.dispatch_plan_id] = g;
           items.push(g);
         }
+        g.pinned = g.pinned || !!s.pinned;
+        g.ts = Math.max(g.ts || 0, s.updated_at || 0);
         g.children.push(s);
       } else {
-        items.push({ ts: s.updated_at, kind: "session", session: s });
+        items.push({ ts: s.updated_at, kind: "session", pinned: !!s.pinned, session: s });
       }
     }
-    items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    items.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.ts || 0) - (a.ts || 0));
     for (const it of items) {
       if (it.kind === "group") {
         ul.appendChild(renderDispatchGroup(it.planId, it.title, it.children, isArchived));
@@ -575,14 +579,16 @@
     }
   }
 
-  // 判断某会话是否命中查询：标题 / 进展(summary+activity) / 会话内容
+  // 判断某会话是否命中查询：标题 / 进展(summary+activity) / 关联待办 / 会话内容
   function sessionMatchesQuery(s, q) {
     if (!q) return true;
     const inTitle = (s.title || "").toLowerCase().includes(q);
     const prog = ((s.summary || "") + " " + (s.activity || "")).toLowerCase();
     const inProg = prog.includes(q);
+    const todoInfo = linkedTodoText(s);
+    const inTodo = todoInfo ? todoInfo.full.toLowerCase().includes(q) : false;
     const inContent = state.searchContentSids ? state.searchContentSids.has(s.id) : false;
-    return inTitle || inProg || inContent;
+    return inTitle || inProg || inTodo || inContent;
   }
 
   // 应用 Sessions Tab 的搜索过滤 + 高亮 + 空状态
@@ -636,6 +642,7 @@
     li.dataset.sid = s.id;
     li.className = "st-" + st.key;
     if (s.id === state.sessionId) li.classList.add("active");
+    if (s.pinned) li.classList.add("pinned");
 
     const main = el("div", "s-main");
     const row1 = el("div", "s-row1");
@@ -653,6 +660,12 @@
     if (s.mode) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, modeLabel(s.mode))); }
     if (s.engine === "codex") { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", "engine-badge", "Codex")); }
     main.append(row1, sub, meta);
+    const todoInfo = linkedTodoText(s);  // s.linked_todo_titles 的展示口径集中在辅助函数中
+    if (todoInfo) {
+      const todoEl = el("div", "s-todo", "📋 " + escapeHtml(todoInfo.brief));
+      todoEl.title = todoInfo.full;
+      main.appendChild(todoEl);
+    }
     main.onclick = () => {
       const q = (($("session-search") && $("session-search").value) || "").trim().toLowerCase();
       state.pendingHighlight = (q.length >= 2 && sessionMatchesQuery(s, q)) ? q : null;
@@ -671,12 +684,15 @@
       del.onclick = async (e) => { e.stopPropagation(); await deleteSession(s.id); };
       actions.append(restore, del);
     } else {
+      const pin = el("button", "s-pin" + (s.pinned ? " pinned" : ""), s.pinned ? "📌" : "📍");
+      pin.title = s.pinned ? "取消置顶" : "置顶到列表顶部";
+      pin.onclick = async (e) => { e.stopPropagation(); await togglePinSession(s.id, !!s.pinned); };
       const peek = el("button", "s-peek", "👁"); peek.title = "速览 / 不切会话回复";
       peek.onclick = (e) => { e.stopPropagation(); openPeek(s.id); };
       const del = el("button", "s-del", "×");
       if (s.linked_todo_count > 0) { del.classList.add("s-del-locked"); del.title = "已被看板任务关联，无法删除"; }
       del.onclick = async (e) => { e.stopPropagation(); await deleteSession(s.id); };
-      actions.append(peek, del);
+      actions.append(pin, peek, del);
     }
 
     li.append(main, actions);
@@ -1777,6 +1793,17 @@
     return s.summary || "";
   }
 
+  // 从 session 对象派生关联待办文案，列表行与详情页共用同一口径。
+  function linkedTodoText(s) {
+    const titles = (s && s.linked_todo_titles) || [];
+    if (!titles.length) return null;
+    return {
+      titles,
+      brief: titles[0] + (titles.length > 1 ? " +" + (titles.length - 1) : ""),
+      full: titles.join(" / "),
+    };
+  }
+
   // 常驻运行中提示条：composer 上方，展示当前会话是否在跑、跑了多久、卡没卡住。
   // 数据源优先 WS 实时 turn_progress，没收到过时首屏兜底走 GET /api/progress。
   // 计时本地自增：后端 turn_progress 首推在 300s、之后每 1800s 才推一次，纯事件驱动
@@ -2384,6 +2411,13 @@
     } catch (e) { toast("恢复失败：" + e.message, "error"); }
   }
 
+  async function togglePinSession(id, pinned) {
+    try {
+      await api(`/api/sessions/${id}/${pinned ? "unpin" : "pin"}`, { method: "POST" });
+      await loadSessions();
+    } catch (e) { toast((pinned ? "取消置顶失败：" : "置顶失败：") + e.message, "error"); }
+  }
+
   // 草稿按会话隔离：切走时存当前输入框内容和待发图片，切回时恢复。
   function saveDraft(id) {
     if (!id) return;
@@ -2411,6 +2445,7 @@
         $("session-title").textContent = cur.title;
         updateWorkdirBar(cur.workdir);
         updateSessionIdBar(cur.id);
+        updateLinkedTodoBar(cur);
         markSeen(cur.id, cur.updated_at);
       }
       document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
@@ -2437,6 +2472,7 @@
       $("session-title").textContent = cur.title;
       updateWorkdirBar(cur.workdir);
       updateSessionIdBar(cur.id);
+      updateLinkedTodoBar(cur);
       markSeen(cur.id, cur.updated_at);
     }
     // 高亮当前会话行（跨三个列表）
@@ -2470,6 +2506,33 @@
     bar.textContent = "ID: " + sid;
     bar.title = "点击复制会话 ID：" + sid;
     bar.onclick = () => { copyText(sid).then((ok) => { if (ok) toast("已复制会话 ID", "success", 1500); }); };
+    bar.classList.remove("hidden");
+  }
+
+  function updateLinkedTodoBar(s) {
+    const bar = $("linked-todo-bar");
+    if (!bar) return;
+    bar.classList.remove("expanded");
+    const info = linkedTodoText(s);
+    if (!info) {
+      bar.classList.add("hidden");
+      bar.textContent = "";
+      bar.onclick = null;
+      return;
+    }
+    const text = document.createElement("span");
+    text.className = "todo-bar-text";
+    text.textContent = "📋 " + info.brief;
+    const toggle = document.createElement("span");
+    toggle.className = "todo-bar-toggle";
+    toggle.textContent = "展开";
+    bar.replaceChildren(text, toggle);
+    bar.title = info.full;
+    bar.onclick = () => {
+      const expanded = bar.classList.toggle("expanded");
+      text.textContent = "📋 " + (expanded ? info.titles.join("\n") : info.brief);
+      toggle.textContent = expanded ? "收起" : "展开";
+    };
     bar.classList.remove("hidden");
   }
 

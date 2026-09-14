@@ -285,6 +285,7 @@ def init_db() -> None:
             _add_col("sessions", "compacted_at REAL DEFAULT 0")
         # codex usage 是会话累计值；持久化上次累计值，供下一回合按字段差分计费。
         _add_col("sessions", "codex_usage_baseline TEXT DEFAULT ''")
+        _add_col("sessions", "pinned INTEGER DEFAULT 0")
         # 看板进展摘要三列：正文 / 生成时间 / 生成时所依据的 jsonl mtime（用于缓存判断）
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")
@@ -417,24 +418,26 @@ def list_sessions(include_archived: bool = False, archived_only: bool = False) -
         base += " AND archived=1"
     elif not include_archived:
         base += " AND (archived=0 OR archived IS NULL)"
-    rows = _query(base + " ORDER BY updated_at DESC", ())
+    rows = _query(base + " ORDER BY COALESCE(pinned,0) DESC, updated_at DESC", ())
     result = [dict(r) for r in rows]
-    # 批量补 linked_todo_count（被多少个看板任务关联），供前端置灰删除按钮，避免 N+1
+    # 批量补关联待办标题与数量，供前端展示及置灰删除按钮，避免 N+1
     sids = [d["id"] for d in result]
-    link_map = {}
+    link_map: dict[str, list[str]] = {}
     if sids:
         placeholders = ",".join("?" * len(sids))
         link_rows = _query(
-            f"SELECT ts.session_id, COUNT(*) AS c FROM todo_sessions ts"
+            f"SELECT ts.session_id, t.title FROM todo_sessions ts"
             f" JOIN todos t ON t.id = ts.todo_id"
             f" WHERE ts.session_id IN ({placeholders}) AND (t.archived = 0 OR t.archived IS NULL)"
-            f" GROUP BY ts.session_id",
+            f" ORDER BY ts.created_at",
             tuple(sids),
         )
         for lr in link_rows:
-            link_map[lr[0]] = lr[1]
+            link_map.setdefault(lr[0], []).append(lr[1])
     for d in result:
-        d["linked_todo_count"] = link_map.get(d["id"], 0)
+        titles = link_map.get(d["id"], [])
+        d["linked_todo_count"] = len(titles)
+        d["linked_todo_titles"] = titles
     # 批量补 dispatch_plan_id / dispatch_plan_title（该会话若是某调度批次的子会话），
     # 供前端把同批次子会话折叠成一组，避免 N+1
     plan_of_sid = {}   # session_id -> plan_id
@@ -500,6 +503,10 @@ def update_session(sid: str, **fields) -> None:
     fields["updated_at"] = _now()
     cols = ",".join(f"{k}=?" for k in fields)
     _exec(f"UPDATE sessions SET {cols} WHERE id=?", (*fields.values(), sid))
+
+
+def set_session_pinned(sid: str, pinned: bool) -> None:
+    _exec("UPDATE sessions SET pinned=? WHERE id=?", (1 if pinned else 0, sid))
 
 
 def reconcile_stale_running() -> None:

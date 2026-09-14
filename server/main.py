@@ -286,6 +286,22 @@ async def unarchive_session(sid: str):
     return {"ok": True, "archived": False}
 
 
+@app.post("/api/sessions/{sid}/pin", dependencies=[Depends(require_auth)])
+async def pin_session(sid: str):
+    if not db.get_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    db.set_session_pinned(sid, True)
+    return {"ok": True, "pinned": True}
+
+
+@app.post("/api/sessions/{sid}/unpin", dependencies=[Depends(require_auth)])
+async def unpin_session(sid: str):
+    if not db.get_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    db.set_session_pinned(sid, False)
+    return {"ok": True, "pinned": False}
+
+
 @app.post("/api/sessions/{sid}/resume", dependencies=[Depends(require_auth)])
 async def resume_session(sid: str):
     sess = db.get_session(sid)
