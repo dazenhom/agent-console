@@ -202,7 +202,7 @@ body.hub-resizing {
 .s-title { font-weight: 600; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .s-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .s-sub:empty { display: none; }
-.s-todo { font-size: 11.5px; color: var(--accent); opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-todo { font-size: 12px; font-weight: 500; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s-meta { font-size: 11px; color: var(--muted-2); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .s-meta .dot-sep { opacity: .5; }
 .s-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
@@ -243,12 +243,12 @@ body.hub-resizing {
 .workdir-bar:hover { color: var(--accent); }
 .sid-bar { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--muted-2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sid-bar:hover { color: var(--accent); }
-.todo-bar { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font-size: 11.5px; color: var(--accent); opacity: .85; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-bar { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: var(--accent); opacity: .85; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .todo-bar:hover { opacity: 1; }
 .todo-bar.expanded { flex: 1 1 100%; max-width: 100%; white-space: pre-wrap; word-break: break-word; overflow: visible; text-overflow: clip; align-items: flex-start; }
 .todo-bar-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.todo-bar.expanded .todo-bar-text { overflow: visible; }
-.todo-bar-toggle { font-size: 11px; color: var(--accent); opacity: .8; flex: 0 0 auto; }
+.todo-bar.expanded .todo-bar-text { overflow: visible; white-space: pre-wrap; }
+.todo-bar-toggle { font-size: 12px; color: var(--accent); opacity: .8; flex: 0 0 auto; }
 #engine-select {
   flex: 0 0 auto; background: var(--bg-3); color: var(--text);
   border: 1px solid var(--line); border-radius: 8px;
@@ -1065,6 +1065,7 @@ body.hub-resizing {
   .s-row1 { gap: 7px; }
   .s-title { font-size: 14.5px; flex: 1 1 100%; }   /* 标题换行到徽章下方 */
   .s-sub { font-size: 12.5px; -webkit-line-clamp: 2; }
+  .s-todo { font-size: 12.5px; }
   .s-meta { font-size: 11.5px; gap: 5px; }
   .badge { font-size: 11px; padding: 3px 9px; }
   .s-peek, .s-del, .s-pin { padding: 5px 7px; font-size: 16px; }   /* 触控热区放大 */
@@ -1086,7 +1087,7 @@ body.hub-resizing {
   #detail-close-btn span { display: none; }
   .detail-head-row { gap: 6px; }
   .detail-title { font-size: 16.5px; }
-  .todo-bar { max-width: 100%; font-size: 12px; }
+  .todo-bar { max-width: 100%; }
   .chat { padding: 14px 14px 6px; }
   .msg .bubble { max-width: 92%; }
 

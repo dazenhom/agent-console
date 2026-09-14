@@ -659,13 +659,14 @@
     if (s.workdir) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, shortDir(s.workdir))); }
     if (s.mode) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, modeLabel(s.mode))); }
     if (s.engine === "codex") { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", "engine-badge", "Codex")); }
-    main.append(row1, sub, meta);
     const todoInfo = linkedTodoText(s);  // s.linked_todo_titles 的展示口径集中在辅助函数中
+    let todoEl = null;
     if (todoInfo) {
-      const todoEl = el("div", "s-todo", "📋 " + escapeHtml(todoInfo.brief));
+      todoEl = el("div", "s-todo", "📋 " + escapeHtml(todoInfo.brief));
       todoEl.title = todoInfo.full;
-      main.appendChild(todoEl);
     }
+    if (todoEl) main.append(row1, sub, todoEl, meta);
+    else main.append(row1, sub, meta);
     main.onclick = () => {
       const q = (($("session-search") && $("session-search").value) || "").trim().toLowerCase();
       state.pendingHighlight = (q.length >= 2 && sessionMatchesQuery(s, q)) ? q : null;
