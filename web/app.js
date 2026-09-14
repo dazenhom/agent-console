@@ -1175,7 +1175,10 @@
       toast("清理失败：" + e.message, "error");
       return { ok: false, submitted: false };
     }
-    return refreshKanbanAfterTodoMutation(`已清理 ${res.affected} 项`);
+    const message = res.skipped > 0
+      ? `已清理 ${res.affected} 项，${res.skipped} 项因关联会话运行中已跳过`
+      : `已清理 ${res.affected} 项`;
+    return refreshKanbanAfterTodoMutation(message);
   }
 
   // 单行看板（列表模式）：左侧状态色点 + 标题 + 单行截断的进展摘要 + hover 操作按钮
@@ -2279,7 +2282,7 @@
     }
     const n = scope === "archive_finished"
       ? items.filter(t => (t.status === "done" || t.status === "cancelled") && !t.archived).length
-      : items.filter(t => t.archived && t.status !== "triage" && t.status !== "in_progress").length;
+      : items.filter(t => t.archived && t.status !== "triage").length;
     if (!n) {
       toast("没有可清理的任务", "info", 1800);
       return;
@@ -6637,6 +6640,7 @@
     return new Promise((resolve) => {
       const root = $("modal-root");
       root.innerHTML = "";
+      root._sheetOwner = null;
       const card = el("div", "modal-card");
       card.innerHTML = `<div class="modal-msg">${escapeHtml(message)}</div>
         <div class="modal-actions">
@@ -6646,7 +6650,7 @@
       root.appendChild(card);
       root.classList.remove("hidden");
       requestAnimationFrame(() => root.classList.add("show"));
-      const close = (val) => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; }, 200); resolve(val); };
+      const close = (val) => { root.classList.remove("show"); setTimeout(() => { root.classList.add("hidden"); root.innerHTML = ""; delete root._sheetOwner; }, 200); resolve(val); };
       card.querySelector(".modal-cancel").onclick = () => close(false);
       card.querySelector(".modal-ok").onclick = () => close(true);
       root.onclick = (e) => { if (e.target === root) close(false); };

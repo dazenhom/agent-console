@@ -16,7 +16,7 @@ def test_archive_finished_only_archives_unarchived_finished_todos(temp_db):
 
     result = temp_db.bulk_cleanup_todos("archive_finished")
 
-    assert result == {"scope": "archive_finished", "affected": 2}
+    assert result == {"scope": "archive_finished", "affected": 2, "skipped": 0}
     rows = {
         row["id"]: dict(row)
         for row in temp_db._query(
@@ -49,6 +49,7 @@ def test_cleanup_scopes_do_not_modify_or_delete_triage_todos(temp_db):
     assert temp_db.bulk_cleanup_todos("archive_finished") == {
         "scope": "archive_finished",
         "affected": 0,
+        "skipped": 0,
     }
     row = temp_db._query(
         "SELECT status, archived FROM todos WHERE id=?", (triage["id"],)
@@ -60,6 +61,7 @@ def test_cleanup_scopes_do_not_modify_or_delete_triage_todos(temp_db):
     assert temp_db.bulk_cleanup_todos("purge_archived") == {
         "scope": "purge_archived",
         "affected": 0,
+        "skipped": 0,
     }
     row = temp_db._query(
         "SELECT status, archived FROM todos WHERE id=?", (triage["id"],)
@@ -81,11 +83,47 @@ def test_purge_archived_removes_todo_session_rows(temp_db):
     assert temp_db.bulk_cleanup_todos("purge_archived") == {
         "scope": "purge_archived",
         "affected": 1,
+        "skipped": 0,
     }
     assert temp_db._query("SELECT id FROM todos WHERE id=?", (todo["id"],)) == []
     assert temp_db._query(
         "SELECT todo_id FROM todo_sessions WHERE todo_id=?", (todo["id"],)
     ) == []
+
+
+def test_purge_archived_removes_in_progress_todo_linked_to_idle_session(temp_db):
+    session = temp_db.create_session("idle session", "/tmp")
+    todo = temp_db.create_todo("stale in progress", status="in_progress")
+    temp_db.update_todo(todo["id"], archived=1)
+    temp_db.set_todo_sessions(todo["id"], [session["id"]])
+
+    assert temp_db.bulk_cleanup_todos("purge_archived") == {
+        "scope": "purge_archived",
+        "affected": 1,
+        "skipped": 0,
+    }
+    assert temp_db._query("SELECT id FROM todos WHERE id=?", (todo["id"],)) == []
+    assert temp_db._query(
+        "SELECT todo_id FROM todo_sessions WHERE todo_id=?", (todo["id"],)
+    ) == []
+
+
+def test_purge_archived_skips_in_progress_todo_linked_to_running_session(temp_db):
+    session = temp_db.create_session("running session", "/tmp")
+    temp_db.update_session(session["id"], status="running")
+    todo = temp_db.create_todo("running in progress", status="in_progress")
+    temp_db.update_todo(todo["id"], archived=1)
+    temp_db.set_todo_sessions(todo["id"], [session["id"]])
+
+    assert temp_db.bulk_cleanup_todos("purge_archived") == {
+        "scope": "purge_archived",
+        "affected": 0,
+        "skipped": 1,
+    }
+    assert temp_db._query("SELECT id FROM todos WHERE id=?", (todo["id"],))
+    assert temp_db._query(
+        "SELECT todo_id FROM todo_sessions WHERE todo_id=?", (todo["id"],)
+    )
 
 
 def test_bulk_cleanup_rejects_invalid_scope(temp_db):

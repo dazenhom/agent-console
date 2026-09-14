@@ -1078,7 +1078,12 @@ async def todos_bulk_cleanup(payload: dict):
         result = db.bulk_cleanup_todos(scope)
     except ValueError:
         raise HTTPException(status_code=400, detail="scope 非法")
-    return {"ok": True, "scope": result["scope"], "affected": result["affected"]}
+    return {
+        "ok": True,
+        "scope": result["scope"],
+        "affected": result["affected"],
+        "skipped": result.get("skipped", 0),
+    }
 
 
 # ---------------- Triage 待分诊收件箱（H3）----------------

@@ -896,6 +896,7 @@ def delete_todo(tid: str) -> bool:
 
 
 def bulk_cleanup_todos(scope: str) -> dict:
+    skipped = 0
     if scope == "archive_finished":
         cur = _exec(
             "UPDATE todos SET archived=1, updated_at=? "
@@ -905,18 +906,39 @@ def bulk_cleanup_todos(scope: str) -> dict:
         affected = cur.rowcount
     elif scope == "purge_archived":
         with _lock:
-            _conn.execute(
-                "DELETE FROM todo_sessions WHERE todo_id IN "
-                "(SELECT id FROM todos WHERE archived=1 AND status NOT IN ('triage','in_progress'))"
-            )
-            cur = _conn.execute(
-                "DELETE FROM todos WHERE archived=1 AND status NOT IN ('triage','in_progress')"
-            )
+            total_candidates = _conn.execute(
+                "SELECT COUNT(*) FROM todos WHERE archived=1 AND status!='triage'"
+            ).fetchone()[0]
+            rows = _conn.execute(
+                "SELECT t.id FROM todos t "
+                "WHERE t.archived=1 AND t.status!='triage' "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM todo_sessions ts JOIN sessions s ON s.id=ts.session_id "
+                "  WHERE ts.todo_id=t.id AND s.status='running'"
+                ") "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM sessions s WHERE s.id=t.session_id AND s.status='running'"
+                ")"
+            ).fetchall()
+            todo_ids = [row[0] for row in rows]
+            if todo_ids:
+                placeholders = ",".join("?" * len(todo_ids))
+                _conn.execute(
+                    f"DELETE FROM todo_sessions WHERE todo_id IN ({placeholders})",
+                    tuple(todo_ids),
+                )
+                cur = _conn.execute(
+                    f"DELETE FROM todos WHERE id IN ({placeholders})",
+                    tuple(todo_ids),
+                )
+                affected = cur.rowcount
+            else:
+                affected = 0
+            skipped = total_candidates - affected
             _conn.commit()
-        affected = cur.rowcount
     else:
         raise ValueError("invalid cleanup scope")
-    return {"scope": scope, "affected": affected}
+    return {"scope": scope, "affected": affected, "skipped": skipped}
 
 
 # ---------- reports（日报）----------
