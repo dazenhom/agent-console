@@ -61,9 +61,8 @@ NOTIFY_LONG_TURN_SEC = int(os.environ.get("NOTIFY_LONG_TURN_SEC", "600"))
 CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() == "true"
 
 # 模型档位 → tclaude 模型 ID。空字符串 = 不传 model 让 CLI 用默认。
-# 合法值见 `tclaude -- --model bogus` 的报错列表：
-#   claude-sonnet-4-6 / claude-sonnet-4-6[1m] / claude-opus-5[1m] /
-#   claude-opus-4-8[1m] / claude-opus-4-7[1m] / claude-opus-4-6[1m] / claude-haiku-4-5 / claude-hy3
+# 模型校验器的报错列表可用 `tclaude -p 'x' --model zzz-bogus` 获取，该命令会正常返回。
+# 警告：不要给 tclaude 传 `--`，wrapper 会把后续内容当 prompt 转发并导致会话永久卡死。
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
 # 看板进展摘要专用模型：用 hy3（tclaude 提供的档位模型），概括质量更好。
 # 注：已不再被 kanban/triage/goal_summary/summarizer 的便宜档一次性任务使用（见 CHEAP_MODEL）；
@@ -82,6 +81,11 @@ CLAUDE_MODELS = [
     "claude-opus-4-6", "claude-opus-4-6[1m]",
     "claude-haiku-4-5", "claude-hy3", "opusplan",
     "claude-glm-5.2", "claude-glm-5.2[1m]",
+    "claude-glm-5.3", "claude-glm-5.3[1m]",
+    "claude-glm-5.3-flash[1m]",
+    "claude-kimi-k3[1m]",
+    "claude-deepseek-v4.1-flash[1m]",
+    "claude-hy4-preview[1m]",
     "claude-deepseek-v4-pro", "claude-deepseek-v4-pro[1m]",
     "claude-deepseek-v4-flash", "claude-deepseek-v4-flash[1m]",
 ]
@@ -141,6 +145,10 @@ CODEX_MODEL = os.environ.get("CODEX_MODEL", "")
 CODEX_MODELS = [
     "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4",
     "gpt-5.3-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini", "glm-5.2-ioa", "hy3-ioa",
+    "gpt-6-astra",
+    "deepseek-v4-pro-ioa", "deepseek-v4-flash-ioa", "deepseek-v4.1-flash",
+    "hy4-preview-ioa",
+    # 不加入 glm-5.3-ioa / glm-5.3-flash-ioa：强制思考与全局 effort 不兼容，且无法按模型覆盖。
 ]
 CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.6-sol")
 # Dispatch 基础执行(dev/兜底)路由的默认引擎与模型；deep/评判仍走 Opus，不受此影响

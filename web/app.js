@@ -705,7 +705,7 @@
     const parts = String(workdir).replace(/\/$/, "").split("/");
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : workdir;
   }
-  const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","glm-5.2-ioa","hy3-ioa"];
+  const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","glm-5.2-ioa","hy3-ioa","gpt-6-astra","deepseek-v4-pro-ioa","deepseek-v4-flash-ioa","deepseek-v4.1-flash","hy4-preview-ioa"];
   const CLAUDE_MODELS = [
     "claude-sonnet-5","claude-sonnet-5[1m]",
     "claude-sonnet-4-6","claude-sonnet-4-6[1m]",
@@ -715,6 +715,11 @@
     "claude-opus-4-6","claude-opus-4-6[1m]",
     "claude-haiku-4-5","claude-hy3","opusplan",
     "claude-glm-5.2","claude-glm-5.2[1m]",
+    "claude-glm-5.3","claude-glm-5.3[1m]",
+    "claude-glm-5.3-flash[1m]",
+    "claude-kimi-k3[1m]",
+    "claude-deepseek-v4.1-flash[1m]",
+    "claude-hy4-preview[1m]",
     "claude-deepseek-v4-pro","claude-deepseek-v4-pro[1m]",
     "claude-deepseek-v4-flash","claude-deepseek-v4-flash[1m]",
   ];
@@ -762,6 +767,12 @@
     const labels = {
       "claude-glm-5.2": "GLM 5.2",
       "claude-glm-5.2[1m]": "GLM 5.2 (1M)",
+      "claude-glm-5.3": "GLM 5.3",
+      "claude-glm-5.3[1m]": "GLM 5.3 (1M)",
+      "claude-glm-5.3-flash[1m]": "GLM 5.3 Flash (1M)",
+      "claude-kimi-k3[1m]": "Kimi K3 (1M)",
+      "claude-deepseek-v4.1-flash[1m]": "DeepSeek V4.1 Flash 长文",
+      "claude-hy4-preview[1m]": "HY4 Preview (1M)",
       "claude-sonnet-4-6": "Sonnet 4.6",
       "claude-sonnet-4-6[1m]": "Sonnet 4.6 (1M)",
       "claude-opus-5": "Opus 5",
@@ -792,6 +803,11 @@
       "gpt-5.1-codex-mini": "GPT-5.1 Mini",
       "glm-5.2-ioa": "GLM 5.2 (IOA)",
       "hy3-ioa": "HY3",
+      "gpt-6-astra": "GPT-6 Astra",
+      "deepseek-v4-pro-ioa": "DeepSeek V4 Pro (IOA)",
+      "deepseek-v4-flash-ioa": "DeepSeek V4 Flash (IOA)",
+      "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
+      "hy4-preview-ioa": "HY4 Preview",
       // 兼容旧档位标签
       "fast": "极速", "strong": "均衡", "super": "最强"
     };
