@@ -213,6 +213,8 @@ DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
 # oneshot 子进程继承 stdin 导致确定性失败（b808cff 已修，实测 8/8 成功、4~5s 完成）。
 # 频率与成本现在靠 TITLE_EARLY_TURNS / TITLE_EVERY_N / SUMMARY_DEBOUNCE_SEC 节流 +
 # title/summary 合并成一次调用来控制，不再需要靠关开关硬省。
+# 注意：合并成一次调用后，SUMMARY_ENABLED=false 会在函数开头直接短路、把标题刷新一起
+# 静默关掉；要单独控制标题是否写回用 TITLE_REFRESH_ENABLED。
 SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "true").lower() == "true"
 SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "30"))
 # 尾随去抖窗口（秒）：回合结束后先等这么久，期间同会话又起新回合就取消本次、由新回合
@@ -294,6 +296,8 @@ ARBITER_MODEL = os.environ.get("ARBITER_MODEL", "claude-opus-5[1m]")
 # ---- 会话标题异步刷新 ----
 # 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
 # 之后每 TITLE_EVERY_N 回合刷一次；用户手动改名（title_auto=0）后不再自动覆盖。
+# 注意：合并成一次调用后，这里只控制合并结果里的 title 字段是否写回；SUMMARY_ENABLED=false
+# 会把整次调用一起关掉，标题刷新随之关闭。
 TITLE_REFRESH_ENABLED = os.environ.get("TITLE_REFRESH_ENABLED", "true").lower() == "true"
 TITLE_EARLY_TURNS = int(os.environ.get("TITLE_EARLY_TURNS", "2"))
 TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "4"))

@@ -778,7 +778,7 @@ class SessionHub:
                 fields["summary"] = summary
             if title:
                 # await 期间用户可能手动改名：复查 title_auto，防止覆盖手动标题
-                # （双重检查，同 _auto_title_by_ai 的既有模式）。
+                # （双重检查，发起前查过一次、写回前再查一次）。
                 sess = db.get_session(sid)
                 if sess and sess.get("title_auto", 1) != 0 and title != (sess.get("title") or ""):
                     fields["title"] = title
@@ -816,7 +816,7 @@ class SessionHub:
         """拼一段用于起标题的对话摘录：首条用户消息 + 最近若干轮，去重限长。
 
         始终锚定首条摘要（含 skill 前言剥离）+ 最近 6 轮；是否需要换标题交由模型判断，
-        故这里不再区分长短会话，也不拼入当前标题（当前标题通过独立参数传给 gen_title）。"""
+        故这里不再区分长短会话，也不拼入当前标题（当前标题通过独立参数传给 summarize_and_title）。"""
         msgs = db.list_messages(sid)
         users = [m for m in msgs if m["role"] == "user"]
         parts = []
@@ -848,30 +848,6 @@ class SessionHub:
                 seen.add(txt)
                 parts.append(f"{who}：{txt}")
         return re.sub(r"\s+", " ", " ".join(parts)).strip()
-
-    async def _auto_title_by_ai(self, sid: str) -> None:
-        """异步 AI 语义标题：用整段对话摘录重起标题并推监控。用户手动改名或失败则静默保留原标题。"""
-        try:
-            from . import summarizer
-            sess = db.get_session(sid)
-            if not sess or sess.get("title_auto", 1) == 0:
-                return
-            convo = self._build_title_convo(sid)
-            if not convo:
-                return
-            current_title = sess.get("title") or ""
-            title = await summarizer.gen_title(convo, current_title)
-            if not title:
-                return
-            sess = db.get_session(sid)
-            if not sess or sess.get("title_auto", 1) == 0:
-                return
-            if title == (sess.get("title") or ""):
-                return
-            db.update_session(sid, title=title, title_auto=1)
-            await self._emit_session_update(sid)
-        except Exception:
-            pass
 
     async def respond_permission(self, sid: str, request_id: str, behavior: str,
                                  updated_input: dict = None) -> None:

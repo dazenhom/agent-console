@@ -135,23 +135,3 @@ async def summarize_and_title(convo: str, current_title: str = "",
     if not config.TITLE_REFRESH_ENABLED:
         title = ""  # 手动关掉标题自动刷新时只出 summary，不覆盖标题
     return title, summary
-
-
-async def summarize(user_text: str, reply_text: str) -> str:
-    """兼容入口：只要行摘要（内部走合并调用，无会话摘录时只看本轮对话）。永不抛异常。"""
-    try:
-        _, summary = await summarize_and_title("", "", user_text, reply_text)
-        return summary
-    except Exception:
-        return _heuristic(user_text, reply_text)
-
-
-async def gen_title(convo: str, current_title: str = "") -> str:
-    """兼容入口：只要标题（内部走合并调用）。返回空串 = 保留原标题。永不抛异常。
-
-    current_title 非空时交给模型判断是否需要换标题（残句必须重写、准确才 KEEP）。"""
-    try:
-        title, _ = await summarize_and_title(convo, current_title)
-        return title
-    except Exception:
-        return ""
