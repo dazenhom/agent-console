@@ -219,7 +219,10 @@ DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
 # ---- 会话行摘要（列表里"刚做了什么"一句话）----
 # 用一次性 Haiku 概括（独立子进程，不碰会话上下文）；失败回退启发式截断。
 SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "true").lower() == "true"
-SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "60"))
+SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "30"))
+# 便宜档 oneshot 子进程的重试次数（超时退避重试）与全局并发封顶
+ONESHOT_RETRIES = int(os.environ.get("ONESHOT_RETRIES", "1"))
+ONESHOT_MAX_CONCURRENCY = int(os.environ.get("ONESHOT_MAX_CONCURRENCY", "4"))
 
 # ---- 目标循环（kind=goal）----
 # 给一个自然语言目标 + 完成标准，让会话自迭代直到 verifier（checker）判定达成
