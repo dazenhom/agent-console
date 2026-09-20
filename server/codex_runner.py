@@ -3,7 +3,7 @@
 通过 `tcodex -- exec [resume <conv_id>] --json [--skip-git-repo-check]
 [--dangerously-bypass-approvals-and-sandbox | -s <sandbox>] [-m <model>] <prompt>`
 启动子进程，逐行解析 stdout 上的 JSONL 事件，翻译成 Claude 归一化格式后回调上层
-（与 claude_runner / knot_runner 输出兼容）。
+（与 claude_runner 输出兼容）。
 
 Codex 每回合一个新进程（无常驻），thread_id（conversation id）等同于原先
 `claude_session_id`，对外字段名保持不变；下一回合用 `exec resume <thread_id>` 续接。

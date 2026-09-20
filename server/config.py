@@ -77,10 +77,6 @@ CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() 
 # 模型校验器的报错列表可用 `tclaude -p 'x' --model zzz-bogus` 获取，该命令会正常返回。
 # 警告：不要给 tclaude 传 `--`，wrapper 会把后续内容当 prompt 转发并导致会话永久卡死。
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
-# 看板进展摘要专用模型：用 hy3（tclaude 提供的档位模型），概括质量更好。
-# 注：已不再被 kanban/triage/goal_summary/summarizer 的便宜档一次性任务使用（见 CHEAP_MODEL）；
-# 仅 session_hub 的旧档位兼容映射（_LEGACY_MAP "fast"）还引用 CLAUDE_MODEL_FAST。
-CLAUDE_MODEL_KANBAN = os.environ.get("CLAUDE_MODEL_KANBAN", "claude-hy3")
 CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-5")
 CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-5[1m]")
 # 前端可选的完整模型列表（mode 直接存模型 ID）。claude-sonnet-5 放首位作为默认（GLM 5.2 曾
@@ -216,7 +212,6 @@ DISPATCH_EXEC_MODEL = os.environ.get("DISPATCH_EXEC_MODEL", CODEX_DEFAULT_MODEL)
 # codex_runner.py）已移除该拼接；实际生效的 effort 档位由 `~/.tcodex/config.toml` 里的
 # `model_reasoning_effort` 默认值决定。若未来要复用这个环境变量，必须先确认 codex CLI
 # 有不触发该 bug 的传参方式，不要简单恢复 `-c` 拼接。
-CODEX_REASONING_EFFORT = os.environ.get("CODEX_REASONING_EFFORT", "high")
 # 会话底层 Agent 引擎：claude（tclaude）或 codex（tcodex）。新会话默认 claude。
 VALID_ENGINES = {"claude", "codex"}
 DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
@@ -308,18 +303,6 @@ UPLOAD_DIR = BASE_DIR / UPLOAD_DIR_NAME
 UPLOAD_MAX_BYTES = int(os.environ.get("UPLOAD_MAX_BYTES", str(100 * 1024 * 1024)))
 UPLOAD_TTL_DAYS = int(os.environ.get("UPLOAD_TTL_DAYS", "7"))
 UPLOAD_CLEAN_INTERVAL_HOURS = int(os.environ.get("UPLOAD_CLEAN_INTERVAL_HOURS", "6"))
-
-# ---- Knot HTTPS API ----
-# 文档：https://iwiki.woa.com/p/4016921090
-# 必填：KNOT_TOKEN（在 https://knot.woa.com/settings/token 申请）
-#       KNOT_AGENT_ID（智能体详情页 URL 中可见，如 https://knot.woa.com/agent/{ID}/...）
-# 团队 token 场景需要额外配 KNOT_USER（企微英文名），个人 token 不用配
-KNOT_API_BASE = os.environ.get("KNOT_API_BASE", "https://knot.woa.com")
-KNOT_TOKEN = os.environ.get("KNOT_TOKEN", "")
-KNOT_AGENT_ID = os.environ.get("KNOT_AGENT_ID", "")
-KNOT_USER = os.environ.get("KNOT_USER", "")
-# AG-UI 流式读超时（秒），长任务/复杂工具可能需要更大值
-KNOT_READ_TIMEOUT = float(os.environ.get("KNOT_READ_TIMEOUT", "1800"))
 
 # ---- ASR 语音识别（HY ContextASR，OpenAI 多模态 Chat Completions）----
 # 录音 → 后端 /api/asr → 转 16k WAV → POST {base}/v1/chat/completions → 取识别文本。
@@ -455,7 +438,6 @@ SNIPPETS = [
 SECRETARY_ENABLED = os.environ.get("SECRETARY_ENABLED", "true").lower() == "true"
 SECRETARY_EVENING_TIME = os.environ.get("SECRETARY_EVENING_TIME", "21:00")
 SECRETARY_MORNING_TIME = os.environ.get("SECRETARY_MORNING_TIME", "09:00")
-SECRETARY_MODEL = os.environ.get("SECRETARY_MODEL", "strong")
 
 # ---- 备忘录每日提醒 ----
 # 每天定点把开启提醒的备忘汇总推送一次（同一天只推一次）。时间用本地时区 HH:MM。

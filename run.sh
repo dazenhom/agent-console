@@ -45,13 +45,6 @@ export CLAUDE_LOOP_REPEAT="${CLAUDE_LOOP_REPEAT:-8}"
 export CLAUDE_LOOP_ERRORS="${CLAUDE_LOOP_ERRORS:-10}"
 export CLAUDE_WATCHDOG_INTERVAL="${CLAUDE_WATCHDOG_INTERVAL:-15}"
 
-# ====== Knot 配置（保留：knot_runner.py 仍可作为备份后端切换） ======
-export KNOT_TOKEN="${KNOT_TOKEN:-}"
-export KNOT_AGENT_ID="${KNOT_AGENT_ID:-}"
-export KNOT_USER="${KNOT_USER:-}"
-export KNOT_API_BASE="${KNOT_API_BASE:-https://knot.woa.com}"
-export KNOT_READ_TIMEOUT="${KNOT_READ_TIMEOUT:-1800}"
-
 # ====== ASR 语音识别（HY ContextASR）======
 # 录音 → /api/asr → 转 16k WAV → POST {base}/v1/chat/completions。多端点逗号分隔。
 export ASR2_BASE_URLS="${ASR2_BASE_URLS:-http://29.228.42.53:8012}"
