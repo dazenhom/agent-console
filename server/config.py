@@ -217,8 +217,9 @@ VALID_ENGINES = {"claude", "codex"}
 DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
 
 # ---- 会话行摘要（列表里"刚做了什么"一句话）----
-# 用一次性 Haiku 概括（独立子进程，不碰会话上下文）；失败回退启发式截断。
-SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "true").lower() == "true"
+# 一次性子进程概括的固有开销约 8000 token、有效载荷仅约 1.5%，启发式截断兜底已够用，故默认关闭；
+# 要恢复设 SUMMARY_ENABLED=true。
+SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "false").lower() == "true"
 SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "30"))
 # 便宜档 oneshot 子进程的重试次数（超时退避重试）与全局并发封顶
 ONESHOT_RETRIES = int(os.environ.get("ONESHOT_RETRIES", "1"))
@@ -293,8 +294,8 @@ ARBITER_MODEL = os.environ.get("ARBITER_MODEL", "claude-opus-5[1m]")
 # 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
 # 之后每 TITLE_EVERY_N 回合刷一次；用户手动改名（title_auto=0）后不再自动覆盖。
 TITLE_REFRESH_ENABLED = os.environ.get("TITLE_REFRESH_ENABLED", "true").lower() == "true"
-TITLE_EARLY_TURNS = int(os.environ.get("TITLE_EARLY_TURNS", "3"))
-TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "5"))
+TITLE_EARLY_TURNS = int(os.environ.get("TITLE_EARLY_TURNS", "1"))
+TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "10"))
 # 首条 user 消息超过该字数则视为 skill 固定前言（编排指令），起标题时跳过前言只取附加需求。
 # 正常手输极少这么长；skill 前言（SKILL.md）动辄上千字。
 TITLE_SKIP_PREFIX_CHARS = int(os.environ.get("TITLE_SKIP_PREFIX_CHARS", "400"))
