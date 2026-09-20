@@ -63,6 +63,16 @@ async def _attempt(cmd: list, timeout: float, cwd: str | None) -> tuple[str, str
                 pass
             status = "timeout"
             error = "子进程超时"
+        except asyncio.CancelledError:
+            # 调用方在等输出期间取消了本任务（如去抖取消/删会话）：同样杀掉整个
+            # 进程组不留孤儿子进程；CancelledError 继续向上传播（调用方靠它静默退出），
+            # job_runs 那行的收尾由 run_logged_oneshot 层负责。
+            try:
+                _kill_process_group(proc, signal.SIGKILL)
+                await proc.wait()
+            except Exception:
+                pass
+            raise
     except Exception as e:
         status = "error"
         error = f"{type(e).__name__}: {e}"
@@ -100,7 +110,20 @@ async def run_logged_oneshot(kind: str, cmd: list, timeout: float, *,
         log_path = _log_dir() / f"{jid}.log"
 
         async with _sem:
-            stdout_text, stderr_text, status, error = await _attempt(cmd, timeout, cwd)
+            try:
+                stdout_text, stderr_text, status, error = await _attempt(cmd, timeout, cwd)
+            except asyncio.CancelledError:
+                # _attempt 已杀进程组；这里把本次尝试落盘 + job_runs 记为 cancelled，
+                # 然后 re-raise 让取消语义继续向上传播（去抖调用方靠它静默退出，不能吞）。
+                try:
+                    log_path.write_text(
+                        f"=== STDOUT ===\n{stdout_text}\n=== STDERR ===\n{stderr_text}\n",
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+                db.finish_job(jid, "cancelled", error="任务被取消", log_path=str(log_path))
+                raise
 
         # 落盘：stdout 全文 + stderr 全文，方便事后定位模型/CLI 报错
         try:

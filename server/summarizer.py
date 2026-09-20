@@ -58,13 +58,10 @@ _PROMPT_TITLE_PARA = (
 
 
 def _strip_garbled(s: str) -> str:
-    """剥掉模型偶发吐在结尾的乱码：末尾孤立的非中文非 ASCII 片段（如西里尔字母尾巴
-    ропа），或末尾 ≤3 个字母的孤立拉丁尾巴（如 bic，无论前面是中文、数字还是空格）。
-    整串本身就是一个 ≤3 字母词（如 GPU）时不动；更长的英文专有名词（stdin/DEVNULL）
-    也不受影响。"""
+    """剥掉模型偶发吐在结尾的孤立非中文非 ASCII 乱码尾巴（如西里尔字母 ропа）。
+    末尾的纯拉丁尾巴（如 bic）发生率低（约 2/40），为剥它引入规则会误伤 GPU/PR/stdin
+    这类正常英文标识符，得不偿失，故允许保留、不再剥。"""
     s = re.sub(r"[^\x00-\x7f一-鿿…]+$", "", s)
-    if not re.fullmatch(r"[A-Za-z]{1,3}", s):
-        s = re.sub(r"[A-Za-z]{1,3}$", "", s)
     return s.strip()
 
 
@@ -80,7 +77,7 @@ def _parse_merged_output(text: str) -> tuple[str, str]:
             if m:
                 t = m.group(1).strip().strip('"“”')
                 # KEEP 判定沿用旧去噪正则：剥常见引号/结尾标点再比对（仅用于判断）。
-                # 必须先于乱码清洗做——清洗的拉丁尾巴规则会把 KEEP 啃成残词导致判定失效。
+                # 必须先于乱码清洗做，保留这个既有顺序（之前修过，不能回退）。
                 if re.sub(r"[\"'『』「」。.,!！]", "", t).strip().upper() == "KEEP":
                     title = ""
                     continue
