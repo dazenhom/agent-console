@@ -8,11 +8,10 @@
 任一方案生成失败不中断另一路：失败方写占位文本，仲裁照常进行（让仲裁者据此判断）。
 """
 import asyncio
-import json
-import re
 
 from . import config, db
-from .job_store import run_logged_oneshot
+from .codex_oneshot import run_codex_oneshot_text
+from .job_store import run_logged_oneshot, parse_claude_result_line, parse_done_verdict
 
 
 async def _run_claude_oneshot(prompt: str, model: str, effort: str = "high",
@@ -35,18 +34,7 @@ async def _run_claude_oneshot(prompt: str, model: str, effort: str = "high",
     )
     if status in ("timeout", "error"):
         return jid, ""
-    result = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("type") == "result" and not data.get("is_error"):
-            result = (data.get("result") or "").strip()
-            break
+    result = parse_claude_result_line(text)
     if result:
         db.set_job_output(jid, result[:500])
     return jid, result
@@ -56,50 +44,16 @@ async def _run_codex_oneshot(prompt: str, model: str,
                              cwd: str | None = None) -> tuple[str, str]:
     """一次性调用 tcodex exec，返回 (job_id, 答案文本)。
 
-    命令拼法与 codex_runner._build_cmd 一致（无 resume）；stdout 是 JSONL 事件流，
-    最终答案来自 item.completed 事件里 item.type == 'agent_message' 的 text 字段
-    （见 codex_runner._read_stdout 的解析逻辑）。取所有 agent_message 拼接，末条即最终答复。
+    薄封装 codex_oneshot.run_codex_oneshot_text（命令拼装与 JSONL 解析统一在那里），
+    kind 固定 arbitration_b，成功且有结果时把结论写回 job output。
 
     cwd 透传给 run_logged_oneshot（None 时沿用默认，向后兼容）：背对背验收隔离 worktree
     子任务时须传 worktree 目录，评委才能核实到正确的产出位置。"""
-    cmd = [config.CODEX_BIN, "--", "exec", "--json"]
-    if config.CODEX_SKIP_GIT_CHECK:
-        cmd += ["--skip-git-repo-check"]
-    if config.CODEX_BYPASS:
-        cmd += ["--dangerously-bypass-approvals-and-sandbox"]
-    else:
-        cmd += ["-s", config.CODEX_SANDBOX]
-    m = model or config.CODEX_MODEL
-    if m:
-        cmd += ["-m", m]
-    # reasoning effort 不再通过 -c 传给 codex CLI（会触发连接失败，见 config.py 里
-    # CODEX_REASONING_EFFORT 的说明）。
-    cmd += [prompt]
-
-    jid, text, stderr_text, status = await run_logged_oneshot(
-        "arbitration_b", cmd, config.ARBITRATION_TIMEOUT,
-        model=m, input_summary=prompt[:120], cwd=cwd,
+    jid, result, _stderr_text, status = await run_codex_oneshot_text(
+        "arbitration_b", prompt, config.ARBITRATION_TIMEOUT,
+        model=model, input_summary=prompt[:120], cwd=cwd,
     )
-    if status in ("timeout", "error"):
-        return jid, ""
-    # 逐行解析 JSONL，收集 agent_message 文本（与 codex_runner 对 item.completed 的判断同源）
-    messages: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            evt = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if evt.get("type") == "item.completed":
-            item = evt.get("item") or {}
-            if item.get("type") == "agent_message":
-                txt = (item.get("text") or "").strip()
-                if txt:
-                    messages.append(txt)
-    result = "\n\n".join(messages).strip()
-    if result:
+    if status == "success" and result:
         db.set_job_output(jid, result[:500])
     return jid, result
 
@@ -209,19 +163,6 @@ async def run_arbitration(arb_id: str) -> None:
             pass
 
 
-def _parse_verdict(text: str) -> tuple[bool, str]:
-    """把一路评委的原始答复解析成 (done, reason)。解析规则与 goal_verifier.verify 一致：
-    取首个非空行精确匹配 == "DONE" 才算完成（容忍前后空白、大小写），像 "DONE, but…" 这类
-    带尾巴的一律当 CONTINUE；从第二行起为判断理由，压平空白后截断。空文本按 CONTINUE 处理。"""
-    lines = (text or "").splitlines()
-    first = next((ln.strip() for ln in lines if ln.strip()), "")
-    done = first.upper() == "DONE"
-    reason = re.sub(r"\s+", " ", " ".join(lines[1:])).strip()[:200]
-    if not reason:
-        reason = "已达成完成标准" if done else "尚未达成或无输出，按未完成处理"
-    return done, reason
-
-
 async def verify_back_to_back(goal: str, stop: str, produced: str,
                               git_diff: str, session_id: str | None = None,
                               workdir: str | None = None) -> tuple[bool, str]:
@@ -250,12 +191,12 @@ async def verify_back_to_back(goal: str, stop: str, produced: str,
         done_a, reason_a = False, f"评委A异常：{res_a}"
     else:
         _job_a, text_a = res_a
-        done_a, reason_a = _parse_verdict(text_a)
+        done_a, reason_a = parse_done_verdict(text_a)
     if isinstance(res_b, Exception):
         done_b, reason_b = False, f"评委B异常：{res_b}"
     else:
         _job_b, text_b = res_b
-        done_b, reason_b = _parse_verdict(text_b)
+        done_b, reason_b = parse_done_verdict(text_b)
 
     done = done_a and done_b
     reason = (f"评委A(claude): {'DONE' if done_a else 'CONTINUE'} - {reason_a}；"

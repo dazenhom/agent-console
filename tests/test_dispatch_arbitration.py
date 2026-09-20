@@ -7,7 +7,7 @@ need_arbitration 字段在建库/迁移/重派中的默认与保留行为。
 """
 import asyncio
 
-from server import arbiter, scheduler, db, verifier, dispatcher, worktree
+from server import arbiter, scheduler, db, verifier, dispatcher, worktree, job_store
 
 
 # ---------------- arbiter.verify_back_to_back 合议 ----------------
@@ -65,11 +65,11 @@ def test_b2b_empty_output_treated_as_continue(monkeypatch):
 
 
 def test_parse_verdict_rules():
-    assert arbiter._parse_verdict("DONE\n理由")[0] is True
+    assert job_store.parse_done_verdict("DONE\n理由")[0] is True
     # 带尾巴不算 DONE
-    assert arbiter._parse_verdict("DONE, but not sure")[0] is False
-    assert arbiter._parse_verdict("CONTINUE\n还需改")[0] is False
-    assert arbiter._parse_verdict("")[0] is False
+    assert job_store.parse_done_verdict("DONE, but not sure")[0] is False
+    assert job_store.parse_done_verdict("CONTINUE\n还需改")[0] is False
+    assert job_store.parse_done_verdict("")[0] is False
 
 
 def test_b2b_workdir_into_prompt_and_cwd(monkeypatch):

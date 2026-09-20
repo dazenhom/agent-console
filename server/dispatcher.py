@@ -14,7 +14,7 @@ import json
 import re
 
 from . import config, db, skill_store, agent_store, worktree
-from .job_store import run_logged_oneshot
+from .job_store import run_logged_oneshot, parse_claude_result_line
 
 _VALID_CATEGORIES = {"plan", "deep", "dev"}
 _MAX_SUBTASKS = 8
@@ -103,18 +103,7 @@ async def run_planner(request: str) -> list[dict]:
         return []
 
     # 挑出 type=result 那行取 result（与 triage.run_triage 一致）
-    result = ""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("type") == "result" and not data.get("is_error"):
-            result = (data.get("result") or "").strip()
-            break
+    result = parse_claude_result_line(text)
     if not result:
         print(f"[dispatcher] run_planner: no result, stderr={stderr_text[:200]!r}")
         return []

@@ -8,13 +8,11 @@ CLAUDE_MODEL_KANBAN，在没有 verify_command 时验收员要自己去 workdir 
 核实产出，复杂真实项目（大型数据管线等）常在旧的 300s 超时内探不完、频繁"验收超时按
 未完成继续"（多个目标循环的系统性未完成出口）；换成更强的 gpt-5.6-terra + 600s 缓解。
 任何不确定（超时/异常/无输出/首行非 DONE）一律当 CONTINUE——绝不误判完成，宁可多迭代
-一轮也不提前收工。命令拼法与 arbiter._run_codex_oneshot 一致（无 resume，JSONL 事件流）。
+一轮也不提前收工。命令拼装与 JSONL 解析统一走 codex_oneshot.run_codex_oneshot_text。
 """
-import json
-import re
-
 from . import config, db, spill
-from .job_store import run_logged_oneshot
+from .codex_oneshot import run_codex_oneshot_text
+from .job_store import parse_done_verdict
 
 
 def _build_prompt(goal: str, stop_condition: str, produced: str,
@@ -77,55 +75,19 @@ async def verify(goal: str, stop_condition: str, produced: str,
     也作为子进程 cwd，避免评委在错误目录下核实产出而假阴性；None 时保持原行为。"""
     prompt = _build_prompt(goal, stop_condition, produced, cmd_result=cmd_result,
                            git_diff=git_diff, workdir=workdir, session_id=session_id)
-    cmd = [config.CODEX_BIN, "--", "exec", "--json"]
-    if config.CODEX_SKIP_GIT_CHECK:
-        cmd += ["--skip-git-repo-check"]
-    if config.CODEX_BYPASS:
-        cmd += ["--dangerously-bypass-approvals-and-sandbox"]
-    else:
-        cmd += ["-s", config.CODEX_SANDBOX]
-    cmd += ["-m", config.GOAL_VERIFY_MODEL]
-    cmd += [prompt]
-
-    jid, text, stderr_text, status = await run_logged_oneshot(
-        "goal_verify", cmd, config.GOAL_VERIFY_TIMEOUT,
-        session_id=session_id, schedule_id=schedule_id,
-        model=config.GOAL_VERIFY_MODEL, input_summary=(goal or "")[:120],
-        cwd=workdir or None,
+    jid, result, stderr_text, status = await run_codex_oneshot_text(
+        "goal_verify", prompt, config.GOAL_VERIFY_TIMEOUT,
+        model=config.GOAL_VERIFY_MODEL, session_id=session_id, schedule_id=schedule_id,
+        input_summary=(goal or "")[:120], cwd=workdir or None,
     )
     if status == "timeout":
         return False, "验收超时，按未完成继续"
     if status == "error":
         return False, "验收进程异常，按未完成继续"
-    # 解析 codex exec --json 的 JSONL 事件流：最终答案来自 item.completed 里
-    # item.type == 'agent_message' 的 text（与 arbiter._run_codex_oneshot 一致）
-    messages: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            evt = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if evt.get("type") == "item.completed":
-            item = evt.get("item") or {}
-            if item.get("type") == "agent_message":
-                txt = (item.get("text") or "").strip()
-                if txt:
-                    messages.append(txt)
-    result = "\n\n".join(messages).strip()
     if not result:
         err_text = stderr_text[:200]
         print(f"[goal_verifier] no result, stderr={err_text!r}")
         return False, "验收无输出，按未完成继续"
-    lines = result.splitlines()
-    # 取首个非空行精确匹配 == "DONE" 才算完成（容忍前后空白）：绝不误判完成，
-    # 像 "DONE, but I'm not sure..." 这类带尾巴的一律当 CONTINUE 继续迭代。
-    first = next((ln.strip() for ln in lines if ln.strip()), "")
-    done = first.upper() == "DONE"
-    reason = re.sub(r"\s+", " ", " ".join(lines[1:])).strip()[:200]
-    if not reason:
-        reason = "已达成完成标准" if done else "尚未达成，继续迭代"
+    done, reason = parse_done_verdict(result)
     db.set_job_output(jid, f"done={done}, reason={reason}")
     return done, reason

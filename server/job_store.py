@@ -9,8 +9,14 @@ triage.run_triage / goal_verifier.verify / kanban.summarize_progress 三处
 
 超时的便宜档（冷启动/连接建立卡顿）会按小退避重试，每次尝试独立落一行 job_runs；
 所有 oneshot 子进程受模块级信号量封顶，避免堆叠打满并发。
+
+跑子进程外壳之外，还提供调用方共用的两个纯文本解析器：parse_claude_result_line（从
+claude --output-format json 的 result 行取文本）与 parse_done_verdict（DONE/CONTINUE
+verdict 解析），都不依赖子进程，便于单测与复用。
 """
 import asyncio
+import json
+import re
 from pathlib import Path
 
 from . import config, db
@@ -104,3 +110,40 @@ async def run_logged_oneshot(kind: str, cmd: list, timeout: float, *,
         break
 
     return jid, stdout_text, stderr_text, status
+
+
+def parse_claude_result_line(text: str) -> str:
+    """从 claude --output-format json 的输出里挑出 type=result 那行取 result 文本。
+
+    逐行只认以 "{" 开头的行，解析失败跳过；命中 type == "result" 且非 is_error
+    时取其 result 并停止。没解析到返回空串。
+    """
+    result = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if data.get("type") == "result" and not data.get("is_error"):
+            result = (data.get("result") or "").strip()
+            break
+    return result
+
+
+def parse_done_verdict(text: str) -> tuple[bool, str]:
+    """把评委的原始答复解析成 (done, reason)。
+
+    取首个非空行精确匹配 == "DONE" 才算完成（容忍前后空白、大小写），像 "DONE, but…"
+    这类带尾巴的一律当 CONTINUE；从第二行起为判断理由，压平空白后截断 200 字。
+    空 reason 时按 done 给默认文案。
+    """
+    lines = (text or "").splitlines()
+    first = next((ln.strip() for ln in lines if ln.strip()), "")
+    done = first.upper() == "DONE"
+    reason = re.sub(r"\s+", " ", " ".join(lines[1:])).strip()[:200]
+    if not reason:
+        reason = "已达成完成标准" if done else "尚未达成，继续迭代"
+    return done, reason

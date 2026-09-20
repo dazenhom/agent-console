@@ -204,14 +204,6 @@ CODEX_PRICE_TABLE = {
 # Dispatch 基础执行(dev/兜底)路由的默认引擎与模型；deep/评判仍走 Opus，不受此影响
 DISPATCH_EXEC_ENGINE = os.environ.get("DISPATCH_EXEC_ENGINE", "codex")
 DISPATCH_EXEC_MODEL = os.environ.get("DISPATCH_EXEC_MODEL", CODEX_DEFAULT_MODEL)
-# codex 推理深度：该值目前不会被传给 codex CLI 命令行。已确认命令行显式传
-# `-c model_reasoning_effort=<level>` 会触发 codex CLI (v0.144.6) 的 prewarm-mismatch bug——
-# 即使数值与 `~/.tcodex/config.toml` 里的默认值相同，显式传参也会导致本轮 turn 无法复用
-# 启动时预热好的 websocket 连接，卡 ~15 秒后现开新连接，而新连接在当前腾讯内网网关环境下
-# 必现失败超时。四处调用点（goal_verifier.py / arbiter.py / codex_oneshot.py /
-# codex_runner.py）已移除该拼接；实际生效的 effort 档位由 `~/.tcodex/config.toml` 里的
-# `model_reasoning_effort` 默认值决定。若未来要复用这个环境变量，必须先确认 codex CLI
-# 有不触发该 bug 的传参方式，不要简单恢复 `-c` 拼接。
 # 会话底层 Agent 引擎：claude（tclaude）或 codex（tcodex）。新会话默认 claude。
 VALID_ENGINES = {"claude", "codex"}
 DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
