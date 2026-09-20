@@ -283,7 +283,14 @@ async def _gather_verify_context(sess: dict, verify_command: str | None = None) 
     if sess.get("claude_session_id"):
         p = kanban._session_jsonl_path(sess["claude_session_id"], sess.get("workdir"))
         if p:
-            produced = kanban._extract_recent_text(p)
+            # 验收要完整证据，不能用看板摘要那套窄口径（实测只剩约 0.05% 信息量）；
+            # 全文体量交给 goal_verifier 里的 spill 落盘管，这里只管别提前砍掉。
+            produced = kanban._extract_recent_text(
+                p, config.GOAL_VERIFY_PRODUCED_CHARS,
+                tail_lines=config.GOAL_VERIFY_TAIL_LINES,
+                assistant_chars=config.GOAL_VERIFY_BLOCK_CHARS,
+                user_chars=config.GOAL_VERIFY_BLOCK_CHARS,
+            )
     workdir = sess.get("workdir") or ""
     cmd_result = ""
     cmd = (verify_command or "").strip()

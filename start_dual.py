@@ -93,6 +93,13 @@ def load_or_create_swanlab_session_secret(
         return value
 
 
+_NO_PROXY_DEFAULT = (
+    "127.0.0.1,localhost,::1,"
+    "29.191.211.213,29.228.42.53,"
+    ".oa.com,.woa.com,.svc.cluster.local,.local"
+)
+
+
 def build_base_env(
     environ: dict[str, str] | None = None,
     api_key_path: Path = SWANLAB_API_KEY_FILE,
@@ -119,7 +126,7 @@ def build_base_env(
     base_env.update(
         {
             "AUTH_TOKEN": "123",
-            "CLAUDE_BIN": "/root/.nvm/versions/node/v22.23.1/bin/tclaude",
+            "CLAUDE_BIN": "/root/.local/bin/tclaude",
             "ASR2_BASE_URLS": "http://29.228.42.53:8012",
             "ASR2_MODEL": "HYAudio",
             "CLAUDE_MODEL_FAST": "claude-haiku-4-5",
@@ -127,7 +134,7 @@ def build_base_env(
             "CLAUDE_MODEL_SUPER": "claude-opus-5[1m]",
             "CLAUDE_DEFAULT_MODE": "claude-sonnet-5",
             "CLAUDE_EFFORT": "medium",
-            "CLAUDE_PERSISTENT": "true",
+            "CLAUDE_PERSISTENT": source_env.get("CLAUDE_PERSISTENT", "true"),
             "CLAUDE_SESSION_IDLE_SEC": "3600",
             "AGENT_WORKDIR": "/apdcephfs_gy2/share_302533218/zhihangxu",
             "WECOM_ENABLED": "true",
@@ -135,9 +142,30 @@ def build_base_env(
                 "WECOM_WEBHOOK_KEY", "be0c3312-4e95-4648-bdb2-2360ab6dbf97"
             ),
             "WECOM_PROXY": "http://star-proxy.oa.com:3128",
-            "NVM_BIN": "/root/.nvm/versions/node/v22.23.1/bin",
+            # ---- 公司代理（2026-09-11 加）----
+            # 本机直连外网不通；tcodex 子进程要访问 copilot.tencent.com /
+            # tencent.sso.codebuddy.cn，不带代理会让本地网关全部 502
+            # ("Failed to reach upstream gateway") 且 token 刷新失败。
+            # 这里显式注入，保证不依赖启动时 shell 是否 source 过 .bashrc。
+            # no_proxy 必须豁免本机与内网，否则 vllm(8012-8082)、
+            # ASR2_BASE_URLS、本机 80/8800 自查都会被绕进代理。
+            "http_proxy": source_env.get(
+                "http_proxy", "http://star-proxy.oa.com:3128"
+            ),
+            "https_proxy": source_env.get(
+                "https_proxy", "http://star-proxy.oa.com:3128"
+            ),
+            "HTTP_PROXY": source_env.get(
+                "HTTP_PROXY", "http://star-proxy.oa.com:3128"
+            ),
+            "HTTPS_PROXY": source_env.get(
+                "HTTPS_PROXY", "http://star-proxy.oa.com:3128"
+            ),
+            "no_proxy": source_env.get("no_proxy", _NO_PROXY_DEFAULT),
+            "NO_PROXY": source_env.get("NO_PROXY", _NO_PROXY_DEFAULT),
+            "NVM_BIN": "/root/.nvm/versions/node/v22.23.2/bin",
             "PATH": (
-                "/root/.nvm/versions/node/v22.23.1/bin:/opt/venv/bin:"
+                "/root/.nvm/versions/node/v22.23.2/bin:/opt/venv/bin:"
                 + source_env.get("PATH", "")
             ),
             # 两个 Uvicorn 子进程从同一份本地值注入，跨重启保持稳定。
@@ -161,7 +189,7 @@ def launch(
     extra_env: dict[str, str] | None = None,
 ) -> None:
     cmd = [
-        "/opt/venv/bin/uvicorn",
+        "uvicorn",
         "server.main:app",
         "--host",
         "0.0.0.0",

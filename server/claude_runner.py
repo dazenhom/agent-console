@@ -33,13 +33,26 @@ class LoopDetector:
     两种循环信号：
       1. 连续 repeat_threshold 次完全相同的工具调用（name+input 一致）；
       2. 连续 error_threshold 次工具报错（tool_result.is_error）。
+
+    递进：在 warn_steps（默认 3、5）命中时不算循环，只把观测记到 warnings 里——上层
+    用它写日志、并在下一回合消息开头劝告 agent 换做法。只有到 threshold 才判循环。
+    为什么劝告不能在回合中途送达：见 config.CLAUDE_LOOP_WARN_STEPS 注释。
     """
 
-    def __init__(self, repeat_threshold=8, error_threshold=10):
+    def __init__(self, repeat_threshold=8, error_threshold=10, warn_steps=None):
         self.repeat_threshold = repeat_threshold
         self.error_threshold = error_threshold
+        self.warn_steps = sorted(
+            s for s in (warn_steps or []) if 0 < s < max(repeat_threshold, error_threshold)
+        )
         self._recent_calls = collections.deque(maxlen=repeat_threshold + 2)
         self._consec_errors = 0
+        # 已触发过的告警键，避免同一阈值反复记录
+        self._warned: set = set()
+        # 供上层读取：[{"kind","count","detail"}]，按发生顺序
+        self.warnings: list[dict] = []
+        # 最近一次重复链的可读描述（供 kill 原因用）
+        self._last_repeat_detail = ""
 
     @staticmethod
     def _is_sleep_bash(block) -> bool:
@@ -52,8 +65,37 @@ class LoopDetector:
             return False
         return is_sleep_command((block.get("input") or {}).get("command", ""))
 
+    @staticmethod
+    def _arg_preview(block: dict, limit: int = 200) -> str:
+        """工具入参的可读摘要，只用于人/模型阅读；比较仍用完整规范化串的 md5。"""
+        try:
+            s = json.dumps(block.get("input", {}), ensure_ascii=False, sort_keys=True)
+        except Exception:
+            s = str(block.get("input", ""))
+        s = " ".join(s.split())
+        return s if len(s) <= limit else s[:limit] + "…"
+
+    def _note(self, kind: str, count: int, detail: str) -> None:
+        key = (kind, count)
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        self.warnings.append({"kind": kind, "count": count, "detail": detail})
+
+    def _repeat_run_len(self) -> int:
+        """当前尾部连续相同调用的长度。"""
+        calls = list(self._recent_calls)
+        if not calls:
+            return 0
+        n, last = 1, calls[-1]
+        for sig in reversed(calls[:-1]):
+            if sig != last:
+                break
+            n += 1
+        return n
+
     def feed(self, evt: dict):
-        """返回 (is_loop: bool, reason: str)。"""
+        """返回 (is_loop: bool, reason: str)。未到阈值的观测记入 self.warnings。"""
         # 真实 stream-json 事件里 content 嵌在 message 下（见 session_hub.translate_event），
         # 少数场景可能直接挂在顶层，两处都兼容。
         content = (evt.get("message") or {}).get("content")
@@ -71,10 +113,20 @@ class LoopDetector:
                         json.dumps(block.get("input", {}), sort_keys=True).encode()
                     ).hexdigest()[:8]
                     self._recent_calls.append(sig)
-                    if len(self._recent_calls) >= self.repeat_threshold:
-                        tail = list(self._recent_calls)[-self.repeat_threshold:]
-                        if len(set(tail)) == 1:
-                            return True, f"工具 '{block.get('name')}' 连续相同调用 {self.repeat_threshold} 次"
+                    name = block.get("name") or "?"
+                    run = self._repeat_run_len()
+                    if run > 1:
+                        self._last_repeat_detail = (
+                            f"工具 {name}，入参 {self._arg_preview(block)}")
+                    if run >= self.repeat_threshold:
+                        return True, (
+                            f"工具 '{name}' 连续 {run} 次完全相同调用（入参未变）；"
+                            f"入参摘要：{self._arg_preview(block)}"
+                        )
+                    if run in self.warn_steps:
+                        self._note("repeat", run,
+                                   f"工具 '{name}' 已连续 {run} 次相同调用，入参摘要："
+                                   f"{self._arg_preview(block)}")
         # 从 user 事件提取 tool_result，检测连续报错
         if evt.get("role") == "user" or evt.get("type") == "user":
             for block in content:
@@ -82,10 +134,37 @@ class LoopDetector:
                     if block.get("is_error"):
                         self._consec_errors += 1
                         if self._consec_errors >= self.error_threshold:
-                            return True, f"连续工具报错 {self._consec_errors} 次"
+                            detail = self._last_repeat_detail or "见会话内最近的工具结果"
+                            return True, (
+                                f"连续 {self._consec_errors} 次工具报错且未恢复"
+                                f"（最近重复调用：{detail}）"
+                            )
+                        if self._consec_errors in self.warn_steps:
+                            self._note("error", self._consec_errors,
+                                       f"已连续 {self._consec_errors} 次工具报错未恢复")
                     else:
                         self._consec_errors = 0
         return False, ""
+
+
+def build_loop_advice(warnings: list[dict], reason: str = "") -> str:
+    """把上一回合的循环观测拼成一段给 agent 的劝告，贴在下一回合消息开头。
+
+    只在真有观测时返回非空串。措辞是建议而非命令：不否决工具，只提示换做法。
+    """
+    if not warnings and not reason:
+        return ""
+    lines = ["[系统观察] 上一回合检测到疑似原地打转的迹象："]
+    for w in warnings[-4:]:
+        lines.append(f"  - {w['detail']}")
+    if reason:
+        lines.append(f"  - 已达终止阈值：{reason}")
+    lines.append(
+        "请不要用同样的入参再试一次。换个做法：先读一遍相关文件/日志确认前提，"
+        "或换用别的工具、缩小验证范围、把问题拆小；如果确实卡住无法推进，"
+        "直接说明卡在哪、缺什么信息，不要反复重试。")
+    return "\n".join(lines) + "\n\n"
+
 
 class ClaudeRunner(AgentProvider):
     def __init__(self):
@@ -97,12 +176,20 @@ class ClaudeRunner(AgentProvider):
         self._sessions: dict[str, dict] = {}
         # session_id -> 预热锁：避免并发 ensure_warm 重复 spawn
         self._session_locks: dict[str, asyncio.Lock] = {}
+        # session_id -> 待送达的循环劝告。放在 runner 级而非 sess 级：因为循环命中会 kill
+        # 进程，下一回合是全新的 sess 记录，挂在 sess 上的劝告恰好会在最该送达时丢掉。
+        self._pending_loop_advice: dict[str, str] = {}
 
     def _build_cmd(self, *, message: str | None, model: str | None,
                    resume: str | None, stream_input: bool,
                    effort: str | None = None) -> list[str]:
         """组 tclaude 命令。stream_input=True 时走常驻 stream-json 输入（message 走 stdin）。"""
-        cmd = [config.CLAUDE_BIN, "--", "-p"]
+        # 不能传 "--"：tclaude wrapper 会把 "--" 原样转发给内层 claude，而 claude 按
+        # 标准语义把 "--" 之后的一切当成位置参数（即 prompt），于是 -p/--output-format
+        # 等全部失效——表现为模型收到一条内容为 "-p" 的消息、输出纯文本而非 stream-json，
+        # console 等不到可解析事件，会话永远卡在 running。2026-09-10 23:51 wrapper
+        # 升级后出现（旧版会剥掉 "--"）。wrapper 的 `--` 只用于消歧它自己的 -h/-v。
+        cmd = [config.CLAUDE_BIN, "-p"]
         if not stream_input:
             cmd.append(message)
         cmd += ["--output-format", "stream-json", "--verbose"]
@@ -366,6 +453,7 @@ class ClaudeRunner(AgentProvider):
         不再带上那个已失效的 claude_sid。"""
         await self._kill_session(session_id)
         self._sessions.pop(session_id, None)
+        self._pending_loop_advice.pop(session_id, None)
 
     async def _spawn_session(self, session_id: str, workdir: str, model: str | None,
                              resume: str | None, effort: str | None = None) -> dict:
@@ -386,7 +474,8 @@ class ClaudeRunner(AgentProvider):
             "result_evt": None, "workdir": workdir,
             "model": model,
             # 看门狗：循环检测器 + 循环命中标记（reader 里喂事件，send_turn 里轮询判定）
-            "loop_detector": LoopDetector(config.CLAUDE_LOOP_REPEAT, config.CLAUDE_LOOP_ERRORS),
+            "loop_detector": LoopDetector(config.CLAUDE_LOOP_REPEAT, config.CLAUDE_LOOP_ERRORS,
+                                          config.CLAUDE_LOOP_WARN_STEPS),
             "loop_detected": False,
             "loop_reason": "",
         }
@@ -428,7 +517,13 @@ class ClaudeRunner(AgentProvider):
                         pass
             # 看门狗：任何一条成功解析的事件都算"仍在推进"，刷新活跃时间并喂给循环检测器
             sess["last_active"] = time.monotonic()
-            is_loop, reason = sess["loop_detector"].feed(evt)
+            detector = sess["loop_detector"]
+            seen_warnings = len(detector.warnings)
+            is_loop, reason = detector.feed(evt)
+            # 递进告警：只记日志，不影响本回合（回合中途无法把话送进模型，见 config 注释）
+            for w in detector.warnings[seen_warnings:]:
+                logger.warning("session %s: loop warning (%s x%d): %s",
+                               session_id, w["kind"], w["count"], w["detail"])
             if is_loop:
                 sess["loop_detected"] = True
                 sess["loop_reason"] = reason
@@ -510,9 +605,19 @@ class ClaudeRunner(AgentProvider):
         # 每回合开始清掉上一回合的循环命中标记，并重建检测器让内部计数从新回合基线开始
         sess["loop_detected"] = False
         sess["loop_reason"] = ""
-        sess["loop_detector"] = LoopDetector(config.CLAUDE_LOOP_REPEAT, config.CLAUDE_LOOP_ERRORS)
+        sess["loop_detector"] = LoopDetector(config.CLAUDE_LOOP_REPEAT, config.CLAUDE_LOOP_ERRORS,
+                                             config.CLAUDE_LOOP_WARN_STEPS)
         result_evt = asyncio.Event()
         sess["result_evt"] = result_evt
+
+        # 上一回合的循环观测：贴在本回合消息开头劝告 agent 换做法。实测回合间隙写入的
+        # 消息模型能正常读到（回合中途写入会被 CLI 丢弃），所以只能延到这里送达。
+        advice = self._pending_loop_advice.pop(session_id, "")
+        if advice and not config.CLAUDE_LOOP_ADVISE_NEXT_TURN:
+            advice = ""  # 关掉开关时照样丢弃，避免陈旧劝告一直挂着
+        if advice:
+            logger.info("session %s: prepending loop advice to this turn", session_id)
+            message = advice + message
 
         # 写一行 stream-json 用户消息
         payload = json.dumps({
@@ -590,6 +695,14 @@ class ClaudeRunner(AgentProvider):
         sess["on_session_id"] = None
         sess["result_evt"] = None
         sess["last_active"] = time.monotonic()
+        # 本回合的循环观测（含未到阈值的告警）留给下一回合开头劝告。被取消的回合不留。
+        if not cancelled:
+            det = sess.get("loop_detector")
+            adv = build_loop_advice(
+                getattr(det, "warnings", []) or [], sess.get("loop_reason", "")
+            )
+            if adv:
+                self._pending_loop_advice[session_id] = adv
 
         # 进程是否在本回合中死掉（崩溃或被 cancel 杀）
         if sess["proc"].returncode is not None and not error:

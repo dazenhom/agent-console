@@ -21,7 +21,7 @@ import json
 import signal
 from typing import Awaitable, Callable
 
-from . import config
+from . import config, db
 from .agent_provider import AgentProvider, _child_env, _kill_process_group, _STREAM_LIMIT, is_sleep_command
 from .logging_util import get_logger
 
@@ -142,7 +142,11 @@ class CodexRunner(AgentProvider):
         pending_wait: dict = {}    # item_id -> 开始时刻，记录在飞的等待型调用
         wait_notice_sent = False   # 是否已推过一次"检测到等待型调用"提示，避免刷屏
 
-        async def _emit_result(is_error: bool):
+        async def _emit_result(
+            is_error: bool,
+            cost_usd: float | None = None,
+            usage: dict | None = None,
+        ):
             nonlocal result_emitted
             if result_emitted:
                 return
@@ -151,7 +155,8 @@ class CodexRunner(AgentProvider):
                 "type": "result",
                 "subtype": "error" if is_error else "success",
                 "duration_ms": None,
-                "total_cost_usd": None,
+                "total_cost_usd": cost_usd,
+                "usage": usage,
                 "num_turns": 1,
                 "result": None,
                 "is_error": is_error,
@@ -275,7 +280,63 @@ class CodexRunner(AgentProvider):
                     continue
 
                 if etype == "turn.completed":
-                    await _emit_result(is_error=bool(error_msg))
+                    current_usage = evt.get("usage") or {}
+                    if not isinstance(current_usage, dict):
+                        current_usage = {}
+                    usage_fields = (
+                        "input_tokens",
+                        "cached_input_tokens",
+                        "cache_write_input_tokens",
+                        "output_tokens",
+                        "reasoning_output_tokens",
+                    )
+                    baseline = {}
+                    try:
+                        sess = db.get_session(session_id)
+                        raw_baseline = (sess or {}).get("codex_usage_baseline") or ""
+                        if raw_baseline:
+                            parsed = json.loads(raw_baseline)
+                            if isinstance(parsed, dict):
+                                baseline = parsed
+                    except Exception as e:
+                        logger.warning("读取 codex usage baseline 失败 sid=%s: %s", session_id, e)
+
+                    increment = {}
+                    for field in usage_fields:
+                        current_value = current_usage.get(field, 0) or 0
+                        baseline_value = baseline.get(field, 0) or 0
+                        if current_value < baseline_value:
+                            logger.warning(
+                                "codex usage 累计值回退 sid=%s field=%s current=%s baseline=%s",
+                                session_id, field, current_value, baseline_value,
+                            )
+                        increment[field] = max(0, current_value - baseline_value)
+
+                    actual_model = model or config.CODEX_MODEL
+                    price = config.CODEX_PRICE_TABLE.get(actual_model)
+                    cost = None
+                    if price:
+                        cost = (
+                            increment["input_tokens"] / 1e6 * price["in"]
+                            + increment["cache_write_input_tokens"] / 1e6 * price["cache_write"]
+                            + increment["cached_input_tokens"] / 1e6 * price["cache_read"]
+                            + (
+                                increment["output_tokens"]
+                                + increment["reasoning_output_tokens"]
+                            ) / 1e6 * price["out"]
+                        )
+                    await _emit_result(
+                        is_error=bool(error_msg),
+                        cost_usd=cost,
+                        usage=current_usage,
+                    )
+                    try:
+                        db.update_session(
+                            session_id,
+                            codex_usage_baseline=json.dumps(current_usage),
+                        )
+                    except Exception as e:
+                        logger.warning("写入 codex usage baseline 失败 sid=%s: %s", session_id, e)
                     continue
 
         async def _heartbeat_monitor():

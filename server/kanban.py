@@ -24,16 +24,23 @@ def _session_jsonl_path(claude_session_id: str, workdir: str) -> Path | None:
     return p if p.exists() else None
 
 
-def _extract_recent_text(jsonl_path: Path, max_chars: int = 3000) -> str:
-    """读 jsonl 最后若干条 user/assistant 文本消息，拼成上下文。"""
+def _extract_recent_text(jsonl_path: Path, max_chars: int = 3000, *,
+                         tail_lines: int = 40, assistant_chars: int = 300,
+                         user_chars: int = 200) -> str:
+    """读 jsonl 最后若干条 user/assistant 文本消息，拼成上下文。
+
+    四个上限的默认值面向"看板进展摘要"这类只需概括最近在干什么的场景，保持原行为。
+    验收取证要的是**完整证据**而非概括：盲截断掉的尾部（跑通的测试结论、报错原因）
+    恰恰是判定达成与否的依据，砍掉就只能判 CONTINUE。所以验收路径传大得多的上限、
+    把预算交给 spill 落盘管（见 _extract_verify_text / server/spill.py）。
+    """
     lines = []
     try:
         with jsonl_path.open(encoding="utf-8", errors="replace") as fh:
             raw = fh.readlines()
     except OSError:
         return ""
-    # 只取最后 40 行，够概括"最近在干什么"即可
-    for line in raw[-40:]:
+    for line in raw[-tail_lines:]:
         try:
             obj = json.loads(line.strip())
         except Exception:
@@ -44,16 +51,16 @@ def _extract_recent_text(jsonl_path: Path, max_chars: int = 3000) -> str:
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        lines.append(f"[Assistant]: {block['text'][:300]}")
+                        lines.append(f"[Assistant]: {block['text'][:assistant_chars]}")
             elif isinstance(content, str):
-                lines.append(f"[Assistant]: {content[:300]}")
+                lines.append(f"[Assistant]: {content[:assistant_chars]}")
         elif role == "user":
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        lines.append(f"[User]: {block['text'][:200]}")
+                        lines.append(f"[User]: {block['text'][:user_chars]}")
             elif isinstance(content, str):
-                lines.append(f"[User]: {content[:200]}")
+                lines.append(f"[User]: {content[:user_chars]}")
     text = "\n".join(lines)
     return text[-max_chars:] if len(text) > max_chars else text
 

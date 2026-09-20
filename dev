@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+if [[ -n "${PYTHON:-}" ]]; then
+  PYTHON="$PYTHON"
+elif [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PYTHON="$ROOT/.venv/bin/python"
+elif [[ -x /opt/venv/bin/python ]]; then
+  PYTHON=/opt/venv/bin/python
+else
+  PYTHON=python3
+fi
+
+usage() {
+  cat <<'EOF'
+Usage: ./dev <status|doctor|check|test-changed|smoke>
+
+  status        Show Git state, recent commit, and Agent Console processes.
+  doctor        Check local runtimes, imports, and required directories.
+  check         Run syntax checks and git diff whitespace validation.
+  test-changed  Run pytest for source changes; skip for docs/generated-only changes.
+  smoke         Run a small, service-safe regression suite.
+EOF
+}
+
+changed_files() {
+  {
+    git diff --name-only
+    git diff --cached --name-only
+    git ls-files --others --exclude-standard -- \
+      AGENTS.md CONTEXT.md dev server web tests docs
+  } | awk 'NF && !seen[$0]++'
+}
+
+cmd_status() {
+  echo "== repository =="
+  printf 'root: %s\n' "$ROOT"
+  git status --short --branch --untracked-files=no | sed -n '1p'
+  git log -1 --format='last commit: %h %cs %s'
+  echo
+  echo "== working tree =="
+  git status --short --untracked-files=no
+  git ls-files --others --exclude-standard -- \
+    AGENTS.md CONTEXT.md dev server web tests docs | sed 's/^/?? /'
+  echo "(untracked runtime/generated paths are omitted)"
+  echo
+  echo "== service processes =="
+  if ! pgrep -af 'uvicorn server\.main:app' || [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+    echo "(no matching uvicorn process)"
+  fi
+}
+
+cmd_doctor() {
+  local failed=0
+  echo "Python: $PYTHON"
+  "$PYTHON" --version
+
+  echo "Node: $(command -v node || true)"
+  if ! command -v node >/dev/null; then
+    echo "[FAIL] node is unavailable" >&2
+    failed=1
+  else
+    node --version
+  fi
+
+  if "$PYTHON" - <<'PY'
+import fastapi
+import uvicorn
+print(f"fastapi={fastapi.__version__}")
+print(f"uvicorn={uvicorn.__version__}")
+PY
+  then
+    echo "[OK] Python dependencies"
+  else
+    echo "[FAIL] Python dependencies" >&2
+    failed=1
+  fi
+
+  for path in server web tests data; do
+    if [[ -e "$path" ]]; then
+      echo "[OK] $path"
+    else
+      echo "[FAIL] missing $path" >&2
+      failed=1
+    fi
+  done
+
+  [[ -w data ]] &&
+    echo "[INFO] data/ is writable; tests must still use temporary databases." ||
+    echo "[INFO] data/ is read-only; normal source checks can still run."
+
+  return "$failed"
+}
+
+cmd_check() {
+  echo "== Python syntax =="
+  "$PYTHON" - <<'PY'
+import ast
+import pathlib
+import subprocess
+
+files = subprocess.check_output(
+    ["git", "ls-files", "*.py"], text=True
+).splitlines()
+for name in files:
+    path = pathlib.Path(name)
+    ast.parse(path.read_text(encoding="utf-8"), filename=name)
+print(f"checked {len(files)} Python files")
+PY
+
+  echo "== JavaScript syntax =="
+  node --check web/app.js
+
+  echo "== Shell syntax =="
+  while IFS= read -r file; do
+    bash -n "$file"
+  done < <(git ls-files '*.sh')
+
+  echo "== Diff whitespace =="
+  git diff --check
+  git diff --cached --check
+}
+
+cmd_test_changed() {
+  mapfile -t files < <(changed_files)
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo "No changed files; running the full test suite."
+    exec "$PYTHON" -m pytest -q
+  fi
+
+  printf 'Changed files:\n'
+  printf '  %s\n' "${files[@]}"
+
+  local file
+  for file in "${files[@]}"; do
+    case "$file" in
+      graphify-out/*|docs/*|*.md|*.txt)
+        ;;
+      *)
+        echo "Source/config change detected; running the full test suite."
+        exec "$PYTHON" -m pytest -q
+        ;;
+    esac
+  done
+  echo "Only documentation or generated Graphify files changed; pytest skipped."
+}
+
+cmd_smoke() {
+  cmd_check
+  "$PYTHON" -m pytest -q \
+    tests/test_db_tasks.py \
+    tests/test_history_refresh_frontend_contract.py \
+    tests/test_notify_auth.py \
+    tests/test_verifier.py
+}
+
+case "${1:-}" in
+  status) cmd_status ;;
+  doctor) cmd_doctor ;;
+  check) cmd_check ;;
+  test-changed) cmd_test_changed ;;
+  smoke) cmd_smoke ;;
+  -h|--help|help|"") usage ;;
+  *)
+    echo "Unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

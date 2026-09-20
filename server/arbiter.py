@@ -24,7 +24,8 @@ async def _run_claude_oneshot(prompt: str, model: str, effort: str = "high",
     cwd 透传给 run_logged_oneshot 作为子进程工作目录（None 时沿用默认，向后兼容）：
     背对背验收隔离 worktree 子任务时须传 worktree 目录，评委才能核实到正确的产出位置。"""
     cmd = [
-        config.CLAUDE_BIN, "--", "-p", prompt,
+        # 不传 "--"：wrapper 会原样转发，导致 claude 把后面全当 prompt。见 claude_runner._build_cmd 注释。
+        config.CLAUDE_BIN, "-p", prompt,
         "--model", model, "--output-format", "json",
         "--effort", effort,
     ]

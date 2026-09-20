@@ -13,17 +13,30 @@ CLAUDE_MODEL_KANBAN，在没有 verify_command 时验收员要自己去 workdir 
 import json
 import re
 
-from . import config, db
+from . import config, db, spill
 from .job_store import run_logged_oneshot
 
 
 def _build_prompt(goal: str, stop_condition: str, produced: str,
-                  cmd_result: str = "", git_diff: str = "", workdir: str | None = None) -> str:
+                  cmd_result: str = "", git_diff: str = "", workdir: str | None = None,
+                  session_id: str | None = None) -> str:
+    # 目标/完成标准是人写的短文本，盲截断即可（超长本身说明目标没写清）。
+    # 三段证据走 spill：全文落盘 + 首尾预览 + 文件路径，避免被砍掉的尾部无声消失
+    # 而导致假 CONTINUE（见 server/spill.py 开头）。
     goal = (goal or "").strip()[:1500]
     stop_condition = (stop_condition or "").strip()[:800]
-    produced = (produced or "").strip()[:3000] or "（本轮无可读产出）"
-    cmd_result = (cmd_result or "").strip()[:2000]
-    git_diff = (git_diff or "").strip()[:1500]
+    produced = spill.spill_text(
+        (produced or "").strip(), config.GOAL_SPILL_PRODUCED_BYTES,
+        label="produced", session_id=session_id,
+    ) or "（本轮无可读产出）"
+    cmd_result = spill.spill_text(
+        (cmd_result or "").strip(), config.GOAL_SPILL_CMD_RESULT_BYTES,
+        label="cmd_result", session_id=session_id,
+    )
+    git_diff = spill.spill_text(
+        (git_diff or "").strip(), config.GOAL_SPILL_GIT_DIFF_BYTES,
+        label="git_diff", session_id=session_id,
+    )
     workdir = (workdir or "").strip()
     parts = [
         "你是一个严格的验收员。下面是一个 AI 开发任务的【目标】【完成标准】和【本轮产出片段】。"
@@ -32,7 +45,9 @@ def _build_prompt(goal: str, stop_condition: str, produced: str,
         "- 第一行只能是 DONE 或 CONTINUE 之一，不带任何其它字符。\n"
         "- 只有在你有充分把握确认完成标准已全部满足时才输出 DONE；"
         "任何不确定、部分完成、或无法从产出中确认的情况，一律输出 CONTINUE。\n"
-        "- 从第二行起，简述判断理由；若为 CONTINUE，请给出下一步应该做什么的具体指示。\n\n"
+        "- 从第二行起，简述判断理由；若为 CONTINUE，请给出下一步应该做什么的具体指示。\n"
+        "- 下方证据若出现「此处省略 N 字节，完整内容已存于文件：<路径>」，说明该段证据过长已落盘："
+        "请直接读取该文件或用 grep 检索，据完整内容判断，不要因为预览被省略就判 CONTINUE。\n\n"
     ]
     if workdir:
         # 隔离 worktree 等场景：明确告知评委去哪个目录核实产出，避免在错误的 cwd 下
@@ -61,7 +76,7 @@ async def verify(goal: str, stop_condition: str, produced: str,
     workdir 为任务实际执行目录（如隔离 worktree）：非空时既写进 prompt 告知评委去哪核实，
     也作为子进程 cwd，避免评委在错误目录下核实产出而假阴性；None 时保持原行为。"""
     prompt = _build_prompt(goal, stop_condition, produced, cmd_result=cmd_result,
-                           git_diff=git_diff, workdir=workdir)
+                           git_diff=git_diff, workdir=workdir, session_id=session_id)
     cmd = [config.CODEX_BIN, "--", "exec", "--json"]
     if config.CODEX_SKIP_GIT_CHECK:
         cmd += ["--skip-git-repo-check"]

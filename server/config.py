@@ -45,6 +45,19 @@ CLAUDE_IDLE_TIMEOUT = int(os.environ.get("CLAUDE_IDLE_TIMEOUT", "1800"))   # 180
 CLAUDE_TURN_MAX = int(os.environ.get("CLAUDE_TURN_MAX", "14400"))          # 4h绝对上限（同样为大任务放宽）
 CLAUDE_LOOP_REPEAT = int(os.environ.get("CLAUDE_LOOP_REPEAT", "8"))        # 相同工具调用连续N次 → 循环
 CLAUDE_LOOP_ERRORS = int(os.environ.get("CLAUDE_LOOP_ERRORS", "10"))       # 连续报错N次 → 循环
+# 递进阈值：达到这些次数只"记一笔"（写日志 + 供下一回合开头劝告），不终止；只有到
+# CLAUDE_LOOP_REPEAT/ERRORS 才 kill。
+# 为什么不在回合中途直接劝告：2026-08-17 实测（worklog/2026-08-17_agent-console-midturn-inject-probe/）
+# 常驻 stream-json 模式下，回合进行中写 stdin 的 user 消息会被 CLI 静默丢弃——不报错、
+# 不起新回合、也不排队到下一回合；同一句话在回合间隙写入则模型能读到。所以 dsh 那种
+# "回合内 3/5 次先劝告"无法实现，只能把劝告推迟到下一回合开头由我们自己带上。
+CLAUDE_LOOP_WARN_STEPS = [
+    int(x) for x in os.environ.get("CLAUDE_LOOP_WARN_STEPS", "3,5").split(",")
+    if x.strip().isdigit()
+]
+# 是否在下一回合消息开头附带上一回合的循环劝告。
+CLAUDE_LOOP_ADVISE_NEXT_TURN = os.environ.get(
+    "CLAUDE_LOOP_ADVISE_NEXT_TURN", "true").lower() == "true"
 CLAUDE_WATCHDOG_INTERVAL = int(os.environ.get("CLAUDE_WATCHDOG_INTERVAL", "15"))  # 看门狗检查间隔
 # 是否向会话与总览推送长回合进度快照。
 PROGRESS_PUSH_ENABLED = os.environ.get("PROGRESS_PUSH_ENABLED", "true").lower() == "true"
@@ -116,7 +129,7 @@ CLAUDE_SESSION_IDLE_SEC = int(os.environ.get("CLAUDE_SESSION_IDLE_SEC", "3600"))
 # tcodex 是对 codex CLI 的 wrapper；跑无状态的 `tcodex -- exec [resume <id>] --json ...`，
 # 每回合一个子进程，从 stdout 逐行读 JSONL 事件。默认走 workspace-write 沙箱，
 # CODEX_BYPASS=true 时改用 --dangerously-bypass-approvals-and-sandbox 免审批（root/内网常用）。
-CODEX_BIN = os.environ.get("CODEX_BIN", "/root/.nvm/versions/node/v22.23.1/bin/tcodex")
+CODEX_BIN = os.environ.get("CODEX_BIN", "/root/.nvm/versions/node/v22.23.2/bin/tcodex")
 CODEX_SANDBOX = os.environ.get("CODEX_SANDBOX", "workspace-write")
 CODEX_BYPASS = os.environ.get("CODEX_BYPASS", "true").lower() == "true"
 CODEX_SKIP_GIT_CHECK = os.environ.get("CODEX_SKIP_GIT_CHECK", "true").lower() == "true"
@@ -151,6 +164,47 @@ CODEX_MODELS = [
     # 不加入 glm-5.3-ioa / glm-5.3-flash-ioa：强制思考与全局 effort 不兼容，且无法按模型覆盖。
 ]
 CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.6-sol")
+# 2026-08-03 倍率截图反推的 codex 美元单价（$/M token）：以实测校准的
+# sonnet-5 输入 $3 / 缓存写 $3.75 / 输出 $15 为基准；缓存读 $0.3 是沿用 0.1x
+# 输入价的假设值，非实测。未覆盖的 codex 模型继续保持 cost_usd=None。
+CODEX_PRICE_TABLE = {
+    "gpt-5.6-sol": {
+        "in": 7.827067669172932,
+        "cache_write": 9.783834586466165,
+        "cache_read": 0.7827067669172931,
+        "out": 39.13533834586466,
+    },
+    "gpt-5.6-terra": {
+        "in": 3.1353383458646613,
+        "cache_write": 3.9191729323308264,
+        "cache_read": 0.3135338345864661,
+        "out": 15.676691729323306,
+    },
+    "gpt-5.6-luna": {
+        "in": 0.31578947368421056,
+        "cache_write": 0.39473684210526316,
+        "cache_read": 0.031578947368421054,
+        "out": 1.5789473684210527,
+    },
+    "gpt-5.5": {
+        "in": 7.466165413533834,
+        "cache_write": 9.332706766917292,
+        "cache_read": 0.7466165413533834,
+        "out": 37.33082706766917,
+    },
+    "gpt-5.4": {
+        "in": 3.7218045112781946,
+        "cache_write": 4.652255639097744,
+        "cache_read": 0.3721804511278195,
+        "out": 18.609022556390975,
+    },
+    "gpt-5.3-codex": {
+        "in": 2.819548872180451,
+        "cache_write": 3.5244360902255636,
+        "cache_read": 0.2819548872180451,
+        "out": 14.097744360902254,
+    },
+}
 # Dispatch 基础执行(dev/兜底)路由的默认引擎与模型；deep/评判仍走 Opus，不受此影响
 DISPATCH_EXEC_ENGINE = os.environ.get("DISPATCH_EXEC_ENGINE", "codex")
 DISPATCH_EXEC_MODEL = os.environ.get("DISPATCH_EXEC_MODEL", CODEX_DEFAULT_MODEL)
@@ -194,6 +248,25 @@ GOAL_SUBTASK_MAX_ATTEMPTS = int(os.environ.get("GOAL_SUBTASK_MAX_ATTEMPTS", "3")
 # 调大到 1800s（30min）给耐心；命令本身该多久跑完仍由 verify_command 的内容决定，这里只是
 # 不再抢先掐断。
 GOAL_CMD_TIMEOUT = float(os.environ.get("GOAL_CMD_TIMEOUT", "1800"))
+
+# ---- 证据 spill（超长文本落盘 + 预览替换，见 server/spill.py）----
+# 验收员 prompt 里的证据字段（本轮产出/验收命令输出/git diff）原来是硬编码盲截断，
+# 被砍掉的尾部无声消失，验收员看不到关键结论就只能判 CONTINUE（"任何不确定一律
+# CONTINUE"），盲截断因此直接制造假阴性。改成 spill 后全文一定落盘、预览带首尾、
+# 并把文件路径给验收员（它是带 shell 的 codex agent，能自己 read/grep 捞全文）。
+# 每项是该字段在 prompt 中占用的 UTF-8 字节上限（含定位符开销，恒不超出）。
+# 任一项 <=0 表示该字段不做限制（原样全量入 prompt）。
+GOAL_SPILL_PRODUCED_BYTES = int(os.environ.get("GOAL_SPILL_PRODUCED_BYTES", "6000"))
+GOAL_SPILL_CMD_RESULT_BYTES = int(os.environ.get("GOAL_SPILL_CMD_RESULT_BYTES", "4000"))
+GOAL_SPILL_GIT_DIFF_BYTES = int(os.environ.get("GOAL_SPILL_GIT_DIFF_BYTES", "3000"))
+# 验收取证（produced）从会话 jsonl 抽多少：原来复用看板摘要的口径（尾 40 行、
+# assistant 每条 300 字、user 200 字、总 3000 字），实测真实会话 jsonl 有 0.2~6MB、
+# 几百到数千行，抽出来只剩 1000~1400 字（约 0.05%），跑通的测试结论/报错原因基本都被
+# 砍掉，验收员无从确认达成 → 系统性判 CONTINUE。这里给验收单独放宽，全文交给 spill
+# 落盘 + 首尾预览 + 路径（验收员是带 shell 的 codex agent，能自己 read/grep 捞全文）。
+GOAL_VERIFY_TAIL_LINES = int(os.environ.get("GOAL_VERIFY_TAIL_LINES", "200"))
+GOAL_VERIFY_BLOCK_CHARS = int(os.environ.get("GOAL_VERIFY_BLOCK_CHARS", "4000"))
+GOAL_VERIFY_PRODUCED_CHARS = int(os.environ.get("GOAL_VERIFY_PRODUCED_CHARS", "200000"))
 
 # ---- Triage 自动分流（H3）----
 # 秘书生成晚报后，用便宜模型（CHEAP_MODEL）对当日会话/任务做一次性分诊：

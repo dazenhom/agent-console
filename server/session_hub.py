@@ -518,7 +518,7 @@ class SessionHub:
                 # resume 失效（缓存 sid 与 cwd 归属目录不一致）：自动重启丢弃坏 sid，
                 # 与 _run_turn 的自愈口径一致；此时历史仍在，不是"对话为空"。
                 await r.forget_session(sid)
-                db.update_session(sid, claude_session_id=None)
+                db.update_session(sid, claude_session_id=None, codex_usage_baseline="")
                 return {"ok": True, "noop": True, "reason": "resume_failed"}
             if captured["boundary"]:
                 meta = captured["boundary"]
@@ -663,7 +663,7 @@ class SessionHub:
                     "content": {"message": "Agent 上下文已失效，正在自动重启并续接近期对话…"},
                 })
                 await r.forget_session(sid)
-                db.update_session(sid, claude_session_id=None)
+                db.update_session(sid, claude_session_id=None, codex_usage_baseline="")
                 retry_message = self._build_resume_recovery_prompt(sid, user_text)
                 ret = await _turn_fn(
                     session_id=sid,
