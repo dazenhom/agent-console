@@ -21,6 +21,7 @@ from .session_hub import hub, Subscriber, _runner_for
 
 
 _uploads_cleanup_task = None
+_runner_cleanup_task = None
 logger = logging_util.get_logger(__name__)
 
 # 合法 mode：完整模型列表 + 兼容存量的旧档位值。
@@ -59,14 +60,17 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
     scheduler.start()  # 挂起定时任务后台循环
-    global _uploads_cleanup_task
+    global _uploads_cleanup_task, _runner_cleanup_task
     _uploads_cleanup_task = asyncio.ensure_future(_uploads_cleanup_loop())
+    _runner_cleanup_task = asyncio.ensure_future(_runner_cleanup_loop())
     # 预热 SwanLab sid，避免第一批请求并发登录竞争
     asyncio.ensure_future(_swanlab_sid_warmup())
     yield
     # 关闭：当前没有需要清理的资源（子进程在每回合结束时会自行清理）。
     if _uploads_cleanup_task and not _uploads_cleanup_task.done():
         _uploads_cleanup_task.cancel()
+    if _runner_cleanup_task and not _runner_cleanup_task.done():
+        _runner_cleanup_task.cancel()
 
 
 app = FastAPI(title="Agent Console", lifespan=lifespan)
@@ -1437,6 +1441,23 @@ async def _uploads_cleanup_loop():
         except Exception:
             pass
         await asyncio.sleep(interval * 3600)
+
+
+async def _runner_cleanup_loop():
+    # 双端口部署下只让一个进程做，否则两个进程互相杀对方的会话进程
+    import os
+    if not os.environ.get("RUN_SCHEDULER"):
+        return
+    from .codex_runner import runner as codex_runner
+    # 每 300s 回收空闲超时的常驻会话进程（下次消息自动重起 + resume）。
+    # codex 侧当前是基类 no-op、为将来实现预留接线。
+    while True:
+        try:
+            await runner.cleanup_idle()
+            await codex_runner.cleanup_idle()
+        except Exception:
+            pass
+        await asyncio.sleep(300)
 
 
 @app.post("/api/upload", dependencies=[Depends(require_auth)])
