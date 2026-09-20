@@ -14,19 +14,22 @@ from .codex_oneshot import run_codex_oneshot_text
 from .job_store import run_logged_oneshot, parse_claude_result_line, parse_done_verdict
 
 
-async def _run_claude_oneshot(prompt: str, model: str, effort: str = "high",
+async def _run_claude_oneshot(prompt: str, model: str, effort: str = "",
                               kind: str = "arbitration",
                               cwd: str | None = None) -> tuple[str, str]:
     """一次性调用 tclaude，返回 (job_id, 答案文本)。解析方式与 goal_verifier.verify 一致：
     从 stdout 逐行挑出 type=result 的 JSON 取 result 文本。失败/超时/无输出返回空文本。
+    不显式传 effort 时走 config.CLAUDE_ONESHOT_EFFORT（默认 low 省 token）；
+    误判代价高的关键路径（方案A、背对背评委、最终仲裁）调用方显式传 high。
 
     cwd 透传给 run_logged_oneshot 作为子进程工作目录（None 时沿用默认，向后兼容）：
     背对背验收隔离 worktree 子任务时须传 worktree 目录，评委才能核实到正确的产出位置。"""
+    eff = effort or config.CLAUDE_ONESHOT_EFFORT
     cmd = [
         # 不传 "--"：wrapper 会原样转发，导致 claude 把后面全当 prompt。见 claude_runner._build_cmd 注释。
         config.CLAUDE_BIN, "-p", prompt,
         "--model", model, "--output-format", "json",
-        "--effort", effort,
+        "--effort", eff,
     ]
     jid, text, stderr_text, status = await run_logged_oneshot(
         kind, cmd, config.ARBITRATION_TIMEOUT,

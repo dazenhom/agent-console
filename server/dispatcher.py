@@ -92,7 +92,7 @@ async def run_planner(request: str) -> list[dict]:
         # 不传 "--"：wrapper 会原样转发，导致 claude 把后面全当 prompt。见 claude_runner._build_cmd 注释。
         config.CLAUDE_BIN, "-p", prompt,
         "--model", config.CLAUDE_MODEL_SUPER, "--output-format", "json",
-        "--effort", "high",
+        "--effort", "medium",
     ]
     jid, text, stderr_text, status = await run_logged_oneshot(
         "dispatch_plan", cmd, config.ARBITRATION_TIMEOUT,
