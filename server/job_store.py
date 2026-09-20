@@ -7,7 +7,9 @@ triage.run_triage / goal_verifier.verify / kanban.summarize_progress 三处
 只负责"跑 + 记 + 落盘"，不解析结果——解析与失败降级逻辑留在各调用方，
 调用方拿到 stdout 后按需 db.set_job_output(jid, 结论) 补写结论。
 
-超时的便宜档（冷启动/连接建立卡顿）会按小退避重试，每次尝试独立落一行 job_runs；
+原先超时的便宜档被归因于冷启动/连接建立卡顿，真实根因是子进程继承 stdin：codex exec
+在 stdin 为管道时会追加读取并等 EOF，最终被 wait_for 判超时；现以 stdin=DEVNULL 显式
+断开。超时仍保留小退避重试，每次尝试独立落一行 job_runs；
 所有 oneshot 子进程受模块级信号量封顶，避免堆叠打满并发。
 
 跑子进程外壳之外，还提供调用方共用的两个纯文本解析器：parse_claude_result_line（从
@@ -17,9 +19,11 @@ verdict 解析），都不依赖子进程，便于单测与复用。
 import asyncio
 import json
 import re
+import signal
 from pathlib import Path
 
 from . import config, db
+from .agent_provider import _kill_process_group
 from .claude_runner import _child_env
 
 # 所有 oneshot 子进程的全局并发上限
@@ -42,6 +46,9 @@ async def _attempt(cmd: list, timeout: float, cwd: str | None) -> tuple[str, str
         proc = await asyncio.create_subprocess_exec(
             *cmd, env=_child_env(), cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            # stdin 必须显式断开：继承会让 codex exec 在 stdin 为管道时追加读取并等 EOF，
+            # 挂到被判超时（历史 83% 超时的根因）；prompt 一律经 argv 传入。
+            stdin=asyncio.subprocess.DEVNULL,
             start_new_session=True,
         )
         try:
@@ -50,7 +57,8 @@ async def _attempt(cmd: list, timeout: float, cwd: str | None) -> tuple[str, str
             stderr_text = err.decode("utf-8", errors="replace") if err else ""
         except asyncio.TimeoutError:
             try:
-                proc.kill()
+                _kill_process_group(proc, signal.SIGKILL)
+                await proc.wait()
             except Exception:
                 pass
             status = "timeout"
