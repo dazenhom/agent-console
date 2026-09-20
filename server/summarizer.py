@@ -11,10 +11,15 @@ from .codex_oneshot import run_codex_oneshot_text
 
 
 def _heuristic(user_text: str, reply_text: str, limit: int = 40) -> str:
-    """启发式兜底：优先取 Agent 回复首句/前 N 字，没有则取用户指令。"""
+    """启发式兜底：按句切分取最后一个长度 ≥8 的完整句（结论通常在结尾），没有合格
+    句时退回复述前 N 字。优先看 Agent 回复，没有则取用户指令。"""
     src = (reply_text or "").strip() or (user_text or "").strip()
     if not src:
         return ""
+    sents = [re.sub(r"\s+", " ", x).strip() for x in re.split(r"[。！？\n]", src)]
+    for sent in reversed(sents):
+        if len(sent) >= 8:
+            return sent[:limit] + ("…" if len(sent) > limit else "")
     s = re.sub(r"\s+", " ", src)
     return s[:limit] + ("…" if len(s) > limit else "")
 
