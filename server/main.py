@@ -238,6 +238,9 @@ async def remove_session(sid: str):
     # 隔离会话：物理删除时清理 worktree 目录（不删分支，合并/保留由人工决定）
     if sess.get("is_worktree") and sess.get("worktree_base"):
         await asyncio.to_thread(worktree.remove, sess.get("workdir"), sess.get("worktree_base"))
+    # 取消在途的行摘要/标题生成任务（含去抖等待中的），避免删除后任务醒来对已删 sid
+    # 继续写数据/推幽灵 session_update。
+    hub.cancel_summary_task(sid)
     db.delete_session(sid)
     return {"ok": True}
 

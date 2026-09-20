@@ -209,10 +209,17 @@ VALID_ENGINES = {"claude", "codex"}
 DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
 
 # ---- 会话行摘要（列表里"刚做了什么"一句话）----
-# 一次性子进程概括的固有开销约 8000 token、有效载荷仅约 1.5%，启发式截断兜底已够用，故默认关闭；
-# 要恢复设 SUMMARY_ENABLED=true。
-SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "false").lower() == "true"
+# 默认开启。上一轮（7bad351）默认关闭的理由是 83% 调用超时——该归因已被推翻：真根因是
+# oneshot 子进程继承 stdin 导致确定性失败（b808cff 已修，实测 8/8 成功、4~5s 完成）。
+# 频率与成本现在靠 TITLE_EARLY_TURNS / TITLE_EVERY_N / SUMMARY_DEBOUNCE_SEC 节流 +
+# title/summary 合并成一次调用来控制，不再需要靠关开关硬省。
+SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "true").lower() == "true"
 SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "30"))
+# 尾随去抖窗口（秒）：回合结束后先等这么久，期间同会话又起新回合就取消本次、由新回合
+# 的任务接手——连续追问只在末尾生成一次，既省调用又让摘要反映最新状态。实测近 14 天
+# 真实 tasks 时序回放：early=2/every=4/去抖 60s → 25.3 次/天，占回合数 17%
+# （相比旧的每回合无条件触发降 81%）。
+SUMMARY_DEBOUNCE_SEC = float(os.environ.get("SUMMARY_DEBOUNCE_SEC", "60"))
 # 重试机制保留但默认停用：上一轮加重试时的归因（冷启动卡顿）已被推翻，真实根因是
 # oneshot 子进程继承 stdin（已在 job_store 修复），失败是确定性的、重试只会把每次失败
 # 的 token 消耗翻倍；仅在未来出现偶发性超时失败时才用环境变量手动启用。
@@ -288,8 +295,8 @@ ARBITER_MODEL = os.environ.get("ARBITER_MODEL", "claude-opus-5[1m]")
 # 多轮对话后持续用 AI 重起标题，越来越准地反映整个对话。TITLE_EARLY_TURNS 前每回合刷，
 # 之后每 TITLE_EVERY_N 回合刷一次；用户手动改名（title_auto=0）后不再自动覆盖。
 TITLE_REFRESH_ENABLED = os.environ.get("TITLE_REFRESH_ENABLED", "true").lower() == "true"
-TITLE_EARLY_TURNS = int(os.environ.get("TITLE_EARLY_TURNS", "1"))
-TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "10"))
+TITLE_EARLY_TURNS = int(os.environ.get("TITLE_EARLY_TURNS", "2"))
+TITLE_EVERY_N = int(os.environ.get("TITLE_EVERY_N", "4"))
 # 首条 user 消息超过该字数则视为 skill 固定前言（编排指令），起标题时跳过前言只取附加需求。
 # 正常手输极少这么长；skill 前言（SKILL.md）动辄上千字。
 TITLE_SKIP_PREFIX_CHARS = int(os.environ.get("TITLE_SKIP_PREFIX_CHARS", "400"))

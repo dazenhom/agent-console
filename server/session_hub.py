@@ -157,6 +157,10 @@ class SessionHub:
         # session_id -> {request_id: {request_id, tool_name, input}} 待用户确认的权限请求。
         # 用户回应/回合取消后清空；WS 重连时重发，避免弹窗因断线丢失。
         self._pending_perms: dict[str, dict] = {}
+        # session_id -> 在途的行摘要/标题合并生成任务（含去抖等待）。新回合开始/会话删除
+        # 时取消旧的：前者让摘要改由新回合接手，后者防止对已删 sid 写孤儿数据
+        # （_bind_out_of_turn 注释里踩过同款坑）。
+        self._summary_tasks: dict[str, asyncio.Task] = {}
 
     # ---------- 订阅管理 ----------
     def subscribe(self, sid: str, sub: Subscriber) -> None:
@@ -381,6 +385,9 @@ class SessionHub:
         """发起一个回合。已在跑则拒绝（同会话内串行）。返回是否成功发起。"""
         if self.is_running(sid):
             return False
+        # 新回合开始：取消还在去抖等待/生成中的上一轮摘要任务，摘要改由本回合结束后
+        # 重新生成（连续追问只在末尾生成一次）。
+        self.cancel_summary_task(sid)
         # 自动命名：首条消息时将内容截取为标题
         sess = db.get_session(sid)
         if sess and db.count_messages(sid) == 0:
@@ -397,7 +404,10 @@ class SessionHub:
                     else:
                         seed = ""
                 clean = re.sub(r"\s+", " ", seed).strip()
-                new_title = (clean[:24] + ("…" if len(clean) > 24 else "")) if clean else "新任务"
+                # 超长首条不再裸截断当标题（此前 29.6% 会话标题以 … 结尾、读不出在干
+                # 什么）：改占位符，让前 TITLE_EARLY_TURNS 回合的 AI 标题去填；
+                # ≤24 字的短首条仍直接用。
+                new_title = clean if clean and len(clean) <= 24 else "新任务"
                 if new_title:
                     db.update_session(sid, title=new_title, title_auto=1)
         db.add_message(sid, "user", {"text": user_text})
@@ -713,31 +723,71 @@ class SessionHub:
             self._stuck_notified.discard(sid)
             await self.broadcast(sid, {"type": "status", "status": "idle", "result": final_result})
 
-            # 行摘要（Haiku + 兜底）：后台跑，不阻塞。写 sessions.summary 后再推一次监控。
+            # 行摘要 + 标题合并生成（SUMMARY_ENABLED 且命中节流点才发）：early 前每回合、
+            # 之后每 every 回合一次；先等去抖窗口，期间同会话又起新回合则本任务被取消、
+            # 由新回合接手（连续追问只在末尾生成一次）。
             reply_text = "\n".join(reply_parts)
-            asyncio.ensure_future(self._summarize_and_emit(sid, user_text, reply_text))
-            # 标题异步刷新：前 TITLE_EARLY_TURNS 回合每回合刷，之后每 TITLE_EVERY_N 回合刷一次。
             n_user = db.count_user_messages(sid)
-            if config.TITLE_REFRESH_ENABLED and (
-                n_user <= config.TITLE_EARLY_TURNS
-                or (n_user - config.TITLE_EARLY_TURNS) % config.TITLE_EVERY_N == 0
-            ):
-                asyncio.ensure_future(self._auto_title_by_ai(sid))
-            asyncio.ensure_future(self._auto_progress_by_ai(sid))
+            due = n_user <= config.TITLE_EARLY_TURNS or (
+                n_user - config.TITLE_EARLY_TURNS) % config.TITLE_EVERY_N == 0
+            if config.SUMMARY_ENABLED and due:
+                old = self._summary_tasks.pop(sid, None)
+                if old and not old.done():
+                    old.cancel()
+                self._summary_tasks[sid] = asyncio.ensure_future(
+                    self._summarize_and_emit(sid, user_text, reply_text))
+            asyncio.ensure_future(self._auto_progress_by_ai(sid))  # 看板进展不动，自带 mtime 缓存
             await self._emit_session_update(sid)
             await self._notify_turn_done(sid, user_text, reply_text, final_result, kind="turn", elapsed=turn_elapsed)
 
             # 本回合结束后自动出队执行下一条（_turns.pop 已在上方执行，is_running 为假）
             asyncio.ensure_future(self._drain_queue(sid))
 
+    def cancel_summary_task(self, sid: str) -> None:
+        """取消该会话在途的行摘要/标题生成任务（含去抖等待中的）。新回合开始与删除会话时
+        调用：前者让摘要改由新回合接手，后者防止对已删 sid 写孤儿数据。"""
+        task = self._summary_tasks.pop(sid, None)
+        if task and not task.done():
+            task.cancel()
+
     async def _summarize_and_emit(self, sid: str, user_text: str, reply_text: str) -> None:
-        """生成行摘要写库 + 推监控。失败静默（summarizer 自带兜底）。"""
+        """合并生成行摘要 + 标题写库 + 推监控。开头先等去抖窗口：期间同会话又起新回合
+        则本任务被取消（由新回合的任务接手）。失败静默（summarizer 自带启发式兜底）。"""
         try:
+            try:
+                await asyncio.sleep(config.SUMMARY_DEBOUNCE_SEC)
+            except asyncio.CancelledError:
+                return
             from . import summarizer
-            summary = await summarizer.summarize(user_text, reply_text)
+            # 发起前先查一次：会话已删，或用户已手动改名（title_auto=0 标题锁定）时不带
+            # 原标题进 prompt（手动标题也会在写回时被 title_auto 复查拦掉）。
+            sess = db.get_session(sid)
+            if not sess:
+                return
+            current_title = (sess.get("title") or "") if sess.get("title_auto", 1) else ""
+            convo = self._build_title_convo(sid)
+            title, summary = await summarizer.summarize_and_title(
+                convo, current_title, user_text, reply_text)
+            if not title and not summary:
+                return
+            # await 期间会话可能已被删：别再往已删 sid 写数据/推幽灵 session_update。
+            if db.get_session(sid) is None:
+                return
+            fields: dict = {}
             if summary:
-                db.update_session(sid, summary=summary)
+                fields["summary"] = summary
+            if title:
+                # await 期间用户可能手动改名：复查 title_auto，防止覆盖手动标题
+                # （双重检查，同 _auto_title_by_ai 的既有模式）。
+                sess = db.get_session(sid)
+                if sess and sess.get("title_auto", 1) != 0 and title != (sess.get("title") or ""):
+                    fields["title"] = title
+                    fields["title_auto"] = 1
+            if fields:
+                db.update_session(sid, **fields)
                 await self._emit_session_update(sid)
+        except asyncio.CancelledError:
+            return
         except Exception:
             pass
 

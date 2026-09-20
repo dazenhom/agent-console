@@ -1,11 +1,12 @@
-"""行摘要：给会话列表生成一句话「这会话刚做了什么」。
+"""行摘要 + 标题：给会话列表生成「这条会话在干什么、进展到哪」。
 
-主路径用便宜档 codex 模型（CHEAP_MODEL）一次性概括（漂亮、像 agent view 的行摘要）；
-失败/超时回退到启发式截断。这是**独立的一次性子进程**（不是会话的常驻进程），绝不碰会话上下文。
+主路径用便宜档 codex 模型（CHEAP_MODEL）一次性调用同时产出 title + summary（原来行摘要
+与起标题是两次独立调用，现在合并为一次、prompt 要求严格两行输出）；失败/超时回退到
+启发式截断。这是**独立的一次性子进程**（不是会话的常驻进程），绝不碰会话上下文。
 """
 import re
 
-from . import config
+from . import config, db
 from .codex_oneshot import run_codex_oneshot_text
 
 
@@ -18,84 +19,137 @@ def _heuristic(user_text: str, reply_text: str, limit: int = 40) -> str:
     return s[:limit] + ("…" if len(s) > limit else "")
 
 
-def _build_prompt(user_text: str, reply_text: str) -> str:
-    user_text = re.sub(r"\s+", " ", (user_text or "").strip())[:300]
-    reply_text = re.sub(r"\s+", " ", (reply_text or "").strip())[:800]
-    # 把内容塞进一句话（避免"用户：/助手："被当成对话角色让模型去接话）。
-    return (
-        "下面是一轮对话的记录，请用不超过 18 个字的中文概括「助手做了什么」，"
-        "只输出概括本身，不要引号或任何前后缀。"
-        f"记录：用户说『{user_text}』，助手回复『{reply_text}』"
-    )
+# 合并调用的说明段：严格两行输出（TITLE：/SUMMARY：），辨识度硬规则（具体对象、带数字、
+# 禁泛词、TITLE 管整条会话主线 / SUMMARY 管最近一轮）全部写死在 prompt 里。
+_PROMPT_HEAD = (
+    "你在给一个工程师的 AI 会话列表生成条目文案，目的是让他扫一眼就知道「这条会话在干什么、进展到哪」。\n\n"
+    "输出严格两行，不要任何前后缀、引号、编号、markdown：\n"
+    "第1行以 TITLE： 开头，不超过 20 个汉字，格式「对象 + 在做什么」。对象必须是具体的项目/模块/文件/数据集名，"
+    "直接抄原文里的专有名词（如 job_store、英文AST线、v17、WER）。\n"
+    "第2行以 SUMMARY： 开头，不超过 30 个汉字，格式「动作 + 对象 + 结果/数字」。必须写出这一轮的结论或数字，"
+    "没有结论就写当前卡在哪。\n\n"
+    "硬规则：\n"
+    "- 禁止出现泛词：完成了任务、进行了处理、已处理、相关工作、若干、一些、进行分析。\n"
+    "- 有数字（行数/百分比/耗时/版本号）必须带上。\n"
+    "- 只描述事实，不评价。\n"
+    "- TITLE 描述整条会话的主线任务，SUMMARY 只描述最近这一轮的进展，两行不要重复。\n\n"
+    "示例：\n"
+    "TITLE：job_store 超时根因定位\n"
+    "SUMMARY：定位到子进程未指定 stdin，加 DEVNULL 后 8/8 通过\n\n"
+    "TITLE：英文 AST 线产量瓶颈分析\n"
+    "SUMMARY：瓶颈是召回词表仅 8 个词，放宽到 33 个后召回 3.71 倍\n\n"
+    "TITLE：stage2 数据配比核对\n"
+    "SUMMARY：核对 v17 各 source 比例，粤语权重偏高已降至 0.6\n"
+)
+
+# 有原标题时追加的判据段：点破"当前标题可能只是机械截断残句"。不点破的话模型会把
+# 初始标题当权威一路 KEEP 到底（旧版 73% 的标题被钉死在截断残句上，根因就在这）。
+_PROMPT_TITLE_PARA = (
+    "\n当前标题是『{current_title}』。注意它可能只是把用户第一句话机械截断的残句"
+    "（特征：以 … 结尾、以「帮我/阅读/读取」开头、含裸路径、读不出在干什么）——"
+    "这种情况必须重写成合格 TITLE，不要保留。\n"
+    "只有当它已经是一个合格的、准确概括整条会话的 TITLE 时，第1行才原样输出 KEEP。\n"
+)
 
 
-async def _haiku(user_text: str, reply_text: str) -> str:
-    """一次性便宜档概括。返回干净摘要字符串；失败/超时/无输出返回空串。"""
-    _, summary, _, status = await run_codex_oneshot_text(
-        "line_summary", _build_prompt(user_text, reply_text), config.SUMMARY_TIMEOUT,
-        model=config.CHEAP_MODEL,
-    )
+def _strip_garbled(s: str) -> str:
+    """剥掉模型偶发吐在结尾的乱码：末尾孤立的非中文非 ASCII 片段（如西里尔字母尾巴
+    ропа），或末尾 ≤3 个字母的孤立拉丁尾巴（如 bic，无论前面是中文、数字还是空格）。
+    整串本身就是一个 ≤3 字母词（如 GPU）时不动；更长的英文专有名词（stdin/DEVNULL）
+    也不受影响。"""
+    s = re.sub(r"[^\x00-\x7f一-鿿…]+$", "", s)
+    if not re.fullmatch(r"[A-Za-z]{1,3}", s):
+        s = re.sub(r"[A-Za-z]{1,3}$", "", s)
+    return s.strip()
+
+
+def _parse_merged_output(text: str) -> tuple[str, str]:
+    """解析合并调用的两行输出 → (title, summary)。按行找 TITLE：/SUMMARY： 前缀（全角、
+    半角冒号都认），title 限 24 字、summary 限 40 字。title 为空串 = 保留原标题（含模型
+    回 KEEP 与整行缺失两种情况）；只出其一时另一个照常返回，不整体丢弃。"""
+    title = summary = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not title:
+            m = re.match(r"^TITLE[：:]\s*(.*)$", line)
+            if m:
+                t = m.group(1).strip().strip('"“”')
+                # KEEP 判定沿用旧去噪正则：剥常见引号/结尾标点再比对（仅用于判断）。
+                # 必须先于乱码清洗做——清洗的拉丁尾巴规则会把 KEEP 啃成残词导致判定失效。
+                if re.sub(r"[\"'『』「」。.,!！]", "", t).strip().upper() == "KEEP":
+                    title = ""
+                    continue
+                title = _strip_garbled(t)[:24]
+                continue
+        if not summary:
+            m = re.match(r"^SUMMARY[：:]\s*(.*)$", line)
+            if m:
+                summary = _strip_garbled(m.group(1).strip().strip('"“”'))[:40]
+    return title, summary
+
+
+async def summarize_and_title(convo: str, current_title: str = "",
+                              user_text: str = "", reply_text: str = "") -> tuple[str, str]:
+    """一次调用同时生成 title + summary（合并原先行摘要与起标题两次调用）。
+
+    convo 是会话摘录（session_hub._build_title_convo 的产物，含 skill 前言剥离与去重），
+    user_text/reply_text 是刚结束这一轮的全文（SUMMARY 的主要素材）。返回 (title, summary)：
+    title 为空串 = 保留原标题；两者独立容错（只出其一时另一个照常返回）。AI 失败/关闭时
+    title 为空串、summary 回退启发式。永不抛异常。"""
+    if not config.SUMMARY_ENABLED:
+        return "", _heuristic(user_text, reply_text)
+    user_clean = re.sub(r"\s+", " ", (user_text or "").strip())[:300]
+    reply_clean = re.sub(r"\s+", " ", (reply_text or "").strip())[:800]
+    convo_clean = re.sub(r"\s+", " ", (convo or "").strip())[:800]
+    if not (user_clean or reply_clean or convo_clean):
+        return "", ""
+    parts = [_PROMPT_HEAD]
+    if current_title:
+        parts.append(_PROMPT_TITLE_PARA.format(current_title=current_title))
+    body = []
+    if user_clean or reply_clean:
+        body.append(f"最近一轮：用户说『{user_clean}』，助手回复『{reply_clean}』")
+    if convo_clean:
+        body.append(f"会话摘录（首条 + 最近几轮）：『{convo_clean}』")
+    parts.append("对话内容：\n" + "\n".join(body))
+    try:
+        jid, text, _, status = await run_codex_oneshot_text(
+            "line_summary", "\n".join(parts), config.SUMMARY_TIMEOUT,
+            model=config.CHEAP_MODEL,
+        )
+    except Exception:
+        return "", _heuristic(user_text, reply_text)
     if status != "success":
-        return ""
-    summary = re.sub(r"\s+", " ", summary).strip().strip('"“”')
-    return summary[:40]
+        return "", _heuristic(user_text, reply_text)
+    # 排障可观测性：把模型原始返回写进 job_runs.output（照 kanban 的写法），解析出问题
+    # 时能直接看到模型到底吐了什么。
+    try:
+        db.set_job_output(jid, text)
+    except Exception:
+        pass
+    title, summary = _parse_merged_output(text)
+    if not summary:
+        summary = _heuristic(user_text, reply_text)
+    if not config.TITLE_REFRESH_ENABLED:
+        title = ""  # 手动关掉标题自动刷新时只出 summary，不覆盖标题
+    return title, summary
 
 
 async def summarize(user_text: str, reply_text: str) -> str:
-    """生成一句话摘要：Haiku 优先，失败回退启发式。永不抛异常。"""
-    if config.SUMMARY_ENABLED:
-        try:
-            s = await _haiku(user_text, reply_text)
-            if s:
-                return s
-        except Exception:
-            pass
-    return _heuristic(user_text, reply_text)
-
-
-async def _gen_title_haiku(convo: str, current_title: str = "") -> str:
-    """一次性便宜档起标题：给一段对话内容取一个不超过 10 字的中文标题。失败/超时/无输出返回空串。
-
-    current_title 非空时改判「是否需要换标题」：话题仍延续则回固定标记 KEEP（上层转成空串保留原标题），
-    仅当话题明显漂移或原标题不准时才输出新标题。"""
-    clean = re.sub(r"\s+", " ", convo).strip()[:800]
-    if not current_title:
-        prompt = (
-            "给下面这段对话内容起一个不超过 40 个字的中文标题，要具体说明做什么事、遇到什么问题，"
-            "让人一眼看出对话在干什么，只输出标题本身，不要引号、标点或任何前后缀。"
-            f"对话：『{clean}』"
-        )
-    else:
-        prompt = (
-            "判断是否需要给一段对话换标题。"
-            f"当前标题：『{current_title}』；最近对话：『{clean}』。"
-            "若最近对话仍是当前标题所描述任务的延续、且当前标题已能准确概括，"
-            "只输出标记 KEEP（不要复述当前标题，不要加任何其他字）。"
-            "仅当话题已明显偏离到别的事情，或当前标题明显不准确、过于笼统时，"
-            "才输出一个不超过 40 个字、反映最近在做什么的新标题。不要仅因为想换个说法就改标题。"
-            "只输出标记或标题本身，不要引号、标点或任何前后缀。"
-        )
-    _, result, _, status = await run_codex_oneshot_text(
-        "gen_title", prompt, config.SUMMARY_TIMEOUT, model=config.CHEAP_MODEL,
-    )
-    if status != "success":
-        return ""
-    # 清掉可能的引号/换行，限长
-    result = re.sub(r"\s+", " ", result).strip().strip('"“”')[:45]
-    # 模型判定话题仍延续时回固定标记 KEEP，转成空串让上层保留原标题。
-    # 先剥掉常见引号/书名号/结尾标点噪音再比对，兼容『KEEP』、KEEP。等变体（仅用于判断，不污染返回值）。
-    if re.sub(r"[\"'『』「」。.,!！]", "", result).strip().upper() == "KEEP":
-        return ""
-    return result
+    """兼容入口：只要行摘要（内部走合并调用，无会话摘录时只看本轮对话）。永不抛异常。"""
+    try:
+        _, summary = await summarize_and_title("", "", user_text, reply_text)
+        return summary
+    except Exception:
+        return _heuristic(user_text, reply_text)
 
 
 async def gen_title(convo: str, current_title: str = "") -> str:
-    """给一段对话内容生成语义标题。关闭/失败返回空串（上层保留截取标题）。永不抛异常。
+    """兼容入口：只要标题（内部走合并调用）。返回空串 = 保留原标题。永不抛异常。
 
-    current_title 非空时交给模型判断是否需要换标题，无需换则返回空串。"""
-    if not config.TITLE_REFRESH_ENABLED:
-        return ""
+    current_title 非空时交给模型判断是否需要换标题（残句必须重写、准确才 KEEP）。"""
     try:
-        return await _gen_title_haiku(convo, current_title) or ""
+        title, _ = await summarize_and_title(convo, current_title)
+        return title
     except Exception:
         return ""
