@@ -213,8 +213,10 @@ DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")
 # 要恢复设 SUMMARY_ENABLED=true。
 SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "false").lower() == "true"
 SUMMARY_TIMEOUT = float(os.environ.get("SUMMARY_TIMEOUT", "30"))
-# 便宜档 oneshot 子进程的重试次数（超时退避重试）与全局并发封顶
-ONESHOT_RETRIES = int(os.environ.get("ONESHOT_RETRIES", "1"))
+# 重试机制保留但默认停用：上一轮加重试时的归因（冷启动卡顿）已被推翻，真实根因是
+# oneshot 子进程继承 stdin（已在 job_store 修复），失败是确定性的、重试只会把每次失败
+# 的 token 消耗翻倍；仅在未来出现偶发性超时失败时才用环境变量手动启用。
+ONESHOT_RETRIES = int(os.environ.get("ONESHOT_RETRIES", "0"))
 ONESHOT_MAX_CONCURRENCY = int(os.environ.get("ONESHOT_MAX_CONCURRENCY", "4"))
 
 # ---- 目标循环（kind=goal）----
