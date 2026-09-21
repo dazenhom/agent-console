@@ -6,6 +6,8 @@
 
 数据取自 `graphify-out/GRAPH_REPORT.md`（**2026-07-24 生成的快照，图谱早于 2026-09-10 的多轮改动，动手前先重新生成一次 graphify 再核对，不要直接采信旧数字**），cohesion ≤ 0.07 的社区：
 
+> **graphify 工具复活配方**：本机已无 `graphify` 命令（`/opt/venv/bin/graphify` 不存在，pip 里也没有），`graphify-out/` 停留在 2026-08-03 的快照（commit `367c836`，落后 29+ commit），表里的数字仅供参考。真要重新生成：`pip install graphifyy`，在项目根目录跑 `graphify .`（AST 提取免费）。2026-09-21 起 `.claude/agents/*.md` 和 console-dev skill 里的 graphify 指令已全部移除，图谱不再是默认工作流的一环，按需手动复活即可。
+
 | Cohesion | 社区名 | 规模 | 拆分时大致落点（改前用 graphify 核实） |
 | --- | --- | --- | --- |
 | 0.04 | REST API Routes (Todos/Memos/Queue) | 57 节点 | `server/main.py` 路由层 |

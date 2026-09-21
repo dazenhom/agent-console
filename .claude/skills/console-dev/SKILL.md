@@ -15,16 +15,6 @@ description: 专门用于开发 agent-console 自身功能的四角流水线。a
 - 启动脚本（供用户手动重启时参考）：`python3 start_dual.py`（双端口：80 HTTP + 8800 HTTPS。**不要用 run.sh**，它是单端口会打乱端口布局）
 - 服务验证：`curl -s http://127.0.0.1:8800/` 或 `curl -s http://127.0.0.1:8800/api/tasks -H 'Authorization: Bearer 123'`
 
-## 先查图谱，再读代码（四个角色都适用）
-
-项目根目录有 `graphify-out/`（graphify 生成的代码知识图谱，覆盖 server/+web/+tests/，含依赖/调用关系）。**接到任务后先用图谱定位，再决定要精读哪几个文件**，比盲目 Grep/通读省时间：
-- `graphify explain "<文件名或符号名>"`：看一个文件/函数的直接依赖和被依赖关系（谁 import 它、它 import 谁），带源码行号。
-- `graphify path "A" "B"`：查两个模块/符号之间的最短依赖路径，判断改 A 会不会波及 B——developer 改动前、reviewer 判断影响面时都适用。
-- **执行位置**：命令要在 `/apdcephfs_gy2/share_302533218/zhihangxu/agent-console/` 项目根目录下跑（默认读相对路径 `graphify-out/graph.json`），否则显式加 `--graph /apdcephfs_gy2/share_302533218/zhihangxu/agent-console/graphify-out/graph.json`。已验证子智能体默认环境能直接跑 `graphify` 命令，不需要额外配置。
-- **图谱只给结构，不给代码语义**：它能告诉你"谁调用谁"，不能告诉你"这段逻辑对不对"，定位完仍要 Read 实际文件确认。
-- **图谱结论未必是真问题，需要代码核实**：例如它曾报 scheduler.py/secretary.py/triage.py 三者互为 import 环，但三处全是函数体内延迟 import（Python 打破循环依赖的标准写法），不是 bug。凡是图谱报的"环/低内聚/异常连接"，先用 Grep/Read 核实再下结论，不要直接照图谱措辞下结论。
-- **图谱是静态快照，可能滞后于最新改动**，跨大改动后如果发现图谱信息明显过时，提醒用户重新生成，不要死信旧图。
-
 ## 项目现状规模（速查）
 
 具体数字（模块数/路由数/WebSocket地址/表数/前端Tab数）已挪到 `docs/project-snapshot.md`，会过时，现查优先（`ls server/*.py`、`grep -c '@app\.\(get\|post\|put\|delete\|patch\)(' server/main.py`）。
@@ -42,7 +32,6 @@ description: 专门用于开发 agent-console 自身功能的四角流水线。a
 - 读取相关源文件，理解现状
 - 拆解需求，产出具体的实现方案（前端改哪里、后端加哪个接口）
 - 明确 ops 的只读验证步骤（代码可加载性检查、curl 探活当前服务），并说明改动需用户手动重启后生效
-- **顺手扫一眼图谱的知识缺口与建议问题（轻量，非硬性）**：定位完代码后，瞥一下 `graphify-out/GRAPH_REPORT.md` 的 **Knowledge Gaps**（孤立节点，≤1 连接，如 run.sh/restart.sh/agent-tunnel.sh、各类环境变量——可能是漏文档或没接线的组件）和 **Suggested Questions**（AMBIGUOUS 模糊边、以及高中介中心性的跨社区桥接节点，如 `SessionHub`/`ClaudeRunner`/`AgentProvider`）。如果发现和本次需求相关的线索（例如要动的正好是个孤立节点、或需求牵扯到某个桥接节点），顺手在分析里带一句作为潜在需求线索或代码健康度提示即可——**不必每次深挖，不相关就跳过**。
 
 **2.【实现】** 委派给 developer：
 - 按方案修改 `server/`、`web/` 下的文件
@@ -51,7 +40,7 @@ description: 专门用于开发 agent-console 自身功能的四角流水线。a
 
 **3.【审查】** 委派给 reviewer：
 - 审查前后端改动，找正确性 bug、API 与前端不一致、安全问题
-- **高连接度函数（God Nodes）改动需升级审查强度**：graphify 报告标出的全项目最多依赖的函数——`_query()`、`api()`、`toast()`、`escapeHtml()`、`el()`、`_exec()`、`_now()`、`SessionHub`、`get_session()`、`new_id()`（按连接数从高到低）。改动涉及这些函数本身（不只是调用它们）时，reviewer 要额外确认：有没有遍历过所有调用点、有没有破坏既有调用方的假设（参数顺序/返回值语义/异常行为），倾向于多走一轮回跳复审而不是一次放行。可用 `graphify explain "<函数名>"` 快速拉出全部调用点核对，比 Grep 更全。
+- **高连接度函数（God Nodes）改动需升级审查强度**：全项目最多依赖的函数——`_query()`、`api()`、`toast()`、`escapeHtml()`、`el()`、`_exec()`、`_now()`、`SessionHub`、`get_session()`、`new_id()`（按连接数从高到低）。改动涉及这些函数本身（不只是调用它们）时，reviewer 要额外确认：有没有遍历过所有调用点、有没有破坏既有调用方的假设（参数顺序/返回值语义/异常行为），倾向于多走一轮回跳复审而不是一次放行。
 - 结论：【可合并】或【需修改】
 
 **4.【回跳】** 若 reviewer 判定"需修改"，交回 developer 修复，再让 reviewer 复审（最多 2 轮）。
@@ -61,7 +50,6 @@ description: 专门用于开发 agent-console 自身功能的四角流水线。a
   - `python3 -m py_compile server/main.py`（后端语法可加载性检查）
   - `curl -s http://127.0.0.1:8800/`（探活）
   - `curl -s http://127.0.0.1:8800/api/tasks -H 'Authorization: Bearer 123'`（查任务状态）
-  - **涉及模块依赖结构的较大改动，追加一步图谱结构 diff 验证**：若本次改动动了模块间依赖关系（新增抽象层、拆分/合并模块、把一大坨函数搬家），ops 在跑完上面的只读验证后，还要在项目根目录重跑一次 `graphify` 重新生成 `graphify-out/`（若 `graphify` 命令不可用则跳过，并在汇报里注明"图谱工具不可用，未做结构 diff"），对比新旧 `GRAPH_REPORT.md` 里相关 community 的变化，确认改动确实达到了预期的解耦效果——例如原本低内聚的社区被拆成了更聚焦的小社区 / cohesion 上升，或不该有的跨模块依赖消失了。纯改逻辑、加接口、不动依赖结构的常规改动**不需要**这一步。
 - 改动就绪后向用户报告"改动已就绪，请手动重启服务后生效（`python3 start_dual.py`）"，绝不代劳重启
 - 用 curl 验证当前已运行服务的接口是否正常
 - 汇报服务状态和验证结果
