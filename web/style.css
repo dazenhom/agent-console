@@ -193,7 +193,8 @@ body.hub-resizing {
 .session-list li:hover { background: var(--bg-3); box-shadow: var(--shadow-md); }
 .session-list li.active { border-color: var(--accent); background: var(--accent-soft); }
 .session-list li.st-running { border-left-color: var(--accent); }
-.session-list li.st-done     { border-left-color: var(--green); }
+/* done 是常态，左侧色条与 idle 同色（方案里写的 --border 在本文件不存在，取 idle 同款变量） */
+.session-list li.st-done     { border-left-color: var(--muted-2); }
 .session-list li.st-failed  { border-left-color: var(--red); }
 .session-list li.st-idle    { border-left-color: var(--muted-2); }
 
@@ -1172,9 +1173,13 @@ select[multiple] { min-height: 80px; height: auto; }
   display: flex; align-items: center; justify-content: space-between;
   margin: 4px 0 10px;
 }
-.kanban-head .section-label {
+/* 小节标题：「智能任务看板」抬头与 Overview「进行中」小节共用（后者不在 .kanban-head 里，故显式并列） */
+.kanban-head .section-label,
+#running-section .section-label {
   font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: .2px;
 }
+/* 进行中小节与下方「所有会话」抬头之间的呼吸位（列表自身只有 margin-top） */
+#running-section { margin-bottom: 14px; }
 .kanban-actions { display: flex; gap: 6px; }
 .btn-ghost {
   background: var(--bg-2); border: 1px solid var(--line); color: var(--muted);

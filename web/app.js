@@ -349,7 +349,7 @@
     if (!state.sessions.length) { await createSession(); return; }
     if (!state.sessions.find((s) => s.id === state.sessionId)) state.sessionId = state.sessions[0].id;
     const cur = state.sessions.find((s) => s.id === state.sessionId);
-    // 当前会话先标记已读再渲染：Overview 的「需要关注」/未读点不把它算进去
+    // 当前会话先标记已读再渲染：未读圆点与看板「待查看」计数都不把当前会话算进去
     if (cur) markSeen(cur.id, cur.updated_at);
     renderSessionLists();
     renderDashboard();
@@ -361,7 +361,7 @@
     syncEffortSelect();
   }
 
-  // 渲染三个列表：Overview(需要关注) / Sessions(全部，可搜) / Review(已完成)
+  // 渲染三个列表：Overview(全部 + 进行中小节) / Sessions(全部，可搜) / Review(已有成功回合)
   function renderSessionLists() {
     renderOverviewList();
     // Sessions Tab 在「归档」视图下不用活跃列表覆盖，交给 renderArchivedSessionList
@@ -372,43 +372,22 @@
     applySessionSearch();
   }
 
-  // Overview「需要关注」的成员口径：运行中 / 失败 / 跑完还没看过的（done 且未读）。
-  // 与 Sessions Tab 的全量列表职责拆开——首屏只回答"哪些会话现在需要我管"。
-  function attentionSessions() {
-    const seenMap = loadSeenMap();
-    return state.sessions.filter((s) => {
-      const k = deriveState(s).key;
-      if (k === "running" || k === "failed") return true;
-      return k === "done" && s.updated_at > (seenMap[s.id] || 0);
-    });
-  }
-
-  // attention 排序权重：失败(0) → 运行中(1) → 待查看(2)，先处理坏的
-  function attentionRank(s) {
-    const k = deriveState(s).key;
-    if (k === "failed") return 0;
-    if (k === "running") return 1;
-    return 2;
-  }
-
   // Overview 列表 + Agents 副标题。renderSessionLists 与 patchSessionRow 共用：
   // 状态翻转（空闲→运行中、运行中→已完成）时成员要实时增减，不能等下一次全量拉取。
+  // 口径 = 全量会话 + 默认序（与 Sessions Tab 同源同序）。早先这里按「需要关注」过滤再重排，
+  // 用户反馈顺序被打乱、点开一条就从列表消失（2026-09-22 回退）；运行中的会话改成顶部
+  // 「进行中」小节做快捷入口——它是入口不是过滤器，同一会话在主列表里照常出现。
   function renderOverviewList() {
-    const att = attentionSessions();
-    const ul = $("session-list");
-    if (ul) {
-      if (att.length) {
-        // 失败 → 运行中 → 待查看（批次分组取组内最坏情况），同级内仍按置顶+更新时间
-        fillListGrouped(ul, att, false, (it) =>
-          it.kind === "group" ? Math.min(...it.children.map(attentionRank)) : attentionRank(it.session));
-      } else {
-        ul.innerHTML = `<div class="entity-empty"><div class="empty-emoji">✅</div><div>全部处理完了</div></div>`;
-      }
+    const running = state.sessions.filter((s) => deriveState(s).key === "running");
+    const sec = $("running-section");
+    if (sec) {
+      sec.classList.toggle("hidden", running.length === 0);
+      // 至多几条，不值得折叠批次分组，直接用平铺 fillList
+      fillList($("session-list-running"), running);
     }
+    fillListGrouped($("session-list"), state.sessions, false);
     const sub = $("agents-sub");
-    if (sub) {
-      sub.textContent = `${att.length ? att.length + " 项待处理" : "全部处理完了 ✅"} · 共 ${state.sessions.length} 个会话`;
-    }
+    if (sub) sub.textContent = `共 ${state.sessions.length} 个会话`;
   }
 
   function fillList(ul, sessions, isArchived = false) {
@@ -422,10 +401,8 @@
   }
 
   // Overview 与 Sessions Tab 主列表共用：把同一调度批次（dispatch_plan_id）的子会话折叠成一组，
-  // 其余普通会话原样渲染。sessions 已按 updated_at DESC 排序。
-  // sortKey 可选（item → 权重，小者在前）：仅 Overview 的「需要关注」列表传入，实现
-  // 失败 → 运行中 → 待查看 的优先级；不传时保持置顶+updated_at 原序（Sessions Tab 行为不变）。
-  function fillListGrouped(ul, sessions, isArchived = false, sortKey = null) {
+  // 其余普通会话原样渲染。sessions 已按 updated_at DESC 排序，排序即置顶优先 + 组内锚点时间倒序。
+  function fillListGrouped(ul, sessions, isArchived = false) {
     if (!ul) return;
     ul.innerHTML = "";
     if (!sessions.length) {
@@ -452,7 +429,6 @@
       }
     }
     items.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)
-      || (sortKey ? sortKey(a) - sortKey(b) : 0)
       || (b.ts || 0) - (a.ts || 0));
     for (const it of items) {
       if (it.kind === "group") {
@@ -685,9 +661,11 @@
 
     const main = el("div", "s-main");
     const row1 = el("div", "s-row1");
-    const badge = el("span", "badge " + st.badgeCls, st.label);
     const title = el("span", "s-title", escapeHtml(s.title));
-    row1.append(badge, title);
+    // done 是常态：每条跑完的会话都挂个绿"已完成"只是噪声，silent 状态不画徽章
+    // （失败/被中断、运行中、未开始/已取消仍照常显示）
+    if (!st.silent) row1.append(el("span", "badge " + st.badgeCls, st.label));
+    row1.append(title);
     const seen = loadSeenMap()[s.id] || 0;
     if (s.updated_at > seen && s.id !== state.sessionId) {
       row1.prepend(el("span", "s-dot unread"));
@@ -878,7 +856,7 @@
               : s.last_task_status === "success" ? "success" : "");
     if (oc === "error")       return { key: "failed",  label: "失败",   badgeCls: "failed" };
     if (oc === "interrupted") return { key: "failed",  label: "被中断", badgeCls: "failed" };
-    if (oc === "success")     return { key: "done",    label: "已完成", badgeCls: "done" };
+    if (oc === "success")     return { key: "done",    label: "已完成", badgeCls: "done", silent: true };
     // 用户主动停止：不算失败也不需要查看，灰色静态呈现，但别误标成"未开始"
     if (oc === "cancelled")   return { key: "idle",   label: "已取消", badgeCls: "resume" };
     return { key: "idle", label: "未开始", badgeCls: "resume" };
@@ -2306,7 +2284,7 @@
       refreshDispatchGroupSummary(fresh);
     });
     renderDashboard();
-    renderOverviewList();  // 「需要关注」成员随状态翻转实时增减（如空闲→运行中）
+    renderOverviewList();  // 状态翻转要反映到主列表行与「进行中」小节（如空闲→运行中）
     // review 列表成员可能因状态变化增减，简单起见重建一次该列表
     fillList($("session-list-review"), state.sessions.filter((x) => deriveState(x).key === "done"));
   }
@@ -2744,8 +2722,10 @@
         updateSessionIdBar(cur.id);
         updateLinkedTodoBar(cur);
         markSeen(cur.id, cur.updated_at);
-        renderDashboard();
-        renderOverviewList();  // 标记已读后刷新：该会话不该再占"待查看"名额
+        // 标记已读后只摘掉这一行的未读圆点：整表重建会把刚点开的行重画、滚动位置也跳回顶部
+        const dot = document.querySelector(`#session-list li[data-sid="${cur.id}"] .s-dot.unread`);
+        if (dot) dot.remove();
+        renderDashboard();  // 「待查看」计数要实时减
       }
       document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
       syncModeSelect();
@@ -2774,8 +2754,10 @@
       updateSessionIdBar(cur.id);
       updateLinkedTodoBar(cur);
       markSeen(cur.id, cur.updated_at);
-      renderDashboard();
-      renderOverviewList();  // 标记已读后刷新：该会话不该再占"待查看"名额
+      // 同第一次点击分支：只摘圆点不整表重建，保住刚点开那行的位置与滚动条
+      const dot = document.querySelector(`#session-list li[data-sid="${cur.id}"] .s-dot.unread`);
+      if (dot) dot.remove();
+      renderDashboard();  // 「待查看」计数要实时减
     }
     // 高亮当前会话行（跨三个列表）
     document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));

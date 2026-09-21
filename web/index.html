@@ -109,9 +109,15 @@
             <div id="triage-inbox" class="triage-inbox hidden"></div>
             <div id="kanban-list" class="kanban-list"></div>
 
+            <!-- 进行中快捷入口：只在有 running 会话时显示，主列表里这些会话照常出现 -->
+            <div id="running-section" class="hidden">
+              <div class="section-label">进行中</div>
+              <ul id="session-list-running" class="session-list"></ul>
+            </div>
+
             <div class="agents-head">
               <div>
-                <div class="agents-title">需要关注</div>
+                <div class="agents-title">所有会话</div>
                 <div class="agents-sub" id="agents-sub">加载中…</div>
               </div>
               <button id="refresh-tasks" class="refresh-link">刷新</button>
@@ -222,7 +228,7 @@
         <div class="tab-pane list-pane" data-pane="review">
           <div class="list-pane-inner">
             <div class="pane-head">待审视</div>
-            <div class="agents-sub" style="margin-bottom:12px">已完成、等待你查看结果的会话</div>
+            <div class="agents-sub" style="margin-bottom:12px">已有成功回合的会话</div>
             <ul id="session-list-review" class="session-list"></ul>
           </div>
         </div>
