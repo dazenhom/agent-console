@@ -298,6 +298,13 @@ class SessionHub:
             # 回合结局一并推送：前端不重拉 /api/sessions 也能翻转徽章（已完成/失败）
             "last_outcome": (sess or {}).get("last_outcome", ""),
         }
+        # 轮次/上回合耗时也随批推送：否则列表 meta 的「N 轮 · 上回合耗时」要等下次
+        # 全量 /api/sessions 拉取才更新。推送本身低频（回合起止/摘要变更才推），两次
+        # 走 session_id 索引的单行查询（get_latest_task / count_user_messages）可接受，
+        # 口径与 list_sessions 的批量查询一致。
+        last_task = db.get_latest_task(sid)
+        payload["last_duration_ms"] = last_task.get("duration_ms") if last_task else None
+        payload["user_turns"] = db.count_user_messages(sid)
         # activity/elapsed/stuck 统一走 progress_snapshot（elapsed 现算不读缓存，见该方法注释）
         payload.update(self.progress_snapshot(sid))
         payload.update(extra)

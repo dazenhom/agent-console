@@ -2249,6 +2249,9 @@
       if (data.title) s.title = data.title;
       // 回合结局：不重拉 /api/sessions 也能就地翻转徽章（已完成/失败/被中断）
       if (data.last_outcome) s.last_outcome = data.last_outcome;
+      // 轮次/上回合耗时同批推送：列表 meta 的「N 轮 · 上回合耗时」不用等全量拉取才更新
+      if (typeof data.user_turns === "number") s.user_turns = data.user_turns;
+      if (typeof data.last_duration_ms === "number") s.last_duration_ms = data.last_duration_ms;
       s.updated_at = data.updated_at || s.updated_at;
       patchSessionRow(s);
       renderKanbanDebounced();  // 看板卡片的关联会话名/状态可能随之变化（防抖，避免高频刷新）
