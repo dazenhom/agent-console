@@ -557,7 +557,9 @@ class SessionHub:
                 db.update_session(sid, claude_session_id=None, codex_usage_baseline="")
                 return {"ok": True, "noop": True, "reason": "resume_failed"}
             if "error during compaction" in captured["local_err"].lower():
-                return {"ok": False, "error": f"CLI 压缩失败：{captured['local_err'][:300]}"}
+                # 展示层剥离 CLI 本地命令错误标签，captured["local_err"] 原始数据保持完整。
+                err = captured["local_err"].replace("<local-command-stderr>", "").replace("</local-command-stderr>", "")
+                return {"ok": False, "error": f"CLI 压缩失败：{err[:300]}"}
             if captured["boundary"]:
                 meta = captured["boundary"]
                 content = {
