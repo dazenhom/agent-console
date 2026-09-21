@@ -5120,6 +5120,27 @@
       const cost = content.cost_usd != null ? " · $" + content.cost_usd.toFixed(4) : "";
       const turns = content.num_turns ? " · " + content.num_turns + " 轮" : "";
       node = el("div", "result-line", `本回合完成 ${dur}${cost}${turns}`);
+      // API 4xx（典型：上下文顶格被网关 400 拒绝）以 role=result + is_error 落幕而非
+      // role=error，上面 error 分支的快捷栏匹配不到。复用同一套 qr-bar 给自救入口：
+      // 压缩上下文 / 新建会话。
+      if (interactive && content.is_error && /API Error: 4\d\d/.test(content.result || "")) {
+        const bar = el("div", "qr-bar");
+        const compactBtn = el("button", "qr-btn", "压缩上下文");
+        compactBtn.type = "button";
+        compactBtn.onclick = () => requestCompact();
+        const newBtn = el("button", "qr-btn", "新建会话");
+        newBtn.type = "button";
+        newBtn.onclick = async () => {
+          const cur = (state.sessions || []).find((s) => s.id === state.sessionId) || {};
+          try {
+            await createSession({ workdir: cur.workdir, mode: cur.mode, effort: cur.effort, engine: cur.engine });
+            toast("已新建会话", "success", 1600);
+          } catch (err) { toast("新建失败：" + err.message, "error"); }
+        };
+        bar.appendChild(compactBtn);
+        bar.appendChild(newBtn);
+        node.appendChild(bar);
+      }
     } else if (role === "system") {
       return null; // init 信息不展示
     } else if (role === "compact") {
@@ -5203,7 +5224,8 @@
       return;
     }
     // 4) 其余：正常平铺到父容器
-    const node = buildMessageNode(role, content, ts, false);
+    // result 的 API 4xx 自救栏只在实时通道可交互；历史重放仍保持 interactive=false。
+    const node = buildMessageNode(role, content, ts, role === "result" && groups === state.agentGroups);
     if (!node) return;
     const welcome = parentEl.querySelector(".chat-welcome");
     if (welcome) welcome.remove();
@@ -5781,8 +5803,9 @@
     const prevPlaceholder = inp.placeholder;
     inp.placeholder = "压缩中，请稍候…";
     try {
-      // 原生 /compact 是一次真实回合，耗时与普通回合相当，放宽超时避免请求被中止。
-      const res = await api(`/api/sessions/${state.sessionId}/compact`, { method: "POST", timeoutMs: 200000 });
+      // 原生 /compact 是一次真实回合。后端 COMPACT_TIMEOUT 默认 300s 超时并给出真实
+      // 原因，前端放宽到 300s+20s 余量，保证用户先看到后端的诊断信息、不抢先中止。
+      const res = await api(`/api/sessions/${state.sessionId}/compact`, { method: "POST", timeoutMs: 320000 });
       if (res && res.noop) {
         const noopMsg = {
           empty: "对话为空，无需压缩",
