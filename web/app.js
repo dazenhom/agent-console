@@ -4957,6 +4957,43 @@
     return ["是的，请继续", "不用了，谢谢"];
   }
 
+  // 子智能体卡片头部汇总元信息：模型名 · 时长 · token 消耗 · 工具调用次数
+  function fmtAgentDuration(ms) {
+    if (ms == null) return "";
+    const s = ms / 1000;
+    if (s < 60) return s.toFixed(1) + "s";
+    if (s < 3600) {
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return m + "m" + String(sec).padStart(2, "0") + "s";
+    }
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h + "h" + String(m).padStart(2, "0") + "m";
+  }
+
+  function fmtAgentTokens(n) {
+    if (n == null) return "";
+    if (n >= 1000) return (n / 1000).toFixed(1) + "k tok";
+    return n + " tok";
+  }
+
+  // 用 dataset.model 作为模型名的单一事实来源：subagent_done 无模型字段时保留已有值。
+  function updateSubagentMeta(card, meta) {
+    if (!meta) return;
+    const span = card.querySelector(".subagent-meta");
+    if (!span) return;
+    if (meta.model) span.dataset.model = meta.model;  // resolvedModel 比启动时配置更权威
+    const parts = [];
+    if (span.dataset.model) parts.push(span.dataset.model);
+    const dur = fmtAgentDuration(meta.duration_ms);
+    if (dur) parts.push(dur);
+    const tok = fmtAgentTokens(meta.tokens);
+    if (tok) parts.push(tok);
+    if (meta.tool_uses != null) parts.push(meta.tool_uses + " tools");
+    span.textContent = parts.join(" · ");
+  }
+
   function buildMessageNode(role, content, ts = null, interactive = true) {
     let node;
     if (role === "user" || role === "assistant") {
@@ -5055,12 +5092,19 @@
             <span class="subagent-icon">🤖</span>
             <span class="subagent-title">${escapeHtml(subtype)}${desc ? " · " + escapeHtml(desc) : ""}</span>
             <span class="subagent-status running">运行中</span>
+            <span class="subagent-meta"></span>
           </div>
           <div class="subagent-body" style="${expanded ? "" : "display:none"}"></div>
           <div class="subagent-result" style="display:none">
             <div class="subagent-result-content"></div>
           </div>`;
         if (expanded) node.classList.add("open");
+        // 启动时配置的模型名先落到卡片上；之后以 resolvedModel 更新（dataset.model 为单一事实来源）。
+        const metaEl = node.querySelector(".subagent-meta");
+        if (content.model && metaEl) {
+          metaEl.dataset.model = content.model;
+          metaEl.textContent = content.model;
+        }
         node.querySelector(".subagent-head").addEventListener("click", function() {
           const isOpen = node.classList.toggle("open");
           node.querySelector(".subagent-body").style.display = isOpen ? "" : "none";
@@ -5214,6 +5258,7 @@
         if (rbox) { rbox.dataset.hasResult = "1"; rbox.style.display = card.classList.contains("open") ? "" : "none"; }
         const status = card.querySelector(".subagent-status");
         if (status) { status.textContent = "✓ 完成"; status.classList.remove("running"); status.classList.add("done"); }
+        if (content.agent_meta) updateSubagentMeta(card, content.agent_meta);
       }
       delete groups[content.tool_use_id];  // 注销：卡片已收尾，后续同 id 不再归拢
       return;  // 结果已入卡片，不再平铺这条 tool_result
@@ -5493,6 +5538,16 @@
       if (data.role === "status") {
         // 纯瞬时状态提示（如 codex 续跑心跳）：toast 展示即可，不落聊天气泡、不动打字机状态。
         toast(data.content && data.content.text || "", "info", 6000);
+        return;
+      }
+      if (data.role === "subagent_progress" || data.role === "subagent_done") {
+        // 子智能体实时进度/完成：只刷新卡片头部元信息，不进历史快照（否则会触发整屏重绘）。
+        const c = data.content || {};
+        const bodyEl = state.agentGroups[c.parent];
+        if (bodyEl) {
+          const card = bodyEl.closest(".subagent");
+          if (card) updateSubagentMeta(card, c);
+        }
         return;
       }
       if (data.role === "assistant_delta") {

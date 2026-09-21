@@ -327,6 +327,7 @@ body.hub-resizing {
   padding: 10px 13px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 13px;
   color: #5b53c7;
@@ -345,6 +346,13 @@ body.hub-resizing {
   background: #e6e4fb; color: #6d5fd8; white-space: nowrap;
 }
 .subagent-status.done { background: var(--green-soft); color: var(--green); }
+.subagent-meta {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: #8b86b8;
+  font-variant-numeric: tabular-nums;
+}
+.subagent-meta:empty { display: none; }
 .subagent-body {
   padding: 4px 10px 6px; max-height: 600px; overflow-y: auto;
   border-top: 1px solid #dcd9f7;

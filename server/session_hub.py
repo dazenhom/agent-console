@@ -21,7 +21,7 @@ import re
 import time
 from typing import Awaitable, Callable
 
-from . import config, db, wecom_notify
+from . import agent_store, config, db, wecom_notify
 from .claude_runner import runner as claude_runner
 from .codex_runner import runner as codex_runner
 from .logging_util import get_logger
@@ -29,6 +29,25 @@ from .logging_util import get_logger
 logger = get_logger(__name__)
 
 _PROVIDERS = {"claude": claude_runner, "codex": codex_runner}
+
+# agent_store.list_agents() 会读磁盘上的 agent 定义文件（运行时可增删改），
+# 这里做 30s 短 TTL 缓存：既不每条事件都读盘，又能及时感知定义变更。
+_AGENT_MODEL_TTL = 30.0
+_agent_model_cache: dict[str, str] = {}
+_agent_model_cache_at = 0.0
+
+
+def _agent_model_map() -> dict[str, str]:
+    """subagent_type -> model 映射（带短 TTL 缓存，空 model 归一为空串）。"""
+    global _agent_model_cache, _agent_model_cache_at
+    now = time.monotonic()
+    if now - _agent_model_cache_at > _AGENT_MODEL_TTL:
+        try:
+            _agent_model_cache = {a["name"]: a.get("model") or "" for a in agent_store.list_agents()}
+        except Exception:
+            _agent_model_cache = {}
+        _agent_model_cache_at = now
+    return _agent_model_cache
 
 
 def _runner_for(sess):
@@ -43,7 +62,32 @@ def translate_event(evt: dict) -> list[dict]:
     etype = evt.get("type")
 
     if etype == "system":
-        pass  # init 含全套工具列表，前端不展示，丢弃避免 messages 膨胀
+        # 子智能体实时事件只放行 task_progress / task_notification 这两个 subtype，
+        # 其余（init/task_started/task_updated 等）仍丢弃，避免 messages 膨胀。
+        subtype = evt.get("subtype")
+        usage = evt.get("usage") or {}
+        if subtype == "task_progress":
+            out.append({
+                "role": "subagent_progress",
+                "content": {
+                    "parent": evt.get("tool_use_id"),
+                    "tokens": usage.get("total_tokens"),
+                    "tool_uses": usage.get("tool_uses"),
+                    "duration_ms": usage.get("duration_ms"),
+                    "last_tool": evt.get("last_tool_name"),
+                },
+            })
+        elif subtype == "task_notification":
+            out.append({
+                "role": "subagent_done",
+                "content": {
+                    "parent": evt.get("tool_use_id"),
+                    "status": evt.get("status"),
+                    "tokens": usage.get("total_tokens"),
+                    "tool_uses": usage.get("tool_uses"),
+                    "duration_ms": usage.get("duration_ms"),
+                },
+            })
 
     elif etype == "stream_event":
         # --include-partial-messages 的实时增量，只取文本增量做打字机。
@@ -76,12 +120,23 @@ def translate_event(evt: dict) -> list[dict]:
                     c["parent"] = pid
                 if block.get("input", {}).get("run_in_background"):
                     c["bg"] = True
+                if block.get("name") == "Agent":
+                    # 附带 subagent_type 及 agent_store 里该类型的配置模型，供卡片头部汇总展示；
+                    # Explore/Task 这类内置 subagent_type 不在 agent_store 里，查不到就不塞 model。
+                    inp = block.get("input", {})
+                    c["subagent_type"] = inp.get("subagent_type")
+                    model = _agent_model_map().get(inp.get("subagent_type") or "")
+                    if model:
+                        c["model"] = model
                 out.append({"role": "tool_use", "content": c})
 
     elif etype == "user":
         pid = evt.get("parent_tool_use_id")
         content = evt.get("message", {}).get("content", [])
+        # tool_use_result 在事件级而非 block 级；只把它并入本事件的第一个 tool_result。
+        tur = evt.get("tool_use_result")
         if isinstance(content, list):
+            seen_tool_result = False
             for block in content:
                 if block.get("type") == "tool_result":
                     raw = block.get("content")
@@ -94,6 +149,16 @@ def translate_event(evt: dict) -> list[dict]:
                     }
                     if pid:
                         c["parent"] = pid
+                    if not seen_tool_result and isinstance(tur, dict) and tur.get("agentId"):
+                        c["agent_meta"] = {
+                            "agent_type": tur.get("agentType"),
+                            "model": tur.get("resolvedModel"),
+                            "duration_ms": tur.get("totalDurationMs"),
+                            "tokens": tur.get("totalTokens"),
+                            "tool_uses": tur.get("totalToolUseCount"),
+                            "status": tur.get("status"),
+                        }
+                    seen_tool_result = True
                     out.append({"role": "tool_result", "content": c})
 
     elif etype == "result":
@@ -295,7 +360,8 @@ class SessionHub:
             translated = translate_event(evt)
             for msg in translated:
                 role = msg["role"]
-                if role not in ("assistant_delta", "status"):
+                # assistant_delta/status 之外，子智能体进度/完成事件也纯实时刷新用，不进聊天记录。
+                if role not in ("assistant_delta", "status", "subagent_progress", "subagent_done"):
                     db.add_message(sid, role, msg["content"])
                 if role == "assistant":
                     text = (msg["content"] or {}).get("text", "")
@@ -654,7 +720,8 @@ class SessionHub:
             for msg in translate_event(evt):
                 # assistant_delta（打字机增量）、status（瞬时状态提示）不落库：前者靠后续权威
                 # assistant 全文入库，后者纯前端提示、不该进聊天记录/摘要/通知。
-                if msg["role"] not in ("assistant_delta", "status"):
+                # subagent_progress/subagent_done 纯实时刷新用，同样不进聊天记录。
+                if msg["role"] not in ("assistant_delta", "status", "subagent_progress", "subagent_done"):
                     db.add_message(sid, msg["role"], msg["content"])
                 if msg["role"] == "assistant":
                     t = (msg["content"] or {}).get("text", "")
