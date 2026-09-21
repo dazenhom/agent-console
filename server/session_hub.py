@@ -406,8 +406,8 @@ class SessionHub:
                 clean = re.sub(r"\s+", " ", seed).strip()
                 # 超长首条不再裸截断当标题（此前 29.6% 会话标题以 … 结尾、读不出在干
                 # 什么）：改占位符，让前 TITLE_EARLY_TURNS 回合的 AI 标题去填；
-                # ≤24 字的短首条仍直接用。
-                new_title = clean if clean and len(clean) <= 24 else "新任务"
+                # ≤20 字的短首条仍直接用。
+                new_title = clean if clean and len(clean) <= 20 else "新任务"
                 if new_title:
                     db.update_session(sid, title=new_title, title_auto=1)
         db.add_message(sid, "user", {"text": user_text})

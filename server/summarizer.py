@@ -10,7 +10,7 @@ from . import config, db
 from .codex_oneshot import run_codex_oneshot_text
 
 
-def _heuristic(user_text: str, reply_text: str, limit: int = 40) -> str:
+def _heuristic(user_text: str, reply_text: str, limit: int = 44) -> str:
     """启发式兜底：按句切分取最后一个长度 ≥8 的完整句（结论通常在结尾），没有合格
     句时退回复述前 N 字。优先看 Agent 回复，没有则取用户指令。"""
     src = (reply_text or "").strip() or (user_text or "").strip()
@@ -29,10 +29,10 @@ def _heuristic(user_text: str, reply_text: str, limit: int = 40) -> str:
 _PROMPT_HEAD = (
     "你在给一个工程师的 AI 会话列表生成条目文案，目的是让他扫一眼就知道「这条会话在干什么、进展到哪」。\n\n"
     "输出严格两行，不要任何前后缀、引号、编号、markdown：\n"
-    "第1行以 TITLE： 开头，不超过 20 个汉字，格式「对象 + 在做什么」。对象必须是具体的项目/模块/文件/数据集名，"
+    "第1行以 TITLE： 开头，18 个汉字以内（会单行显示、超出被截断，务必写短），格式「对象 + 在做什么」。对象必须是具体的项目/模块/文件/数据集名，"
     "直接抄原文里的专有名词（如 job_store、英文AST线、v17、WER）。\n"
-    "第2行以 SUMMARY： 开头，不超过 30 个汉字，格式「动作 + 对象 + 结果/数字」。必须写出这一轮的结论或数字，"
-    "没有结论就写当前卡在哪。\n\n"
+    "第2行以 SUMMARY： 开头，30~40 个汉字，格式「动作 + 对象 + 结果/数字」。必须写出这一轮的结论或数字，"
+    "没有结论就写当前卡在哪；宁可写满也不要省略关键数字。\n\n"
     "硬规则：\n"
     "- 禁止出现泛词：完成了任务、进行了处理、已处理、相关工作、若干、一些、进行分析。\n"
     "- 有数字（行数/百分比/耗时/版本号）必须带上。\n"
@@ -44,7 +44,9 @@ _PROMPT_HEAD = (
     "TITLE：英文 AST 线产量瓶颈分析\n"
     "SUMMARY：瓶颈是召回词表仅 8 个词，放宽到 33 个后召回 3.71 倍\n\n"
     "TITLE：stage2 数据配比核对\n"
-    "SUMMARY：核对 v17 各 source 比例，粤语权重偏高已降至 0.6\n"
+    "SUMMARY：核对 v17 各 source 比例，粤语权重偏高已降至 0.6\n\n"
+    "TITLE：v5 audio token 长度核查\n"
+    "SUMMARY：实解 19 个 wer_bin_eq0 批次，确认 token 数不能按 size 反推，已改线程并发读\n"
 )
 
 # 有原标题时追加的判据段：点破"当前标题可能只是机械截断残句"。不点破的话模型会把
@@ -65,9 +67,16 @@ def _strip_garbled(s: str) -> str:
     return s.strip()
 
 
+def _cap(s: str, limit: int) -> str:
+    """超限截断时补省略号，别静默切出残句（如 'job_runs tcodex oneshot '）。
+    限额与 web/style.css 的实显容量对齐：375px 窄屏 title 单行 ≈20 字、
+    summary 两行 ≈48 字，改这里必须同步核对 CSS。"""
+    return s[:limit] + "…" if len(s) > limit else s
+
+
 def _parse_merged_output(text: str) -> tuple[str, str]:
     """解析合并调用的两行输出 → (title, summary)。按行找 TITLE：/SUMMARY： 前缀（全角、
-    半角冒号都认），title 限 24 字、summary 限 40 字。title 为空串 = 保留原标题（含模型
+    半角冒号都认），title 限 20 字、summary 限 44 字。title 为空串 = 保留原标题（含模型
     回 KEEP 与整行缺失两种情况）；只出其一时另一个照常返回，不整体丢弃。"""
     title = summary = ""
     for line in text.splitlines():
@@ -81,12 +90,12 @@ def _parse_merged_output(text: str) -> tuple[str, str]:
                 if re.sub(r"[\"'『』「」。.,!！]", "", t).strip().upper() == "KEEP":
                     title = ""
                     continue
-                title = _strip_garbled(t)[:24]
+                title = _cap(_strip_garbled(t), 20)
                 continue
         if not summary:
             m = re.match(r"^SUMMARY[：:]\s*(.*)$", line)
             if m:
-                summary = _strip_garbled(m.group(1).strip().strip('"“”'))[:40]
+                summary = _cap(_strip_garbled(m.group(1).strip().strip('"“”')), 44)
     return title, summary
 
 
