@@ -321,6 +321,9 @@ STALL_NOTIFY_COOLDOWN_SEC = int(os.environ.get("STALL_NOTIFY_COOLDOWN_SEC", "216
 # S1：目标循环已耗尽（exhausted）或人工暂停（enabled=0 非终态）但一直没人续跑/放弃，
 # last_run 距今超过该秒数才报（默认 2 小时，给"刚耗尽马上来看"留余地）。
 STALL_GOAL_EXHAUSTED_SEC = int(os.environ.get("STALL_GOAL_EXHAUSTED_SEC", "7200"))
+# S1b：目标循环因成本熔断（finish_reason='cost_cap'）而耗尽。阈值短于迭代耗尽的 7200s——
+# 成本熔断背后是"钱包"裁决，且续跑要用户当场给新成本上限，早提醒早决定更有价值。
+STALL_GOAL_COST_CAPPED_SEC = int(os.environ.get("STALL_GOAL_COST_CAPPED_SEC", "3600"))
 # S2：目标循环 enabled=1 但状态机停在 running/producing/verifying 超过该秒数无推进
 # （默认 6 小时；会话仍在跑的不算——hub.is_running 硬否定）。
 STALL_GOAL_STUCK_SEC = int(os.environ.get("STALL_GOAL_STUCK_SEC", "21600"))

@@ -197,7 +197,8 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
     iter_count = int(sch.get("iter_count") or 0)
     max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
     if iter_count >= max_iter:
-        await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）仍未完成")
+        await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）仍未完成",
+                           "iter_cap")
         return
     # 成本熔断
     cost_limit = float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD
@@ -207,7 +208,7 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
         spent = db.sum_session_cost(sid, sch.get("cost_base_ts") or sch.get("created_at") or 0)
         if spent >= cost_limit:
             await _finish_goal(scid, sess, "exhausted",
-                               f"已达成本上限（${spent:.2f} ≥ ${cost_limit:g}）")
+                               f"已达成本上限（${spent:.2f} ≥ ${cost_limit:g}）", "cost_cap")
             return
     prompt = _build_goal_prompt(sch)
     try:
@@ -363,7 +364,7 @@ async def _run_goal_verify(scid: str) -> None:
             await _finish_goal(scid, sess, "done", reason)
         elif iter_count >= max_iter:
             await _finish_goal(scid, sess, "exhausted",
-                               f"已达迭代上限（{max_iter} 轮）：{reason}")
+                               f"已达迭代上限（{max_iter} 轮）：{reason}", "iter_cap")
         else:
             fb = reason
             if _is_canned_feedback(reason):
@@ -404,10 +405,15 @@ def _broadcast_goal_progress(scid: str) -> None:
         pass
 
 
-async def _finish_goal(scid: str, sess: dict, status: str, reason: str) -> None:
-    """落终态并停用，推企微 + 广播 monitor。"""
+async def _finish_goal(scid: str, sess: dict, status: str, reason: str,
+                       finish_reason: str = "") -> None:
+    """落终态并停用，推企微 + 广播 monitor。
+
+    finish_reason 是结构化终止原因（cost_cap/iter_cap/verify_fail/plan_fail/plan_error），
+    供 Stall Watch 按原因分级告警——不必再去 LIKE 匹配 reason 的自然语言。done 终态传空串，
+    显式覆盖掉上一轮遗留的原因（如续跑前是 cost_cap），不留误导性残值。"""
     from .session_hub import hub
-    _fields = {"goal_status": status, "enabled": 0}
+    _fields = {"goal_status": status, "enabled": 0, "finish_reason": finish_reason}
     if status in ("exhausted", "done"):
         _fields["last_feedback"] = reason
     db.update_schedule(scid, **_fields)
@@ -512,14 +518,15 @@ async def _tick_goal_planned(sch: dict, sess: dict, now: float) -> None:
     iter_count = int(sch.get("iter_count") or 0)
     max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
     if iter_count >= max_iter:
-        await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）仍未完成")
+        await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）仍未完成",
+                           "iter_cap")
         return
     cost_limit = float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD
     if cost_limit > 0:
         spent = db.sum_session_cost(sid, sch.get("cost_base_ts") or sch.get("created_at") or 0)
         if spent >= cost_limit:
             await _finish_goal(scid, sess, "exhausted",
-                               f"已达成本上限（${spent:.2f} ≥ ${cost_limit:g}）")
+                               f"已达成本上限（${spent:.2f} ≥ ${cost_limit:g}）", "cost_cap")
             return
 
     nxt = db.next_pending_goal_subtask(scid)
@@ -576,7 +583,8 @@ async def _run_goal_plan(scid: str) -> None:
             return
         if not subtasks:
             db.update_schedule(scid, plan_status="plan_failed")
-            await _finish_goal(scid, sess, "exhausted", "目标拆解失败：未能拆出任何可执行子任务")
+            await _finish_goal(scid, sess, "exhausted", "目标拆解失败：未能拆出任何可执行子任务",
+                               "plan_fail")
             return
         # 阶段4：拆解落库的子任务顺手关联 work_item（按 schedule id 反查），拿不到留空
         try:
@@ -592,7 +600,8 @@ async def _run_goal_plan(scid: str) -> None:
             sch = db.get_schedule(scid)
             sess = db.get_session((sch or {}).get("session_id") or "")
             db.update_schedule(scid, plan_status="plan_failed")
-            await _finish_goal(scid, sess or {}, "exhausted", f"目标拆解异常：{type(e).__name__}")
+            await _finish_goal(scid, sess or {}, "exhausted", f"目标拆解异常：{type(e).__name__}",
+                               "plan_error")
         except Exception:
             pass
 
@@ -629,7 +638,7 @@ async def _run_goal_verify_planned(scid: str) -> None:
                 await _finish_goal(scid, sess, "done", reason)
             else:
                 await _finish_goal(scid, sess, "exhausted",
-                                   f"子任务已全部执行，但整体验收未通过：{reason}")
+                                   f"子任务已全部执行，但整体验收未通过：{reason}", "verify_fail")
             return
 
         # ---- 子任务级进展验收（不跑 verify_command，仅 produced + worktree 改动）----
@@ -674,7 +683,8 @@ async def _run_goal_verify_planned(scid: str) -> None:
                                      verdict=it_verdict, feedback=reason, status=it_status,
                                      produced_excerpt=excerpt, ended_at=time.time())
         if iter_count >= max_iter:
-            await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）：{reason}")
+            await _finish_goal(scid, sess, "exhausted", f"已达迭代上限（{max_iter} 轮）：{reason}",
+                               "iter_cap")
         else:
             fb = reason
             if _is_canned_feedback(reason):

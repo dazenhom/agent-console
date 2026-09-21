@@ -1094,12 +1094,16 @@
     const badge = idleSec >= 86400
       ? `已停滞 ${Math.max(1, Math.round(idleSec / 86400))} 天`
       : `已停滞 ${Math.max(1, Math.round(idleSec / 3600))} 小时`;
+    // 成本熔断额外挂一枚徽章：同为"耗尽"，这一类的下一步动作不同（续跑要定新预算）
+    const costBadge = it.kind === "goal_cost_capped"
+      ? `<span class="stall-badge">💰 成本上限</span>` : "";
     const detail = (it.detail || "").trim();
     row.innerHTML = `
       <div class="stall-row-main">
         <div class="stall-row-top">
           <span class="stall-row-title">${escapeHtml(it.title)}</span>
           <span class="stall-badge">${escapeHtml(badge)}</span>
+          ${costBadge}
         </div>
         ${detail ? `<div class="stall-row-reason">${escapeHtml(detail)}</div>` : ""}
       </div>
@@ -1136,8 +1140,24 @@
       return true;
     };
     row.querySelector("[data-act='continue']").onclick = async () => {
+      // 成本熔断的续跑会开新成本窗口（已花额度重新计），先问用户新上限；留空沿用旧值
+      const body = {};
+      if (it.kind === "goal_cost_capped") {
+        const cur = (it.related && it.related.cost_limit) || 20;
+        const spent = (it.related && it.related.spent_usd) != null
+          ? it.related.spent_usd.toFixed(2) : "?";
+        const ans = prompt(
+          `新的成本上限（美元）。该会话本成本窗口已花 $${spent} / 上限 $${cur}。留空则沿用 $${cur}：`,
+          String(cur));
+        if (ans === null) return; // 取消不动
+        if (ans.trim() !== "") {
+          const v = Number(ans);
+          if (!(v >= 0)) { toast("上限需为非负数字", "error"); return; }
+          body.max_cost_usd = v;
+        }
+      }
       // 建会话/worktree 是分钟级操作，120s 超时兜底（前端默认仅 15s）
-      if (await post("continue", {}, 120000)) await finish("已继续推进");
+      if (await post("continue", body, 120000)) await finish("已继续推进");
     };
     row.querySelector("[data-act='snooze']").onclick = async () => {
       if (await post("snooze", { hours: 24 })) await finish("已稍后提醒（24 小时后再见）");

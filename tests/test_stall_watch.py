@@ -19,13 +19,20 @@ def _backdate(table, row_id, age):
     db._exec(f"UPDATE {table} SET updated_at=? WHERE id=?", (time.time() - age, row_id))
 
 
-def _mk_goal(goal_status="exhausted", enabled=0, age=3 * 3600, prompt="把训练曲线画出来"):
-    """建一条 kind=goal 的 schedule 并把 last_run 拨到 age 秒前。"""
+def _mk_goal(goal_status="exhausted", enabled=0, age=3 * 3600, prompt="把训练曲线画出来",
+             finish_reason=""):
+    """建一条 kind=goal 的 schedule 并把 last_run 拨到 age 秒前。
+
+    finish_reason 是新的结构化终止原因列（cost_cap/iter_cap/...）：只有传了才写，
+    默认空串等于"非成本熔断"，与历史数据口径一致。"""
     sess = db.create_session("测试会话", "/tmp/stall-test")
     sch = db.create_schedule(sess["id"], prompt, "goal", None, None, 0,
                              stop_condition="图落盘", max_iterations=6,
                              goal_status=goal_status)
-    db.update_schedule(sch["id"], enabled=enabled, last_run=time.time() - age)
+    fields = {"enabled": enabled, "last_run": time.time() - age}
+    if finish_reason:
+        fields["finish_reason"] = finish_reason
+    db.update_schedule(sch["id"], **fields)
     return sch
 
 
@@ -58,7 +65,7 @@ def test_goal_exhausted_detected(temp_db):
     a = alerts[0]
     assert a["kind"] == "goal_exhausted" and a["ref_id"] == sch["id"]
     assert a["status"] == "open"
-    assert a["dedupe_key"] == f"goal_exhausted:{sch['id']}"
+    assert a["dedupe_key"] == f"goal:{sch['id']}"
     assert result["new"] and result["new"][0]["id"] == a["id"]
 
 
@@ -75,6 +82,69 @@ def test_goal_paused_branch(temp_db):
     alerts = db.list_stall_alerts()
     assert len(alerts) == 1 and alerts[0]["kind"] == "goal_paused"
     assert alerts[0]["ref_id"] == sch["id"]
+
+
+# ---------- S1b：goal cost_capped（成本熔断独立分型 + 更短阈值） ----------
+def test_goal_cost_capped_kind_and_threshold(temp_db):
+    """成本熔断（finish_reason='cost_cap'）用更短的阈值（默认 3600s）：3700s 就该报，
+    而同样时长在迭代耗尽阈值（7200s）下不该出——两个阈值必须真的分流。"""
+    sch = _mk_goal(goal_status="exhausted", enabled=0, age=3700, finish_reason="cost_cap")
+    stall_watch.scan_once()
+    alerts = db.list_stall_alerts()
+    assert len(alerts) == 1
+    a = alerts[0]
+    assert a["kind"] == "goal_cost_capped" and a["ref_id"] == sch["id"]
+    assert a["dedupe_key"] == f"goal:{sch['id']}"
+    # 同一时长、改判成迭代耗尽 → 未到 7200s，不再满足任何判据（原告警被 auto_resolve 了结）
+    db.update_schedule(sch["id"], finish_reason="iter_cap")
+    stall_watch.scan_once()
+    assert db.list_stall_alerts() == []
+
+
+def test_goal_iter_cap_keeps_exhausted_kind(temp_db):
+    """非成本熔断的耗尽仍是 goal_exhausted，且阈值仍是 7200s（不被 cost_cap 的短阈值误伤）。"""
+    sch = _mk_goal(goal_status="exhausted", enabled=0, age=3700, finish_reason="iter_cap")
+    stall_watch.scan_once()
+    assert db.list_stall_alerts() == []
+    db.update_schedule(sch["id"], last_run=time.time() - 7300)
+    stall_watch.scan_once()
+    alerts = db.list_stall_alerts()
+    assert len(alerts) == 1 and alerts[0]["kind"] == "goal_exhausted"
+    assert alerts[0]["dedupe_key"] == f"goal:{sch['id']}"
+
+
+def test_cost_capped_detail_has_spent_and_limit(temp_db):
+    """成本熔断的文案要带上钱包上下文：本窗口已花多少 / 上限多少（续跑 prompt 新上限的
+    主要依据）。"""
+    sch = _mk_goal(goal_status="exhausted", enabled=0, age=3700, finish_reason="cost_cap",
+                   prompt="把压缩数据交付核验完")
+    sid = db.get_schedule(sch["id"])["session_id"]
+    tid = db.start_task(sid, "第 5/6 轮迭代")
+    db.finish_task(tid, "success", cost_usd=20.69)
+    stall_watch.scan_once()
+    a = db.list_stall_alerts(status="open")[0]
+    assert a["kind"] == "goal_cost_capped"
+    assert "成本上限" in a["title"]
+    assert "已花 $20.69" in a["detail"]
+    # 未设 per-goal 上限 → 回退全局 config.GOAL_MAX_COST_USD
+    assert f"上限 ${config.GOAL_MAX_COST_USD:g}" in a["detail"]
+
+
+def test_goal_dedupe_key_is_ref_scoped(temp_db):
+    """dedupe_key 不含 kind：同一 schedule 从 paused 漂移成 exhausted，仍只有一条告警
+    （key 里带 kind 的旧口径会在这里多报一条）。"""
+    sch = _mk_goal(goal_status="running", enabled=0, age=3 * 3600)  # 人工暂停
+    stall_watch.scan_once()
+    rows = db._query("SELECT * FROM stall_alerts")
+    assert len(rows) == 1 and rows[0]["dedupe_key"] == f"goal:{sch['id']}"
+    assert rows[0]["kind"] == "goal_paused"
+    # 同一件事换分型：改成迭代耗尽
+    db.update_schedule(sch["id"], goal_status="exhausted", finish_reason="iter_cap")
+    stall_watch.scan_once()
+    rows = db._query("SELECT * FROM stall_alerts")
+    assert len(rows) == 1 and rows[0]["ref_id"] == sch["id"]
+    assert rows[0]["dedupe_key"] == f"goal:{sch['id']}"  # 同 key → 复活原记录而非新插一条
+    assert rows[0]["kind"] == "goal_exhausted"
 
 
 # ---------- S2：goal stuck ----------
@@ -98,11 +168,12 @@ def test_goal_stuck_skipped_when_session_running(temp_db, monkeypatch):
 
 # ---------- 去重 ----------
 def test_dedupe_same_ref_only_one_alert(temp_db):
-    _mk_goal()
+    sch = _mk_goal()
     stall_watch.scan_once()
     stall_watch.scan_once()
     rows = db._query("SELECT * FROM stall_alerts")
     assert len(rows) == 1
+    assert rows[0]["dedupe_key"] == f"goal:{sch['id']}"
 
 
 def test_s3a_merges_into_s1_dedupe_key(temp_db):
@@ -113,6 +184,19 @@ def test_s3a_merges_into_s1_dedupe_key(temp_db):
     rows = db._query("SELECT * FROM stall_alerts")
     assert len(rows) == 1
     assert rows[0]["kind"] == "goal_exhausted" and rows[0]["ref_id"] == sch["id"]
+    assert rows[0]["dedupe_key"] == f"goal:{sch['id']}"
+
+
+def test_s3a_cost_capped_merge_uses_cost_kind(temp_db):
+    """S3a 归并也要按 finish_reason 分型：挂着成本熔断 schedule 的待办，归并出的告警
+    同样是 goal_cost_capped（两路判据必须一致，否则 todo 侧会报出一个不存在的分型）。"""
+    sch = _mk_goal(goal_status="exhausted", enabled=0, age=3700, finish_reason="cost_cap")
+    _mk_stale_todo(age=5 * 86400, dispatched_schedule_id=sch["id"])
+    stall_watch.scan_once()
+    rows = db._query("SELECT * FROM stall_alerts")
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "goal_cost_capped" and rows[0]["ref_id"] == sch["id"]
+    assert rows[0]["dedupe_key"] == f"goal:{sch['id']}"
 
 
 def test_todo_without_schedule_is_todo_idle(temp_db):
@@ -142,6 +226,30 @@ def test_auto_resolve_when_condition_cleared(temp_db):
     assert db.list_stall_alerts() == []
     rows = db._query("SELECT status FROM stall_alerts")
     assert rows and rows[0]["status"] == "resolved"
+
+
+def test_still_stalled_cost_capped_not_auto_resolved(temp_db):
+    """白名单回归（本改动最易漏的刀）：goal_cost_capped 必须登记进 _still_stalled 的
+    kind 白名单，否则条件仍满足的告警会被 auto_resolve 当"不认识的僵尸"静默清空。"""
+    sch = _mk_goal(goal_status="exhausted", enabled=0, age=3700, finish_reason="cost_cap")
+    stall_watch.scan_once()
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    assert stall_watch._still_stalled("goal_cost_capped", sch["id"], time.time())
+    stall_watch.scan_once()
+    a = db.get_stall_alert(aid)
+    assert a["status"] == "open" and a["kind"] == "goal_cost_capped"
+    assert len(db.list_stall_alerts()) == 1  # 既没被清掉，也没重复报一条
+
+
+def test_still_stalled_cost_capped_cleared_once_finish_reason_changes(temp_db):
+    """反向：finish_reason 一旦不再是 cost_cap（如用户续跑后再耗尽成 iter_cap），
+    cost_capped 告警必须被 auto_resolve 了结，不能靠 kind 漂移长期挂着。"""
+    sch = _mk_goal(goal_status="exhausted", enabled=0, age=3700, finish_reason="cost_cap")
+    stall_watch.scan_once()
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    db.update_schedule(sch["id"], finish_reason="iter_cap")
+    stall_watch.scan_once()
+    assert db.get_stall_alert(aid)["status"] == "resolved"
 
 
 def test_auto_resolve_when_source_deleted(temp_db):
@@ -345,6 +453,42 @@ def test_api_continue_goal_exhausted_happy_path(api_client):
     assert int(fresh["max_iterations"]) == 3  # iter_count=0 + 默认追加 3 轮
     a = db.get_stall_alert(aid)
     assert a["status"] == "acted" and a["acted_kind"] == "continue"
+
+
+def test_api_continue_cost_capped_applies_new_limit(api_client):
+    """继续（goal_cost_capped）：payload 原样透传给 _continue_goal_impl，新成本上限落到
+    schedule 上并刷新成本窗口（cost_base_ts）；负数仍按既有校验拒掉且告警保持 open。"""
+    sch = _mk_goal(goal_status="exhausted", enabled=0, age=3700, finish_reason="cost_cap")
+    stall_watch.scan_once()
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    # 负数 → 400（告警不被消耗，用户可改个值重试）
+    bad = _post(api_client, f"/api/stalls/{aid}/continue", json={"max_cost_usd": -1})
+    assert bad.status_code == 400
+    assert db.get_stall_alert(aid)["status"] == "open"
+    resp = _post(api_client, f"/api/stalls/{aid}/continue", json={"max_cost_usd": 40})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "kind": "goal_cost_capped", "ref": sch["id"]}
+    fresh = db.get_schedule(sch["id"])
+    assert float(fresh["max_cost_usd"]) == 40
+    assert fresh["goal_status"] == "running" and fresh["enabled"] == 1
+    assert fresh["cost_base_ts"] > 0  # 新成本窗口：续跑时刻起算
+    assert db.get_stall_alert(aid)["status"] == "acted"
+
+
+def test_api_stalls_list_exposes_cost_context(api_client):
+    """收件箱列表给 goal 类附成本上下文：前端 prompt 新上限时要拿它预填。"""
+    sch = _mk_goal(goal_status="exhausted", enabled=0, age=3700, finish_reason="cost_cap")
+    sid = db.get_schedule(sch["id"])["session_id"]
+    tid = db.start_task(sid, "第 5/6 轮迭代")
+    db.finish_task(tid, "success", cost_usd=12.5)
+    stall_watch.scan_once()
+    items = api_client.get("/api/stalls",
+                           headers={"Authorization": "Bearer unit-token"}).json()
+    assert len(items) == 1
+    rel = items[0]["related"]
+    assert rel["finish_reason"] == "cost_cap"
+    assert rel["cost_limit"] == config.GOAL_MAX_COST_USD  # 未设 per-goal 上限 → 全局默认
+    assert rel["spent_usd"] == pytest.approx(12.5)
 
 
 def test_api_continue_goal_stuck_happy_path(api_client):

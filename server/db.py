@@ -248,10 +248,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_workitems_origin ON work_items(origin, created_at DESC);
             CREATE TABLE IF NOT EXISTS stall_alerts (
                 id TEXT PRIMARY KEY,
-                kind TEXT,            -- goal_exhausted / goal_paused / goal_stuck / todo_idle / dispatch_failed / dispatch_stuck
+                kind TEXT,            -- goal_cost_capped / goal_exhausted / goal_paused / goal_stuck / todo_idle / dispatch_failed / dispatch_stuck
                 ref_id TEXT,          -- schedule.id / todo.id / dispatch plan_id
                 session_id TEXT DEFAULT '',
-                dedupe_key TEXT,      -- kind + ':' + ref_id，唯一
+                dedupe_key TEXT,      -- 唯一：goal 类统一 'goal:<ref_id>'（防分型漂移重复告警），其余 kind + ':' + ref_id
                 title TEXT,
                 detail TEXT DEFAULT '',
                 idle_sec REAL DEFAULT 0,
@@ -344,6 +344,11 @@ def init_db() -> None:
         _add_col("schedules", "cost_base_ts REAL DEFAULT 0")
         # 每目标成本上限（美元），<=0 回退全局 config.GOAL_MAX_COST_USD
         _add_col("schedules", "max_cost_usd REAL DEFAULT 0")
+        # 结构化终止原因：目标循环进终态时由 scheduler._finish_goal 写入，取值
+        # cost_cap / iter_cap / verify_fail / plan_fail / plan_error；done 终态留空。
+        # 供 Stall Watch 按原因分级告警（成本熔断用更短的阈值、更醒目的文案），
+        # 不必再去 LIKE 匹配 last_feedback 的自然语言。
+        _add_col("schedules", "finish_reason TEXT DEFAULT ''")
         # 老库 goal_iterations 补 produced_excerpt 列（新库已在 CREATE TABLE 里带上）
         _add_col("goal_iterations", "produced_excerpt TEXT DEFAULT ''")
         # 阶段4：给四张来源子表补 work_item_id 关联列，把它们挂到统一的 work_items 观测视图。
@@ -398,6 +403,65 @@ def init_db() -> None:
             """
         )
         _conn.commit()
+        # 一次性幂等迁移（Stall Watch 分级改进）：finish_reason 是新列，历史终态 schedule
+        # 只有 last_feedback 的自然语言，按文案回填；三段严格按序（回填 → 迁 dedupe_key →
+        # 迁 kind），每段独立 try/except 只记日志——迁移失败绝不能让 init_db 抛异常把服务
+        # 拦在启动外。写在 init_db 内部（已在 _lock 内），故一律用 _conn 直连：_exec 会二次
+        # 抢同一把非重入锁而自锁。
+        # 1) 回填 finish_reason（只碰 kind='goal' 且已耗尽的行；done 终态本就留空，不碰）
+        try:
+            _conn.execute(
+                """
+                UPDATE schedules SET finish_reason = CASE
+                    WHEN COALESCE(last_feedback,'') LIKE '已达成本上限%' THEN 'cost_cap'
+                    WHEN COALESCE(last_feedback,'') LIKE '已达迭代上限%' THEN 'iter_cap'
+                    WHEN COALESCE(last_feedback,'') LIKE '目标拆解失败%' THEN 'plan_fail'
+                    WHEN COALESCE(last_feedback,'') LIKE '目标拆解异常%' THEN 'plan_error'
+                    ELSE 'iter_cap' END
+                WHERE kind='goal' AND goal_status = 'exhausted'
+                  AND COALESCE(finish_reason,'') = ''
+                """
+            )
+            _conn.commit()
+        except Exception as e:
+            print(f"[db] backfill schedules.finish_reason failed: {type(e).__name__}: {e}")
+        # 2) dedupe_key 去 kind 化：goal 类告警统一 'goal:<ref_id>'，防同一件事因分型漂移
+        # （paused→exhausted→cost_capped）重复告警。先给"同 ref 多条"的历史行让路，避免撞
+        # 唯一索引 idx_stall_dedupe：非 created_at 最大的那些改成 'goal:<ref>:<id>' 并置 resolved。
+        # 现库每个 ref 仅一条（此分支实际空跑），但迁移必须自身正确，不能指望数据现状。
+        try:
+            _conn.execute(
+                """
+                UPDATE stall_alerts SET dedupe_key = 'goal:' || ref_id || ':' || id,
+                                        status = 'resolved', updated_at = ?
+                WHERE kind LIKE 'goal_%'
+                  AND dedupe_key NOT LIKE 'goal:%:%'
+                  AND EXISTS (
+                    SELECT 1 FROM stall_alerts b
+                    WHERE b.ref_id = stall_alerts.ref_id AND b.kind LIKE 'goal_%'
+                      AND (b.created_at > stall_alerts.created_at
+                           OR (b.created_at = stall_alerts.created_at AND b.id > stall_alerts.id))
+                  )
+                """,
+                (_now(),),
+            )
+            _conn.execute(
+                "UPDATE stall_alerts SET dedupe_key = 'goal:' || ref_id"
+                " WHERE kind LIKE 'goal_%' AND dedupe_key NOT LIKE 'goal:%'"
+            )
+            _conn.commit()
+        except Exception as e:
+            print(f"[db] migrate stall_alerts.dedupe_key failed: {type(e).__name__}: {e}")
+        # 3) 按回填出的 finish_reason 迁 kind：成本熔断独立成 goal_cost_capped（必须在回填之后）
+        try:
+            _conn.execute(
+                "UPDATE stall_alerts SET kind='goal_cost_capped'"
+                " WHERE kind='goal_exhausted' AND ref_id IN"
+                " (SELECT id FROM schedules WHERE finish_reason='cost_cap')"
+            )
+            _conn.commit()
+        except Exception as e:
+            print(f"[db] migrate stall_alerts.kind failed: {type(e).__name__}: {e}")
 
 
 def _exec(sql: str, params: tuple = ()):  # 写操作
@@ -1560,7 +1624,8 @@ def list_stall_alerts(status: str | None = None, limit: int = 50) -> list[dict]:
         rows = _query(
             "SELECT * FROM stall_alerts WHERE status='open'"
             " OR (status='snoozed' AND snooze_until<=?)"
-            " ORDER BY CASE kind WHEN 'goal_exhausted' THEN 0 WHEN 'goal_paused' THEN 0"
+            " ORDER BY CASE kind WHEN 'goal_cost_capped' THEN 0 WHEN 'goal_exhausted' THEN 0"
+            "  WHEN 'goal_paused' THEN 0"
             "  WHEN 'goal_stuck' THEN 1 WHEN 'todo_idle' THEN 2 ELSE 3 END,"
             " idle_sec DESC LIMIT ?",
             (_now(), limit),

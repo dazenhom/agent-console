@@ -945,7 +945,8 @@ async def _continue_goal_impl(sid: str, payload: dict):
     与 PUT 的「重新启用」语义不同——PUT 对 goal 传 enabled=true 会清零 iter_count/清空反馈子任务
     （从头重跑），这里只抬 max_iterations + 复位 running/enabled + 重算 next_run，绝不碰历史。
     payload 全可选：prompt（改目标）、stop_condition（改完成标准）、add_iterations（追加轮数，默认 3）、
-    verify_command（改验收命令）、exec_mode（改 solo/team）。这三个字段调度器每轮都现读现用
+    verify_command（改验收命令）、exec_mode（改 solo/team）、max_cost_usd（改成本上限，Stall Watch
+    收件箱对 goal_cost_capped 告警点「继续」时由前端 prompt 新上限后经此字段透传）。这几个字段调度器每轮都现读现用
     （scheduler._build_goal_prompt/_gather_verify_context），不会改写已判过的历史轮，故续跑时可放心改；
     唯独 session_id 不在此列——所有历史轮次的会话上下文/worktree 都挂在同一个会话上，续跑不允许换会话。"""
     sch = db.get_schedule(sid)
@@ -1195,10 +1196,18 @@ async def stalls_list():
             if str(a.get("kind") or "").startswith("goal_"):
                 sch = db.get_schedule(a["ref_id"])
                 if sch:
+                    # 成本上下文供前端 goal_cost_capped 行「继续」时 prompt 新上限预填
+                    # （取数失败由外层 except 兜住，整块 related 退化为空，不阻断列表）
+                    cost_limit = float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD
                     related = {
                         "iter_count": sch.get("iter_count"),
                         "max_iterations": sch.get("max_iterations"),
                         "last_feedback": (sch.get("last_feedback") or "")[:200],
+                        "finish_reason": sch.get("finish_reason") or "",
+                        "cost_limit": cost_limit,
+                        "spent_usd": db.sum_session_cost(
+                            sch.get("session_id") or "",
+                            sch.get("cost_base_ts") or sch.get("created_at") or 0),
                     }
             elif a.get("kind") == "todo_idle":
                 rows = db._query("SELECT progress FROM todos WHERE id=?", (a["ref_id"],))
@@ -1221,6 +1230,8 @@ async def stalls_scan():
 @app.post("/api/stalls/{aid}/continue", dependencies=[Depends(require_auth)])
 async def stalls_continue(aid: str, payload: dict | None = None):
     """按 kind 复用现有机制处置，绝不重写一套：
+      goal_cost_capped           -> _continue_goal_impl（默认 add_iterations=3；前端会带
+                                    新 max_cost_usd，续跑时重置成本窗口）
       goal_exhausted/goal_paused -> _continue_goal_impl（默认 add_iterations=3）
       goal_stuck                 -> 复位 running + 立即到期，交 scheduler tick 自然接管
       todo_idle                  -> triage._dispatch_existing_todo（建隔离会话+目标循环）
@@ -1237,7 +1248,7 @@ async def stalls_continue(aid: str, payload: dict | None = None):
     kind = alert.get("kind") or ""
     ref = alert.get("ref_id") or ""
     acted_ref = ref
-    if kind in ("goal_exhausted", "goal_paused"):
+    if kind in ("goal_cost_capped", "goal_exhausted", "goal_paused"):
         await _continue_goal_impl(ref, payload)  # 校验不过会抛 400/404
     elif kind == "goal_stuck":
         if not db.get_schedule(ref):

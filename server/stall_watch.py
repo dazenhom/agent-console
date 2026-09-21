@@ -5,7 +5,10 @@
 分离——只提醒不自动处置，用户经收件箱决定 继续/稍后/跳过（REST 在 main.py /api/stalls*）。
 
 信号一览（kind -> 判据，阈值全部见 config.STALL_*）：
-  S1 goal_exhausted  kind=goal、exhausted、enabled=0、last_run 距今超阈值
+  S1 goal_cost_capped kind=goal、exhausted、enabled=0、finish_reason='cost_cap'（成本熔断）、
+                     last_run 距今超阈值（更短，见 STALL_GOAL_COST_CAPPED_SEC）
+     goal_exhausted  kind=goal、exhausted、enabled=0、非成本熔断（迭代到顶/验收未过/拆解失败）、
+                     last_run 距今超阈值
      goal_paused     kind=goal、enabled=0、非终态非 failed（人工暂停）、同阈值
   S2 goal_stuck      kind=goal、enabled=1、状态机停在 running/producing/verifying、
                      last_run 距今超阈值；硬否定：会话仍在跑（hub.is_running）则跳过
@@ -28,7 +31,9 @@ LLM 调用路径）。
     backlog_import.scan_backlog 先例）；hub.is_running 只是内存 dict 读，允许在
     worker 线程里同步调用。
   - 循环导入：对 session_hub / wecom_notify 的引用一律函数内延迟 import。
-  - 去重语义：dedupe_key = kind + ':' + ref_id 全局唯一。已有 open/snoozed/dismissed
+  - 去重语义：dedupe_key 全局唯一。goal 类统一 'goal:<ref_id>'（不含 kind）——同一件事会
+    随状态演进换 kind（paused→exhausted→cost_capped），key 里带 kind 会在分型漂移时多报一条；
+    其余 kind 仍是 kind + ':' + ref_id。已有 open/snoozed/dismissed
     记录的不再动；resolved/acted 的在条件再次满足时复活（同一件事新一轮停滞重新可见）；
     dismissed 是用户显式的"永不再报"，是唯一永久抑制态。
 """
@@ -44,9 +49,9 @@ logger = get_logger(__name__)
 _stall_last_scan = time.time()
 _stall_last_notify = 0.0
 
-# 候选排序的 kind 优先级：耗尽/暂停最要紧（用户明确该做决定），卡死次之，待办/分派垫底。
+# 候选排序的 kind 优先级：成本熔断/耗尽/暂停最要紧（用户明确该做决定），卡死次之，待办/分派垫底。
 _KIND_PRIORITY = {
-    "goal_exhausted": 0, "goal_paused": 0, "goal_stuck": 1,
+    "goal_cost_capped": 0, "goal_exhausted": 0, "goal_paused": 0, "goal_stuck": 1,
     "todo_idle": 2, "dispatch_failed": 3, "dispatch_stuck": 3,
 }
 
@@ -70,16 +75,43 @@ def _goal_anchor(sch: dict) -> float:
     return float(sch.get("last_run") or sch.get("created_at") or 0)
 
 
+def _goal_kind_for(finish_reason: str) -> str:
+    """耗尽型 goal 的告警分型：成本熔断独立成一类（阈值更短、文案带钱包上下文，续跑要
+    用户当场给新预算），其余（迭代到顶/验收未过/拆解失败/拆解异常）沿用 goal_exhausted。
+    S1 与 S3a 共用，保证同一 schedule 不管从哪条路径扫出来都得到同一个 kind。"""
+    return "goal_cost_capped" if (finish_reason or "") == "cost_cap" else "goal_exhausted"
+
+
 def _goal_candidate(sch: dict, kind: str, now: float) -> dict:
     """由 schedule 行构造 goal 类告警候选。S1 与 S3a 归并共用：不管从哪路扫出来，
-    同一 schedule 的告警内容保持一致，先落库的版本即最终版本。"""
+    同一 schedule 的告警内容保持一致，先落库的版本即最终版本。
+
+    dedupe_key 统一 'goal:<id>'（不含 kind）：同一件事会随状态演进换 kind（paused →
+    exhausted → cost_capped），key 里带 kind 会在分型漂移时对同一件事多报一条。"""
     prompt = (sch.get("prompt") or "").strip()
     short = _clip(prompt, 40) or "（无目标描述）"
     idle = max(0.0, now - _goal_anchor(sch))
     iter_count = int(sch.get("iter_count") or 0)
     max_iter = int(sch.get("max_iterations") or 0)
     dur = _fmt_dur(idle)
-    if kind == "goal_exhausted":
+    if kind == "goal_cost_capped":
+        # 只在成本熔断分支查花费（其余分支零额外查询）：查库失败退化成只写上限，
+        # 绝不让"构造告警"这一步因取数失败而整条丢掉
+        limit = float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD
+        try:
+            spent = db.sum_session_cost(
+                sch.get("session_id") or "",
+                sch.get("cost_base_ts") or sch.get("created_at") or 0)
+            cost_txt = f"该会话本成本窗口已花 ${spent:.2f} / 上限 ${limit:g}"
+        except Exception:
+            cost_txt = f"该会话本成本窗口上限 ${limit:g}"
+        title = f"目标循环已达成本上限：{short}"
+        detail = (f"第 {iter_count}/{max_iter} 轮触及成本上限（{cost_txt}），停滞 {dur}未裁决。"
+                  f"继续将开新成本窗口（已花额度重新计）。")
+        fb = _clip(sch.get("last_feedback") or "", 120)
+        if fb:
+            detail += f"最后一轮验收：{fb}"
+    elif kind == "goal_exhausted":
         title = f"目标循环已耗尽：{short}"
         fb = _clip(sch.get("last_feedback") or "", 120)
         detail = f"已迭代 {iter_count}/{max_iter} 轮后耗尽，停滞 {dur}无人续跑。"
@@ -96,29 +128,38 @@ def _goal_candidate(sch: dict, kind: str, now: float) -> dict:
     return {
         "kind": kind, "ref_id": sch.get("id") or "",
         "session_id": sch.get("session_id") or "",
-        "dedupe_key": f"{kind}:{sch.get('id')}",
+        "dedupe_key": f"goal:{sch.get('id')}",
         "title": title, "detail": detail, "idle_sec": idle,
     }
 
 
 def _scan_goals(now: float) -> list[dict]:
     """S1 + S2：一条 SQL 取全部命中阈值的 goal schedule，再在 Python 侧分型。
-    S2 的硬否定（会话在跑）放这里判，is_running 是内存 dict 读不产生额外查询。"""
+    S2 的硬否定（会话在跑）放这里判，is_running 是内存 dict 读不产生额外查询。
+
+    已耗尽分支按 finish_reason 拆成两个阈值：成本熔断走更短的 STALL_GOAL_COST_CAPPED_SEC
+    （钱包裁决该早提醒），其余耗行走 STALL_GOAL_EXHAUSTED_SEC。"""
     from .session_hub import hub
     thr_exhausted = config.STALL_GOAL_EXHAUSTED_SEC
+    thr_cost = config.STALL_GOAL_COST_CAPPED_SEC
     thr_stuck = config.STALL_GOAL_STUCK_SEC
     rows = db._query(
         "SELECT id, session_id, prompt, goal_status, enabled, iter_count, max_iterations,"
-        " last_feedback, last_run, created_at,"
+        " last_feedback, finish_reason, max_cost_usd, cost_base_ts, last_run, created_at,"
         " (? - COALESCE(last_run, created_at)) AS idle_sec"
         " FROM schedules WHERE kind='goal' AND ("
-        "  (enabled=0 AND goal_status='exhausted' AND (? - COALESCE(last_run, created_at)) > ?)"
+        "  (enabled=0 AND goal_status='exhausted'"
+        "      AND COALESCE(finish_reason,'')='cost_cap'"
+        "      AND (? - COALESCE(last_run, created_at)) > ?)"
+        "  OR (enabled=0 AND goal_status='exhausted'"
+        "      AND COALESCE(finish_reason,'')<>'cost_cap'"
+        "      AND (? - COALESCE(last_run, created_at)) > ?)"
         "  OR (enabled=0 AND COALESCE(goal_status,'') NOT IN ('done','exhausted','failed')"
         "      AND (? - COALESCE(last_run, created_at)) > ?)"
         "  OR (enabled=1 AND COALESCE(goal_status,'') IN ('running','producing','verifying')"
         "      AND (? - COALESCE(last_run, created_at)) > ?)"
         " )",
-        (now, now, thr_exhausted, now, thr_exhausted, now, thr_stuck),
+        (now, now, thr_cost, now, thr_exhausted, now, thr_exhausted, now, thr_stuck),
     )
     out = []
     for r in rows:
@@ -129,7 +170,8 @@ def _scan_goals(now: float) -> list[dict]:
                 continue
             out.append(_goal_candidate(sch, "goal_stuck", now))
         elif (sch.get("goal_status") or "") == "exhausted":
-            out.append(_goal_candidate(sch, "goal_exhausted", now))
+            out.append(_goal_candidate(
+                sch, _goal_kind_for(sch.get("finish_reason") or ""), now))
         else:
             out.append(_goal_candidate(sch, "goal_paused", now))
     return out
@@ -144,6 +186,8 @@ def _scan_todos(now: float) -> list[dict]:
         " s.kind AS sch_kind, s.goal_status AS sch_goal_status, s.enabled AS sch_enabled,"
         " s.session_id AS sch_session_id, s.prompt AS sch_prompt, s.iter_count AS sch_iter_count,"
         " s.max_iterations AS sch_max_iter, s.last_feedback AS sch_last_feedback,"
+        " s.finish_reason AS sch_finish_reason, s.max_cost_usd AS sch_max_cost,"
+        " s.cost_base_ts AS sch_cost_base,"
         " s.last_run AS sch_last_run, s.created_at AS sch_created,"
         " (? - MAX(COALESCE(t.updated_at, t.created_at), COALESCE(t.progress_at, 0))) AS idle_sec"
         " FROM todos t"
@@ -159,19 +203,26 @@ def _scan_todos(now: float) -> list[dict]:
         if sid and row.get("sch_kind") == "goal":
             gs = (row.get("sch_goal_status") or "").strip()
             if gs in ("exhausted", "failed"):
-                # 归并进 S1 同一 dedupe_key：exhausted -> goal_exhausted:sid（与 S1 完全
-                # 一致）；failed（派单回滚产物）-> goal_paused:sid（enabled=0 未完成态，
-                # 续跑 impl 的 is_paused 分支可接）。先落库的版本生效，同一件事只报一条。
+                # 归并进 S1 同一 dedupe_key（goal:<sid>，与 S1 完全一致，不含 kind）：exhausted
+                # 按 finish_reason 分型（成本熔断 -> goal_cost_capped，与 S1 同判据）；failed
+                #（派单回滚产物）-> goal_paused（enabled=0 未完成态，续跑 impl 的 is_paused 分支
+                # 可接）。先落库的版本生效，同一件事只报一条。
                 sch_view = {
                     "id": sid, "session_id": row.get("sch_session_id"),
                     "prompt": row.get("sch_prompt"), "goal_status": gs,
                     "iter_count": row.get("sch_iter_count"),
                     "max_iterations": row.get("sch_max_iter"),
                     "last_feedback": row.get("sch_last_feedback"),
+                    "finish_reason": row.get("sch_finish_reason"),
+                    "max_cost_usd": row.get("sch_max_cost"),
+                    "cost_base_ts": row.get("sch_cost_base"),
                     "last_run": row.get("sch_last_run"), "created_at": row.get("sch_created"),
                 }
                 out.append(_goal_candidate(
-                    sch_view, "goal_exhausted" if gs == "exhausted" else "goal_paused", now))
+                    sch_view,
+                    _goal_kind_for(row.get("sch_finish_reason") or "") if gs == "exhausted"
+                    else "goal_paused",
+                    now))
             # 其余（还在推进 / 已 done）不报：S1/S2 覆盖 schedule 侧视角，
             # done 意味着工作已完成、无跟进价值
             continue
@@ -244,15 +295,24 @@ def _scan_dispatch(now: float) -> list[dict]:
 
 def _still_stalled(kind: str, ref_id: str, now: float) -> bool:
     """复查某告警的源对象是否仍满足停滞判据（auto_resolve 用）。源对象已删除返回
-    False（视为已了结）；kind 不认识也返回 False（防僵尸告警）。"""
+    False（视为已了结）；kind 不认识也返回 False（防僵尸告警）。
+    新增 kind 必须同时登记在白名单里，否则它会被 auto_resolve 当成"不认识的僵尸告警"
+    在下一轮扫描静默清掉。"""
     from .session_hub import hub
-    if kind in ("goal_exhausted", "goal_paused", "goal_stuck"):
+    if kind in ("goal_cost_capped", "goal_exhausted", "goal_paused", "goal_stuck"):
         sch = db.get_schedule(ref_id)
         if not sch or sch.get("kind") != "goal":
             return False
         idle = now - _goal_anchor(sch)
+        if kind == "goal_cost_capped":
+            # 与 S1 的成本熔断判据严格对齐（含 finish_reason）：两边不一致会互相打架——
+            # 一边报一边被 auto_resolve 清掉，无限循环
+            return (not sch.get("enabled")) and (sch.get("goal_status") == "exhausted") \
+                and (sch.get("finish_reason") or "") == "cost_cap" \
+                and idle > config.STALL_GOAL_COST_CAPPED_SEC
         if kind == "goal_exhausted":
             return (not sch.get("enabled")) and (sch.get("goal_status") == "exhausted") \
+                and (sch.get("finish_reason") or "") != "cost_cap" \
                 and idle > config.STALL_GOAL_EXHAUSTED_SEC
         if kind == "goal_paused":
             return (not sch.get("enabled")) \
@@ -351,8 +411,11 @@ def scan_once() -> dict:
     for c in pending:
         revive_id = c.get("_revive_id")
         if revive_id:
+            # kind 一并跟着本轮判定改写：goal 类的 dedupe_key 去 kind 化后，同一件事会随状态
+            # 演进换分型（paused -> exhausted -> cost_capped），复活时若留着旧 kind，处置路由
+            # 会走错分支（如 cost_capped 被当 goal_exhausted 续跑，不提示新成本上限 → 立刻再熔断）
             db.update_stall_alert(
-                revive_id, status="open", title=c["title"], detail=c["detail"],
+                revive_id, kind=c["kind"], status="open", title=c["title"], detail=c["detail"],
                 idle_sec=c["idle_sec"], session_id=c.get("session_id") or "",
                 snooze_until=0, acted_kind="", acted_ref="", notified_at=0, created_at=now,
             )
