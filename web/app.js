@@ -2886,6 +2886,11 @@
     const previousShown = state.historySessionId === state.sessionId ? state.histShown : 0;
     chat.innerHTML = "";
     state._histGroups = {};
+    // 整屏重建后 state.agentGroups/subStreams 里的节点引用全部悬空；不清空会让后续
+    // WS tool_result/流式增量写进孤儿节点（用户看到的新卡片永远"运行中"）。这里先
+    // 清，再在下方渲染循环末尾从新 DOM 重绑，保证任何离开本函数的路径 Map 都与 DOM 一致。
+    state.agentGroups = {};
+    state.subStreams = {};
     state.histMsgs = msgs;
     state.historySessionId = state.sessionId;
     if (!msgs.length) {
@@ -2913,6 +2918,31 @@
     const start = msgs.length - shown;
     for (let i = start; i < msgs.length; i++) {
       appendMsgWithPreview(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+    }
+    // 重绑：把重建出的、尚未收尾的 Agent 卡片登记回实时归拢 Map（tool_use id -> 卡片 body），
+    // 正在跑的子智能体后续 WS 增量/结果才能写进新 DOM。已收尾（hasResult）的不登记，
+    // 与 appendMessageGrouped 收尾后 delete 的语义对齐，避免结果被二次覆盖。
+    chat.querySelectorAll(".subagent[data-agent-id]").forEach((card) => {
+      if (card.querySelector(".subagent-result[data-has-result]")) return;
+      const body = card.querySelector(".subagent-body");
+      if (body) state.agentGroups[card.dataset.agentId] = body;
+    });
+    // 自愈兜底：卡片仍标"运行中"但其后已出现顶层 result 行（回合已收尾），说明结果
+    // 消息丢失/未落库。标中性"已结束（结果未记录）"而非谎报运行中；result 行在
+    // 窗口外时判据落空，保持"运行中"——宁可保守也不误报完成。
+    const resultLines = chat.querySelectorAll(".result-line");
+    if (resultLines.length) {
+      chat.querySelectorAll(".subagent-status.running").forEach((status) => {
+        const card = status.closest(".subagent");
+        if (!card) return;
+        const ended = Array.from(resultLines).some((rl) =>
+          card.compareDocumentPosition(rl) & Node.DOCUMENT_POSITION_FOLLOWING);
+        if (ended) {
+          status.textContent = "已结束（结果未记录）";
+          status.classList.remove("running");
+          status.classList.add("stale");
+        }
+      });
     }
     if (q) {
       const firstMark = highlightChat(q);
@@ -5463,12 +5493,45 @@
           <pre>${escapeHtml(inputStr)}</pre>`;
       }
     } else if (role === "tool_result") {
-      node = el("details", "tool");
-      if (content.is_error) node.open = true;  // 出错自动展开，方便排查
-      const errCls = content.is_error ? " err" : "";
-      node.innerHTML = `<summary><span class="tag${errCls}">结果${content.is_error ? " ✗" : ""}</span>
-        <span class="summary-text">${escapeHtml(String(content.output || "").slice(0, 80))}</span></summary>
-        <pre>${escapeHtml(String(content.output || ""))}</pre>`;
+      if (content.agent_meta) {
+        // 后端只给子智能体收尾 tool_result 塞 agent_meta（session_hub 按 tool_use_result.agentId
+        // 判定），是确定性标记，条件必须严格：宽了会把普通工具结果误渲染成卡片。
+        // 走到这说明对应 Agent 卡片（tool_use）不在当前渲染窗口（200 条尾部翻页，
+        // developer 的 tool_use 与 tool_result 间隔可到 ~200 条），直接合成一张
+        // 已完成卡片，让结果可见而不是折叠成普通工具结果块。
+        const meta = content.agent_meta;
+        node = el("div", "subagent");
+        if (content.tool_use_id) node.dataset.agentId = content.tool_use_id;
+        node.innerHTML = `<div class="subagent-head">
+            <span class="sap-caret">▸</span>
+            <span class="subagent-icon">🤖</span>
+            <span class="subagent-title">${escapeHtml(String(meta.agent_type || "agent"))}</span>
+            <span class="subagent-status done">✓ 完成</span>
+            <span class="subagent-meta"></span>
+          </div>
+          <div class="subagent-body" style="display:none"></div>
+          <div class="subagent-result" data-has-result="1" style="display:none">
+            <div class="subagent-result-content markdown"></div>
+          </div>`;
+        const rcEl = node.querySelector(".subagent-result-content");
+        if (rcEl) rcEl.innerHTML = renderMarkdown(String(content.output || ""));
+        updateSubagentMeta(node, meta);
+        // 结构对齐 Agent 卡片；内部步骤不在本窗口，body 恒空——展开时跳过空 body 的显隐。
+        node.querySelector(".subagent-head").addEventListener("click", function() {
+          const isOpen = node.classList.toggle("open");
+          const bodyEl = node.querySelector(".subagent-body");
+          if (bodyEl && bodyEl.children.length) bodyEl.style.display = isOpen ? "" : "none";
+          const rbox = node.querySelector(".subagent-result");
+          if (rbox && rbox.dataset.hasResult) rbox.style.display = isOpen ? "" : "none";
+        });
+      } else {
+        node = el("details", "tool");
+        if (content.is_error) node.open = true;  // 出错自动展开，方便排查
+        const errCls = content.is_error ? " err" : "";
+        node.innerHTML = `<summary><span class="tag${errCls}">结果${content.is_error ? " ✗" : ""}</span>
+          <span class="summary-text">${escapeHtml(String(content.output || "").slice(0, 80))}</span></summary>
+          <pre>${escapeHtml(String(content.output || ""))}</pre>`;
+      }
     } else if (role === "result") {
       // 兜底：resume 失败的坏 result（num_turns=0 且报错，errors 含 "No conversation found"）
       // 后端一般已吞掉不下发，万一漏网也不渲染空的“$0.0000 完成”行。判定收窄到 resume
@@ -5562,21 +5625,33 @@
       if (content.id) groups[content.id] = node.querySelector(".subagent-body");
       return;
     }
-    // 2) 子智能体的最终结果：tool_result 的 tool_use_id 命中某张卡片 → 填入结果区并收尾
-    if (role === "tool_result" && content.tool_use_id && groups[content.tool_use_id]) {
+    // 2) 子智能体的最终结果：tool_result 的 tool_use_id 命中某张卡片 → 填入结果区并收尾。
+    //    两级查找：先查 groups（常规路径），未命中再按 data-agent-id 查 DOM 兜底——
+    //    Map 与 DOM 偶发脱节（重绘丢绑/跨窗口边界）时结果仍能落到真实卡片上，
+    //    而不是被吞掉。已收尾的卡片不再覆盖，等价于下方 delete 的注销语义。
+    if (role === "tool_result" && content.tool_use_id) {
+      let card = null;
       const bodyEl = groups[content.tool_use_id];
-      const card = bodyEl.closest(".subagent");
+      if (bodyEl) {
+        card = bodyEl.closest(".subagent");
+      } else {
+        // parentEl 为游离 fragment（加载更早）时其内卡片不在 #chat 里，但那种路径 groups
+        // 本身覆盖跨批次关联；这里只在已连接容器（实时 #chat）里兜底查。
+        const root = (parentEl && parentEl.isConnected) ? parentEl : $("chat");
+        const found = root.querySelector(`.subagent[data-agent-id="${CSS.escape(content.tool_use_id)}"]`);
+        if (found && !found.querySelector(".subagent-result[data-has-result]")) card = found;
+      }
       if (card) {
         const rc = card.querySelector(".subagent-result-content");
         const rbox = card.querySelector(".subagent-result");
         if (rc) { rc.classList.add("markdown"); rc.innerHTML = renderMarkdown(String(content.output || "")); }
         if (rbox) { rbox.dataset.hasResult = "1"; rbox.style.display = card.classList.contains("open") ? "" : "none"; }
         const status = card.querySelector(".subagent-status");
-        if (status) { status.textContent = "✓ 完成"; status.classList.remove("running"); status.classList.add("done"); }
+        if (status) { status.textContent = "✓ 完成"; status.classList.remove("running"); status.classList.remove("stale"); status.classList.add("done"); }
         if (content.agent_meta) updateSubagentMeta(card, content.agent_meta);
+        delete groups[content.tool_use_id];  // 注销：卡片已收尾，后续同 id 不再归拢
+        return;  // 结果已入卡片，不再平铺这条 tool_result
       }
-      delete groups[content.tool_use_id];  // 注销：卡片已收尾，后续同 id 不再归拢
-      return;  // 结果已入卡片，不再平铺这条 tool_result
     }
     // 3) 子智能体内部步骤：parent 命中某张卡片 → 追加到该卡片 body
     if (content.parent && groups[content.parent]) {

@@ -349,6 +349,8 @@ body.hub-resizing {
   background: #e6e4fb; color: #6d5fd8; white-space: nowrap;
 }
 .subagent-status.done { background: var(--green-soft); color: var(--green); }
+/* 已结束但结果未归拢（历史窗口裁掉了收尾消息）：中性灰，与"运行中/完成"都区分开 */
+.subagent-status.stale { background: var(--gray-soft); color: var(--muted-2); }
 .subagent-meta {
   flex-basis: 100%;
   font-size: 11px;
