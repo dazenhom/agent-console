@@ -2722,9 +2722,10 @@
         updateSessionIdBar(cur.id);
         updateLinkedTodoBar(cur);
         markSeen(cur.id, cur.updated_at);
-        // 标记已读后只摘掉这一行的未读圆点：整表重建会把刚点开的行重画、滚动位置也跳回顶部
-        const dot = document.querySelector(`#session-list li[data-sid="${cur.id}"] .s-dot.unread`);
-        if (dot) dot.remove();
+        // 标记已读后只摘掉这一行的未读圆点：整表重建会把刚点开的行重画、滚动位置也跳回顶部。
+        // 不限容器按 data-sid 全局选——同一会话可能同时出现在主列表/进行中/Review/归档里，
+        // session id 是 uuid 截断全局唯一，不会误伤别的行。
+        document.querySelectorAll(`li[data-sid="${cur.id}"] .s-dot.unread`).forEach((d) => d.remove());
         renderDashboard();  // 「待查看」计数要实时减
       }
       document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
@@ -2754,9 +2755,8 @@
       updateSessionIdBar(cur.id);
       updateLinkedTodoBar(cur);
       markSeen(cur.id, cur.updated_at);
-      // 同第一次点击分支：只摘圆点不整表重建，保住刚点开那行的位置与滚动条
-      const dot = document.querySelector(`#session-list li[data-sid="${cur.id}"] .s-dot.unread`);
-      if (dot) dot.remove();
+      // 同第一次点击分支：只摘圆点不整表重建，保住刚点开那行的位置与滚动条；同样全局选所有列表
+      document.querySelectorAll(`li[data-sid="${cur.id}"] .s-dot.unread`).forEach((d) => d.remove());
       renderDashboard();  // 「待查看」计数要实时减
     }
     // 高亮当前会话行（跨三个列表）
