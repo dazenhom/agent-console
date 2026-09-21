@@ -296,11 +296,17 @@ def _still_stalled(kind: str, ref_id: str, now: float) -> bool:
 
 
 def _auto_resolve(now: float) -> int:
-    """复查所有 open 告警：源对象已删除、或不再满足停滞判据的置 resolved（如用户从
-    目标详情页续跑后，收件箱对应告警在下一轮扫描自动消失）。dismissed/snoozed/acted
-    是用户显式决定，绝不碰。单条异常吞掉继续下一条，绝不让一条坏数据中断整轮。"""
+    """复查所有 open + snoozed 告警：源对象已删除、或不再满足停滞判据的置 resolved（如用户从
+    目标详情页续跑后，收件箱对应告警在下一轮扫描自动消失）。snoozed 同样复查——「稍后」推迟的
+    只是提醒，事情本身已了结就不该到期复报（否则 snooze 到期会把已解决的旧告警重新翻出来误报）；
+    仍停滞的 snoozed 保持原状（不翻回 open、不动 snooze_until，不打扰用户的稍后决定）。
+    dismissed/acted 是用户显式决定，绝不碰。单条异常吞掉继续下一条，绝不让一条坏数据中断整轮。"""
     resolved = 0
-    for alert in db.list_stall_alerts(status="open", limit=500):
+    # snoozed 批次不走默认口径（默认只取已到期的），未到期的同样要复查：它们是
+    # "这件事还没了结"的在册记录，只是暂不出现在展示窗口
+    alerts = db.list_stall_alerts(status="open", limit=500) \
+        + db.list_stall_alerts(status="snoozed", limit=500)
+    for alert in alerts:
         try:
             if not _still_stalled(alert["kind"], alert["ref_id"], now):
                 db.update_stall_alert(alert["id"], status="resolved")

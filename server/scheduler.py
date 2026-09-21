@@ -94,8 +94,10 @@ async def _run_loop():
             # 一轮）+ to_thread，通知 fire-and-forget，不在本 tick await。
             try:
                 await _tick_stall_watch()
-            except Exception:
-                pass
+            except Exception as e:
+                # 整体策略仍是吞掉继续跑，但必须留痕：停滞检测静默挂掉等于告警断流，
+                # 用户毫无感知，grep 这条日志才能定位
+                logger.warning("stall watch tick 异常: %s: %s", type(e).__name__, e)
         except Exception:
             pass
         await asyncio.sleep(TICK_SEC)

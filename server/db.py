@@ -1567,15 +1567,19 @@ def update_stall_alert(aid: str, **fields) -> bool:
 def resolve_stall_alerts_by_ref(ref_id: str, kind: str | None = None) -> int:
     """把指向某源对象（schedule/todo/plan）的未处理告警批量置 resolved（如用户从目标
     详情页直接点了续跑，收件箱里的对应告警应即刻消失，不必等下一轮扫描复核）。
-    dismissed/snoozed/acted 是用户的显式决定，绝不碰。返回影响行数。"""
+    snoozed 一并置 resolved：用户「稍后」的是再提醒我这件事，事情本身已了结就没有
+    到期复报的意义（否则 snooze 到期会把已解决的旧告警重新翻出来误报）。
+    dismissed/acted 是用户的显式决定，绝不碰。返回影响行数。"""
     if kind:
         cur = _exec(
-            "UPDATE stall_alerts SET status='resolved', updated_at=? WHERE ref_id=? AND kind=? AND status='open'",
+            "UPDATE stall_alerts SET status='resolved', updated_at=? WHERE ref_id=? AND kind=?"
+            " AND status IN ('open','snoozed')",
             (_now(), ref_id, kind),
         )
     else:
         cur = _exec(
-            "UPDATE stall_alerts SET status='resolved', updated_at=? WHERE ref_id=? AND status='open'",
+            "UPDATE stall_alerts SET status='resolved', updated_at=? WHERE ref_id=?"
+            " AND status IN ('open','snoozed')",
             (_now(), ref_id),
         )
     return cur.rowcount

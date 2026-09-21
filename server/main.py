@@ -1263,9 +1263,13 @@ async def stalls_continue(aid: str, payload: dict | None = None):
         subs = [s for s in db.list_dispatch_subtasks(ref) if s.get("status") in ("failed", "error")]
         if not subs:
             raise HTTPException(status_code=404, detail="没有可重派的失败子任务")
-        for s in subs:
+        for i, s in enumerate(subs):
             if not await dispatcher.retry_subtask(s["id"]):
-                raise HTTPException(status_code=500, detail=f"子任务重派失败：{s['id']}")
+                # 中途失败不回滚：已成功的保留、告警保持 open 等下一轮扫描，提示带上
+                # 成功计数让用户知道该 plan 已推进到哪
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"已重派 {i}/{len(subs)} 个，子任务 {s['id']} 重派失败（已成功的保留）")
     elif kind == "dispatch_stuck":
         # 动作时刻逐个复判：只处置仍处于卡死态的（updated_at 已被刷新/会话已在跑的跳过），
         # 避免把扫描后恢复推进的子任务误杀重跑
@@ -1283,7 +1287,10 @@ async def stalls_continue(aid: str, payload: dict | None = None):
             db.update_dispatch_subtask(s["id"], status="failed",
                                        feedback="停滞检测标记：派发后长期无进展")
             if not await dispatcher.retry_subtask(s["id"]):
-                raise HTTPException(status_code=500, detail=f"子任务重派失败：{s['id']}")
+                # 同 dispatch_failed：中途失败不回滚，提示带成功计数
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"已重派 {acted} 个，子任务 {s['id']} 重派失败（已成功的保留）")
             acted += 1
         if not acted:
             raise HTTPException(status_code=400, detail="没有仍处于卡死状态的子任务（可能已恢复）")

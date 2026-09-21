@@ -2,11 +2,15 @@
 
 temp_db 走真实 schedules/todos/dispatch_subtasks 写入路径，直接驱动同步纯 DB 的
 stall_watch.scan_once；hub.is_running 用真实 hub——未注册回合恒为 False，正好等于
-"会话空闲"口径，无需打桩。
+"会话空闲"口径；"会话在跑"分支（S2/S5 硬否定）在 hub 单例实例上 monkeypatch
+is_running=True 覆盖。REST 集成测试走 TestClient（先例 test_notify_auth.py）：不进
+with 上下文不触发 lifespan，不会拉起 scheduler 后台循环。
 """
 import time
 
-from server import config, db, stall_watch
+import pytest
+
+from server import config, db, session_hub, stall_watch
 
 
 def _backdate(table, row_id, age):
@@ -71,6 +75,25 @@ def test_goal_paused_branch(temp_db):
     alerts = db.list_stall_alerts()
     assert len(alerts) == 1 and alerts[0]["kind"] == "goal_paused"
     assert alerts[0]["ref_id"] == sch["id"]
+
+
+# ---------- S2：goal stuck ----------
+def test_goal_stuck_detected(temp_db):
+    # enabled=1 + 状态机停在 running 超 STALL_GOAL_STUCK_SEC（默认 21600s）+ 会话空闲 → 检出
+    sch = _mk_goal(goal_status="running", enabled=1, age=7 * 3600)
+    stall_watch.scan_once()
+    alerts = db.list_stall_alerts()
+    assert len(alerts) == 1
+    assert alerts[0]["kind"] == "goal_stuck" and alerts[0]["ref_id"] == sch["id"]
+
+
+def test_goal_stuck_skipped_when_session_running(temp_db, monkeypatch):
+    # S2 硬否定：会话仍在跑（长回合是正常态，另有看门狗管）→ 不报。
+    # hub 是函数内延迟 import 的单例，直接在实例上打桩 is_running
+    monkeypatch.setattr(session_hub.hub, "is_running", lambda sid: True)
+    _mk_goal(goal_status="running", enabled=1, age=7 * 3600)
+    stall_watch.scan_once()
+    assert db.list_stall_alerts() == []
 
 
 # ---------- 去重 ----------
@@ -140,6 +163,26 @@ def test_auto_resolve_never_touches_dismissed(temp_db):
     assert db.get_stall_alert(aid)["status"] == "dismissed"
 
 
+def test_resolve_stall_alerts_by_ref_covers_snoozed(temp_db):
+    """P1：resolve_stall_alerts_by_ref（详情页续跑等路径的即时清除）必须覆盖 snoozed——
+    用户点过「稍后」的告警在问题经其他渠道解决后也要即刻了结，否则到期又翻出来误报。
+    dismissed 是用户显式的"永不再报"，仍绝不碰。"""
+    sch = _mk_goal()
+    open_a = db.create_stall_alert(kind="goal_exhausted", ref_id=sch["id"], title="t1",
+                                   dedupe_key=f"goal_exhausted:{sch['id']}")
+    snoozed_a = db.create_stall_alert(kind="goal_paused", ref_id=sch["id"], title="t2",
+                                      dedupe_key=f"goal_paused:{sch['id']}")
+    dismissed_a = db.create_stall_alert(kind="goal_stuck", ref_id=sch["id"], title="t3",
+                                        dedupe_key=f"goal_stuck:{sch['id']}")
+    db.update_stall_alert(snoozed_a["id"], status="snoozed", snooze_until=time.time() + 3600)
+    db.update_stall_alert(dismissed_a["id"], status="dismissed")
+    n = db.resolve_stall_alerts_by_ref(sch["id"])
+    assert n == 2  # open + snoozed 置 resolved，dismissed 不动
+    assert db.get_stall_alert(open_a["id"])["status"] == "resolved"
+    assert db.get_stall_alert(snoozed_a["id"])["status"] == "resolved"
+    assert db.get_stall_alert(dismissed_a["id"])["status"] == "dismissed"
+
+
 # ---------- snooze / dismissed ----------
 def test_snoozed_hidden_until_due(temp_db):
     _mk_goal()
@@ -150,6 +193,35 @@ def test_snoozed_hidden_until_due(temp_db):
     db.update_stall_alert(aid, snooze_until=time.time() - 1)
     alerts = db.list_stall_alerts()              # 到期：重新出现（status 仍是 snoozed，不改库）
     assert len(alerts) == 1 and alerts[0]["id"] == aid
+
+
+def test_snoozed_alert_resolved_when_condition_cleared_before_due(temp_db):
+    """P1 回归：snooze 后问题经其他渠道解决（如从目标详情页续跑），snoozed 告警必须被
+    _auto_resolve 自愈置 resolved——否则 snooze 到期会把已解决的旧告警重新翻出来误报。"""
+    sch = _mk_goal()
+    stall_watch.scan_once()
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    db.update_stall_alert(aid, status="snoozed", snooze_until=time.time() + 3600)
+    # 条件解除：用户从目标详情页续跑（翻回 running/enabled=1），收件箱里是 snoozed 态
+    db.update_schedule(sch["id"], goal_status="running", enabled=1)
+    stall_watch.scan_once()  # _auto_resolve 复查范围含 snoozed → 置 resolved
+    assert db.get_stall_alert(aid)["status"] == "resolved"
+    # 到期后（snooze_until 已拨过）默认列表不再出现该告警
+    db.update_stall_alert(aid, snooze_until=time.time() - 1)
+    assert db.list_stall_alerts() == []
+
+
+def test_snoozed_still_stalled_stays_snoozed_after_scan(temp_db):
+    """仍停滞的 snoozed：复查通过，保持 snoozed 原状——不翻回 open、不动 snooze_until，
+    不打扰用户的稍后决定。"""
+    _mk_goal()
+    stall_watch.scan_once()
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    until = time.time() + 3600
+    db.update_stall_alert(aid, status="snoozed", snooze_until=until)
+    stall_watch.scan_once()
+    a = db.get_stall_alert(aid)
+    assert a["status"] == "snoozed" and a["snooze_until"] == until
 
 
 def test_dismissed_never_returns(temp_db):
@@ -205,6 +277,33 @@ def test_dispatch_failed_below_threshold_not_reported(temp_db):
     assert db.list_stall_alerts() == []
 
 
+def test_dispatch_stuck_detected(temp_db):
+    # dispatched 挂着超 STALL_DISPATCH_STUCK_SEC（默认 10800s）且子会话不在跑 → 检出
+    #（_mk_failed_subtask 带 status 参数，可造任意状态子任务）
+    plan_id = db.new_id()
+    _mk_failed_subtask(plan_id, age=4 * 3600, status="dispatched")
+    stall_watch.scan_once()
+    alerts = db.list_stall_alerts()
+    assert len(alerts) == 1
+    assert alerts[0]["kind"] == "dispatch_stuck" and alerts[0]["ref_id"] == plan_id
+
+
+def test_dispatch_stuck_below_threshold_not_reported(temp_db):
+    plan_id = db.new_id()
+    _mk_failed_subtask(plan_id, age=3600, status="dispatched")  # < 默认 10800s
+    stall_watch.scan_once()
+    assert db.list_stall_alerts() == []
+
+
+def test_dispatch_stuck_skipped_when_session_running(temp_db, monkeypatch):
+    # S5 卡死的硬否定：子会话仍在跑 = 正常长回合 → 不报（与 S2 同款实例打桩）
+    monkeypatch.setattr(session_hub.hub, "is_running", lambda sid: True)
+    plan_id = db.new_id()
+    _mk_failed_subtask(plan_id, age=4 * 3600, status="dispatched")
+    stall_watch.scan_once()
+    assert db.list_stall_alerts() == []
+
+
 # ---------- 截断 ----------
 def test_truncated_to_max_alerts_per_scan(temp_db, monkeypatch):
     monkeypatch.setattr(config, "STALL_MAX_ALERTS_PER_SCAN", 3)
@@ -213,3 +312,77 @@ def test_truncated_to_max_alerts_per_scan(temp_db, monkeypatch):
     result = stall_watch.scan_once()
     assert len(db.list_stall_alerts()) == 3
     assert len(result["new"]) == 3
+
+
+# ---------- REST 集成（/api/stalls* happy path） ----------
+@pytest.fixture
+def api_client(temp_db, monkeypatch):
+    """带鉴权的 TestClient（先例 test_notify_auth.py）。不进 with 上下文 → 不触发
+    lifespan → 不拉起 scheduler 后台循环；db 由 temp_db fixture 指向临时库。"""
+    from fastapi.testclient import TestClient
+
+    from server import main as main_module
+
+    monkeypatch.setattr(config, "AUTH_TOKEN", "unit-token")
+    return TestClient(main_module.app)
+
+
+def _post(client, path, json=None):
+    return client.post(path, headers={"Authorization": "Bearer unit-token"}, json=json)
+
+
+def test_api_continue_goal_exhausted_happy_path(api_client):
+    """继续（goal_exhausted）：走 _continue_goal_impl（与目标详情页续跑共用实现），
+    复位 running/enabled=1 + 抬 max_iterations，告警置 acted。"""
+    sch = _mk_goal()
+    stall_watch.scan_once()
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    resp = _post(api_client, f"/api/stalls/{aid}/continue", json={})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "kind": "goal_exhausted", "ref": sch["id"]}
+    fresh = db.get_schedule(sch["id"])
+    assert fresh["goal_status"] == "running" and fresh["enabled"] == 1
+    assert int(fresh["max_iterations"]) == 3  # iter_count=0 + 默认追加 3 轮
+    a = db.get_stall_alert(aid)
+    assert a["status"] == "acted" and a["acted_kind"] == "continue"
+
+
+def test_api_continue_goal_stuck_happy_path(api_client):
+    """继续（goal_stuck）：复位状态机 + 立即到期，交 scheduler tick 接管。"""
+    sch = _mk_goal(goal_status="running", enabled=1, age=7 * 3600)
+    stall_watch.scan_once()
+    assert db.list_stall_alerts(status="open")[0]["kind"] == "goal_stuck"
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    resp = _post(api_client, f"/api/stalls/{aid}/continue", json={})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "kind": "goal_stuck", "ref": sch["id"]}
+    fresh = db.get_schedule(sch["id"])
+    assert fresh["goal_status"] == "running" and fresh["next_run"] > 0
+    assert db.get_stall_alert(aid)["status"] == "acted"
+
+
+def test_api_skip_happy_path(api_client):
+    _mk_goal()
+    stall_watch.scan_once()
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    resp = _post(api_client, f"/api/stalls/{aid}/skip")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert db.get_stall_alert(aid)["status"] == "dismissed"
+    assert db.list_stall_alerts() == []  # 默认列表即刻消失
+
+
+def test_api_snooze_happy_path(api_client):
+    _mk_goal()
+    stall_watch.scan_once()
+    aid = db.list_stall_alerts(status="open")[0]["id"]
+    before = time.time()
+    resp = _post(api_client, f"/api/stalls/{aid}/snooze", json={"hours": 2})
+    after = time.time()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert before + 2 * 3600 <= body["snooze_until"] <= after + 2 * 3600
+    a = db.get_stall_alert(aid)
+    assert a["status"] == "snoozed" and a["snooze_until"] == body["snooze_until"]
+    assert db.list_stall_alerts() == []  # 未到期：不出现在默认列表
