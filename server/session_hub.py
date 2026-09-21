@@ -226,6 +226,9 @@ class SessionHub:
         # 时取消旧的：前者让摘要改由新回合接手，后者防止对已删 sid 写孤儿数据
         # （_bind_out_of_turn 注释里踩过同款坑）。
         self._summary_tasks: dict[str, asyncio.Task] = {}
+        # session_id -> 在途的看板进展自动重算任务（含去抖等待）。会话删除时取消，
+        # 防止任务在等待窗口过后对已删 sid 关联的 todo 继续重算/推孤儿事件。
+        self._todo_progress_tasks: dict[str, asyncio.Task] = {}
 
     # ---------- 订阅管理 ----------
     def subscribe(self, sid: str, sub: Subscriber) -> None:
@@ -450,8 +453,23 @@ class SessionHub:
         })
 
     async def _auto_progress_by_ai(self, sid: str) -> None:
-        """回合结束后自动刷该会话关联的 in_progress 看板进展，并推 monitor。"""
+        """回合结束后自动刷该会话关联的 in_progress 看板进展，并推 monitor。
+
+        尾随去抖（照抄 _summarize_and_emit 的模式）：入口先取消同 sid 在途的旧任务、
+        再等 KANBAN_DEBOUNCE_SEC。目标循环每轮都写会话 jsonl，必然击穿 kanban 的
+        mtime 缓存，不去抖时同会话大量调用是重复重算（实测 62%）；窗口内同会话又
+        结束新回合则本任务被取消、由新回合结束时的调用接手，连续多回合只在末尾
+        重算一次。"""
+        cur = asyncio.current_task()
+        old = self._todo_progress_tasks.get(sid)
+        if old and old is not cur and not old.done():
+            old.cancel()
+        self._todo_progress_tasks[sid] = cur
         try:
+            try:
+                await asyncio.sleep(config.KANBAN_DEBOUNCE_SEC)
+            except asyncio.CancelledError:
+                return
             from . import kanban
             todos = db.list_todos_by_session(sid)
             for t in todos:
@@ -460,8 +478,14 @@ class SessionHub:
                     await self._emit_todo_progress(
                         t["id"], res["progress"], res.get("progress_at") or 0
                     )
+        except asyncio.CancelledError:
+            return
         except Exception:
             pass
+        finally:
+            # 只清自己登记的项：期间已被新任务顶掉时不误删新登记
+            if self._todo_progress_tasks.get(sid) is cur:
+                self._todo_progress_tasks.pop(sid, None)
 
     # ---------- 回合执行 ----------
     async def start_turn(self, sid: str, user_text: str, model: str | None = None) -> bool:
@@ -875,7 +899,7 @@ class SessionHub:
                     old.cancel()
                 self._summary_tasks[sid] = asyncio.ensure_future(
                     self._summarize_and_emit(sid, user_text, reply_text))
-            asyncio.ensure_future(self._auto_progress_by_ai(sid))  # 看板进展不动，自带 mtime 缓存
+            asyncio.ensure_future(self._auto_progress_by_ai(sid))  # 看板进展：函数自带尾随去抖
             await self._emit_session_update(sid)
             await self._notify_turn_done(sid, user_text, reply_text, final_result, kind="turn", elapsed=turn_elapsed)
 
@@ -886,6 +910,13 @@ class SessionHub:
         """取消该会话在途的行摘要/标题生成任务（含去抖等待中的）。新回合开始与删除会话时
         调用：前者让摘要改由新回合接手，后者防止对已删 sid 写孤儿数据。"""
         task = self._summary_tasks.pop(sid, None)
+        if task and not task.done():
+            task.cancel()
+
+    def cancel_todo_progress_task(self, sid: str) -> None:
+        """取消该会话在途的看板进展自动重算任务（含去抖等待中的）。删除会话时调用，
+        防止任务在等待窗口过后对已删 sid 关联的 todo 继续重算、推孤儿事件。"""
+        task = self._todo_progress_tasks.pop(sid, None)
         if task and not task.done():
             task.cancel()
 

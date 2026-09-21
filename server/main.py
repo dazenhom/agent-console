@@ -249,6 +249,8 @@ async def remove_session(sid: str):
     # 取消在途的行摘要/标题生成任务（含去抖等待中的），避免删除后任务醒来对已删 sid
     # 继续写数据/推幽灵 session_update。
     hub.cancel_summary_task(sid)
+    # 同款理由：取消在途的看板进展自动重算（含去抖等待中的），避免对已删 sid 写孤儿
+    hub.cancel_todo_progress_task(sid)
     db.delete_session(sid)
     return {"ok": True}
 

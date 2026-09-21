@@ -243,6 +243,13 @@ SUMMARY_DEBOUNCE_SEC = float(os.environ.get("SUMMARY_DEBOUNCE_SEC", "60"))
 ONESHOT_RETRIES = int(os.environ.get("ONESHOT_RETRIES", "0"))
 ONESHOT_MAX_CONCURRENCY = int(os.environ.get("ONESHOT_MAX_CONCURRENCY", "4"))
 
+# ---- 看板进展自动重算去抖 ----
+# 回合结束后 _auto_progress_by_ai 会刷新该会话关联的 in_progress 看板进展。目标循环
+# 每轮都写会话 jsonl，必然击穿 kanban 的 mtime 缓存，不去抖时同会话 62% 的调用是
+# 重复重算；line_summary 路径早有 60s 双重节流而这条此前完全没有。窗口内同会话又
+# 结束新回合则取消本次、由新回合的任务接手——连续追问只在末尾重算一次。
+KANBAN_DEBOUNCE_SEC = float(os.environ.get("KANBAN_DEBOUNCE_SEC", "120"))
+
 # ---- 目标循环（kind=goal）----
 # 给一个自然语言目标 + 完成标准，让会话自迭代直到 verifier（checker）判定达成
 # 或触顶（迭代数/成本）。GOAL_POLL_SEC 是状态机 tick 间隔；verifier 走 codex 引擎
