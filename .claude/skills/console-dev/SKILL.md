@@ -34,6 +34,7 @@ description: 专门用于开发 agent-console 自身功能的四角流水线。a
 - 明确 ops 的只读验证步骤（代码可加载性检查、curl 探活当前服务），并说明改动需用户手动重启后生效
 
 **2.【实现】** 委派给 developer：
+- developer 自己用 Edit/Write 落盘实现，不再派单给 tcodex
 - 按方案修改 `server/`、`web/` 下的文件
 - 前端改动后确认 JS/CSS 语法正确（`node --check web/app.js`）
 - 后端改动后确认 Python 语法正确（`python3 -m py_compile server/main.py`）

@@ -115,7 +115,7 @@ Claude 返回的 `session_id` 被记录在会话上，下一回合用 `--resume`
 | Agent | 职责 | 工具权限 |
 |-------|------|----------|
 | analyst | 拆解需求，产出实现方案，不写代码 | Read, Grep, Glob, Bash（只读） |
-| developer | 按方案实现代码 | 全工具（含 Write/Edit） |
+| developer | 按方案实现代码 | Read, Grep, Glob, Bash, Edit, Write |
 | reviewer | 审查改动，找 bug 和风险，不改代码 | Read, Grep, Glob, Bash（只读） |
 | ops | 执行部署、运行测试、验证服务，不改代码 | Read, Grep, Glob, Bash（执行） |
 
