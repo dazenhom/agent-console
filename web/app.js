@@ -27,9 +27,10 @@
     tab: "overview",     // 当前激活的顶部 Tab
     taskBySession: {},   // session_id -> 最近一条 task（用于派生状态徽章/看板计数）
     toolIdMap: {},       // tool_use_id -> tool_name（用于 tool_result 反查工具名）
-    histMsgs: [],        // 当前会话全量历史消息（窗口渲染用）
+    histMsgs: [],        // 当前会话已拉取的历史消息（尾部若干页，窗口渲染用）
     histShown: 0,        // 已渲染的末尾消息条数
     historySessionId: "", // histMsgs 当前归属的会话；避免跨会话误用旧快照
+    histComplete: true,  // 已拉到会话最开头（false=服务端可能还有更早的可续拉）
     heartbeatTimer: null, // WS 应用层心跳定时器
     queue: [],           // 当前会话排队待执行的指令
     drafts: {},          // sessionId -> { text: string, images: [{path, dataUrl}] }（草稿按会话隔离）
@@ -2344,9 +2345,10 @@
     card.querySelector(".peek-close").onclick = close;
     root.onclick = (e) => { if (e.target === root) close(); };
 
-    // 拉最近消息（取末尾几条 user/assistant）
+    // 拉最近消息（取末尾几条 user/assistant）。显式 limit=0 拉全量：长回合尾部可能
+    // 堆着几百条 tool 消息，只取尾页会把真正的最后几条对话截掉。
     try {
-      const msgs = await api(`/api/sessions/${sid}/messages`);
+      const msgs = await api(`/api/sessions/${sid}/messages?limit=0`);
       const body = card.querySelector(".peek-body");
       body.innerHTML = "";
       const tail = msgs.filter((m) => m.role === "user" || m.role === "assistant").slice(-4);
@@ -2906,7 +2908,8 @@
       if (hitIdx >= 0) shown = Math.max(shown, msgs.length - hitIdx);
     }
     state.histShown = shown;
-    if (shown < msgs.length) renderLoadEarlierBtn();
+    // 本地还有未渲染的旧消息，或服务端可能还有更早的可续拉（翻页未到头）时显示按钮
+    if (shown < msgs.length || !state.histComplete) renderLoadEarlierBtn();
     const start = msgs.length - shown;
     for (let i = start; i < msgs.length; i++) {
       appendMsgWithPreview(chat, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
@@ -2932,8 +2935,24 @@
     const previous = state.historySessionId === reqSid ? state.histMsgs : null;
     if (!silent) chat.innerHTML = `<div class="chat-skel">${skeleton(3)}</div>`;
     try {
-      const msgs = await api(`/api/sessions/${reqSid}/messages`);
+      // 搜索命中要从全量历史里定位首个匹配并展开高亮，这个少见路径仍拉全量（limit=0）；
+      // 常规首屏只拉尾部一页（服务端默认 limit=200），"加载更早"再按 before 游标续拉，
+      // 避免单会话 12MB 级历史每次打开/切回都全量拉取。
+      const wantAll = !!state.pendingHighlight;
+      let msgs = await api(`/api/sessions/${reqSid}/messages${wantAll ? "?limit=0" : ""}`);
       if (reqSid !== state.sessionId) return;   // 用户已切走，勿覆盖新会话正文
+      const pageLen = msgs.length;
+      // 已点过"加载更早"时本页只是尾部一页：把上一份快照里更早翻页拉来的消息拼回
+      // 前面（消息 append-only、旧前缀不变），否则已展开的窗口会被这次刷新收起。
+      if (previous && previous.length > pageLen && pageLen) {
+        const earliest = msgs[0].created_at || 0;
+        const older = previous.filter((m) => (m.created_at || 0) < earliest);
+        if (older.length) msgs = older.concat(msgs);
+      }
+      // 到头判定：拉了全量或尾页不满一页 = 更早方向没有更多可续拉；翻过页到过头要
+      // 保住（同会话刷新只升不降），切会话时 previous 为空走全量/单页逻辑重置。
+      if (wantAll || pageLen < HISTORY_WINDOW) state.histComplete = true;
+      else if (!previous) state.histComplete = false;
       if (silent && previous && sameHistorySnapshot(previous, msgs)) {
         // 用服务端版本替换含 _live 临时项的快照，但保留正在浏览的 DOM 和滚动位置。
         state.histMsgs = msgs;
@@ -2944,6 +2963,11 @@
       // 刚发送的本地气泡已显示、但服务端请求还没来得及落库时，远端快照可能短暂落后。
       // 此时宁可保留当前内容，等下次 WS/前台校验追平，也不要让用户看到消息闪退。
       if (silent && previous && msgs.length < previous.length && previous.some((m) => m._live)) return;
+      // 翻页展开会把合并后的总长拉平，上面的长度比较盖不住"服务端缺最新乐观气泡"的
+      // 场景：再按内容比对一次，本地 _live 尾巴没出现在返回里就按落后处理。
+      if (silent && previous && previous.some((m) => m._live) &&
+          !previous.filter((m) => m._live).every((m) =>
+            msgs.some((x) => isSameLiveMessage(x, m.role, m.content)))) return;
       renderHistorySnapshot(msgs, { preserveScroll: silent || preserveScroll });
     } catch (e) {
       if (reqSid !== state.sessionId) return;   // 用户已切走，勿覆盖新会话正文
@@ -2959,9 +2983,8 @@
 
   function renderLoadEarlierBtn() {
     const chat = $("chat");
-    const msgs = state.histMsgs || [];
-    const remaining = msgs.length - state.histShown;
-    if (remaining <= 0) {
+    const remaining = (state.histMsgs || []).length - state.histShown;
+    if (remaining <= 0 && state.histComplete) {
       const old = chat.querySelector(".load-earlier");
       if (old) old.remove();
       return;
@@ -2971,20 +2994,49 @@
       btn = el("button", "load-earlier");
       chat.prepend(btn);
     }
-    btn.textContent = `↑ 加载更早消息（剩 ${remaining} 条）`;
-    btn.onclick = () => {
-      const curStart = msgs.length - state.histShown;
-      const newStart = Math.max(0, curStart - HISTORY_WINDOW);
-      const prevH = chat.scrollHeight, prevTop = chat.scrollTop;
-      const frag = document.createDocumentFragment();
-      for (let i = newStart; i < curStart; i++) {
-        appendMsgWithPreview(frag, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+    btn.disabled = false;
+    btn.textContent = remaining > 0 ? `↑ 加载更早消息（剩 ${remaining} 条）` : "↑ 加载更早消息";
+    btn.onclick = async () => {
+      const msgs = state.histMsgs || [];
+      // 第一层：本地已拉取但未渲染的旧消息直接扩窗（纯本地，快且不打服务端）
+      if (state.histShown < msgs.length) {
+        const curStart = msgs.length - state.histShown;
+        const newStart = Math.max(0, curStart - HISTORY_WINDOW);
+        const prevH = chat.scrollHeight, prevTop = chat.scrollTop;
+        const frag = document.createDocumentFragment();
+        for (let i = newStart; i < curStart; i++) {
+          appendMsgWithPreview(frag, state._histGroups, msgs[i].role, msgs[i].content, msgs[i].created_at);
+        }
+        btn.after(frag);
+        state.histShown = msgs.length - newStart;
+        renderLoadEarlierBtn();
+        chat.scrollTop = prevTop + (chat.scrollHeight - prevH);
+        return;
       }
-      btn.after(frag);
-      state.histShown = msgs.length - newStart;
-      if (newStart > 0) btn.textContent = `↑ 加载更早消息（剩 ${newStart} 条）`;
-      else btn.remove();
-      chat.scrollTop = prevTop + (chat.scrollHeight - prevH);
+      if (state.histComplete || !msgs.length || !msgs[0].created_at) { renderLoadEarlierBtn(); return; }
+      // 第二层：本地已渲染到头，按当前最早一条的 created_at 作 before 游标续拉更早一页
+      const reqSid = state.sessionId;
+      btn.disabled = true;
+      try {
+        const older = await api(`/api/sessions/${reqSid}/messages?limit=${HISTORY_WINDOW}&before=${msgs[0].created_at}`);
+        if (reqSid !== state.sessionId) return;   // 用户已切走，丢弃结果
+        if (state.histMsgs !== msgs) { renderLoadEarlierBtn(); return; }   // 快照已被刷新替换，勿往重建后的 DOM 插
+        if (!older.length) { state.histComplete = true; renderLoadEarlierBtn(); return; }
+        if (older.length < HISTORY_WINDOW) state.histComplete = true;
+        const prevH = chat.scrollHeight, prevTop = chat.scrollTop;
+        const frag = document.createDocumentFragment();
+        for (const m of older) {
+          appendMsgWithPreview(frag, state._histGroups, m.role, m.content, m.created_at);
+        }
+        btn.after(frag);
+        state.histMsgs = older.concat(msgs);
+        state.histShown += older.length;
+        chat.scrollTop = prevTop + (chat.scrollHeight - prevH);
+        renderLoadEarlierBtn();
+      } catch (e) {
+        toast("加载更早消息失败：" + e.message, "error");
+        btn.disabled = false;
+      }
     };
   }
 

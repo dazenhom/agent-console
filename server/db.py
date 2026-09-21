@@ -600,8 +600,24 @@ def count_user_messages(session_id: str) -> int:
     return rows[0][0] if rows else 0
 
 
-def list_messages(session_id: str) -> list[dict]:
-    rows = _query("SELECT * FROM messages WHERE session_id=? ORDER BY created_at ASC", (session_id,))
+def list_messages(session_id: str, limit: int | None = None,
+                  before: float | None = None) -> list[dict]:
+    """按时间升序返回会话消息。limit/before 实现尾部翻页：取 created_at < before 的
+    最近 limit 条（DESC），在 Python 侧反转回升序，返回结构逐字段与全量模式一致；
+    limit 为 None/<=0 且不传 before 时全量，行为与旧版完全一致——内部调用方
+    （resume 恢复 prompt、后台脚本等）靠默认全量取尾部若干条，不要改短。"""
+    sql = "SELECT * FROM messages WHERE session_id=?"
+    args: list = [session_id]
+    if before is not None:
+        sql += " AND created_at < ?"
+        args.append(before)
+    if limit is not None and limit > 0:
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(limit)
+        rows = list(reversed(_query(sql, tuple(args))))
+    else:
+        sql += " ORDER BY created_at ASC"
+        rows = _query(sql, tuple(args))
     out = []
     for r in rows:
         d = dict(r)

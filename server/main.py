@@ -356,10 +356,12 @@ async def compact_session(sid: str):
 
 
 @app.get("/api/sessions/{sid}/messages", dependencies=[Depends(require_auth)])
-async def get_messages(sid: str):
+async def get_messages(sid: str, limit: int = 200, before: float | None = None):
+    """尾部翻页：默认只取最近 limit 条，before（当前最早一条的 created_at）续拉更早。
+    limit<=0 视为不限——需要完整历史的调用方（如速览找最后几条对话）显式传 0。"""
     if not db.get_session(sid):
         raise HTTPException(status_code=404, detail="会话不存在")
-    return db.list_messages(sid)
+    return db.list_messages(sid, limit=(limit if limit > 0 else None), before=before)
 
 
 @app.get("/api/sessions/{sid}/queue", dependencies=[Depends(require_auth)])
