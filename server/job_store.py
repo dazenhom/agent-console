@@ -7,9 +7,12 @@ triage.run_triage / goal_verifier.verify / kanban.summarize_progress 三处
 只负责"跑 + 记 + 落盘"，不解析结果——解析与失败降级逻辑留在各调用方，
 调用方拿到 stdout 后按需 db.set_job_output(jid, 结论) 补写结论。
 
-原先超时的便宜档被归因于冷启动/连接建立卡顿，真实根因是子进程继承 stdin：codex exec
-在 stdin 为管道时会追加读取并等 EOF，最终被 wait_for 判超时；现以 stdin=DEVNULL 显式
-断开。超时仍保留小退避重试，每次尝试独立落一行 job_runs；
+原先超时的便宜档被归因于冷启动/连接建立卡顿，真实根因是 proc.communicate() 等的是管道
+EOF 而非进程退出：codex 会 fork git 孙进程（git ls-remote/fetch），孙进程继承 stdout
+管道写端，父进程退出后孙进程 reparent 到 init 继续持有写端 → 管道永不 EOF → wait_for
+必然吃满 timeout，已生成的结果被全部丢弃。现以"进程退出"为完成判据，退出后补发 killpg
+清掉孤儿孙进程；stdin=DEVNULL 的历史修复保留（codex exec 在 stdin 为管道时会追加读取并
+等 EOF）。超时仍保留小退避重试，每次尝试独立落一行 job_runs；
 所有 oneshot 子进程受模块级信号量封顶，避免堆叠打满并发。
 
 跑子进程外壳之外，还提供调用方共用的两个纯文本解析器：parse_claude_result_line（从
@@ -18,6 +21,7 @@ verdict 解析），都不依赖子进程，便于单测与复用。
 """
 import asyncio
 import json
+import os
 import re
 import signal
 from pathlib import Path
@@ -36,12 +40,29 @@ def _log_dir() -> Path:
     return d
 
 
+async def _wait_process_exit(proc, interval: float = 0.02) -> None:
+    """等"进程真实退出"（轮询 returncode），不搭管道：asyncio 的 proc.wait() 的
+    exit waiter 要等 _call_connection_lost（全部管道断开）才 resolve，孙进程持
+    stdout 写端时会跟着管道一起挂住；子进程 watcher 在进程退出时即写入
+    returncode，与管道是否 EOF 无关。"""
+    while proc.returncode is None:
+        await asyncio.sleep(interval)
+
+
 async def _attempt(cmd: list, timeout: float, cwd: str | None) -> tuple[str, str, str, str]:
-    """单次跑一次性子进程，返回 (stdout_text, stderr_text, status, error)。"""
+    """单次跑一次性子进程，返回 (stdout_text, stderr_text, status, error)。
+
+    完成判据是"进程退出"而非"管道 EOF"：codex 退出后 git 孙进程仍持有 stdout 写端，
+    管道迟迟不 EOF，故直接等进程退出本身；退出后先给 reader 0.5s 宽限读完已 flush 的
+    余量，再取消 reader、killpg 清掉孤儿孙进程。stdout/stderr 用 read(65536) 分块累积，
+    不用 readline()：StreamReader 默认 64KB 行长上限会把超长的 codex JSONL 行截断。
+    """
     stdout_text = ""
     stderr_text = ""
     status = "success"
     error = ""
+    proc = None
+    readers: list[asyncio.Task] = []
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, env=_child_env(), cwd=cwd,
@@ -51,28 +72,92 @@ async def _attempt(cmd: list, timeout: float, cwd: str | None) -> tuple[str, str
             stdin=asyncio.subprocess.DEVNULL,
             start_new_session=True,
         )
+        out_chunks: list[bytes] = []
+        err_chunks: list[bytes] = []
+
+        async def _drain(stream, sink):
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    break
+                sink.append(chunk)
+
+        readers = [asyncio.create_task(_drain(proc.stdout, out_chunks)),
+                   asyncio.create_task(_drain(proc.stderr, err_chunks))]
+
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            stdout_text = out.decode("utf-8", errors="replace") if out else ""
-            stderr_text = err.decode("utf-8", errors="replace") if err else ""
+            # timeout 只包"进程退出"这一件事，不包 reader
+            await asyncio.wait_for(_wait_process_exit(proc), timeout=timeout)
         except asyncio.TimeoutError:
+            # 超时兜底（判据改对后正常不会走到）：此时进程本身还活着（wait 没返回），
+            # _kill_process_group 能正常发信号；已读到的部分输出保留返回（旧实现全丢弃，不利排查）
             try:
                 _kill_process_group(proc, signal.SIGKILL)
-                await proc.wait()
+                # killpg/SIGKILL 后进程必死，returncode 毫秒级就位，5s 是百倍裕量；
+                # 万一异常超时也继续走统一收尾，绝不无限挂死占住 _sem
+                await asyncio.wait_for(_wait_process_exit(proc), timeout=5.0)
             except Exception:
                 pass
             status = "timeout"
             error = "子进程超时"
-        except asyncio.CancelledError:
-            # 调用方在等输出期间取消了本任务（如去抖取消/删会话）：同样杀掉整个
-            # 进程组不留孤儿子进程；CancelledError 继续向上传播（调用方靠它静默退出），
-            # job_runs 那行的收尾由 run_logged_oneshot 层负责。
+        else:
+            # 进程已退出：给 reader 0.5s 短收尾宽限，读完管道里已 flush 的余量
+            # （codex 退出前 flush 完 JSONL，量级几百字节足够；孙进程持写端时 reader 永远
+            # 不会 EOF，宽限一到就走统一收尾）
+            await asyncio.wait(readers, timeout=0.5)
+
+        # 统一收尾（正常退出/超时两条路径都经过这里）：停 reader → 清孤儿孙进程 → 关管道
+        for t in readers:
+            t.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
+        # P1：无条件对已退出子进程的原进程组补发 SIGKILL——codex 退出前 fork 的 git 孙进程
+        # 仍在原进程组里持有 stdout 写端（实测每次 oneshot 留 3 个 PPID=1 的孤儿），不杀会
+        # 常驻 init 名下。注意不能用 _kill_process_group：它在 returncode 已定时提前返回
+        # 不发信号（旧 timeout 路径实测连孤儿都没杀掉）；start_new_session=True 保证
+        # pgid == proc.pid，直接 killpg 即可；组已空时抛 ProcessLookupError，忽略。
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        # 主动关管道 transport（asyncio 无公开 API，只能用私有属性 _transport；进程已退出后
+        # 它只关两个管道不会误杀进程；防 fd 泄漏与 "Event loop is closed" warning——旧实现
+        # 靠 GC 才关，loop 已关时就抛 RuntimeError）
+        try:
+            proc._transport.close()
+        except Exception:
+            pass
+        stdout_text = b"".join(out_chunks).decode("utf-8", errors="replace")
+        stderr_text = b"".join(err_chunks).decode("utf-8", errors="replace")
+    except asyncio.CancelledError:
+        # 外部取消（去抖取消/删会话）：完整清理后 re-raise。CancelledError 是 BaseException，
+        # 绝不能被 except Exception 吞掉；job_runs 收尾由上层 run_logged_oneshot 的 except 分支负责。
+        if proc is not None:
             try:
-                _kill_process_group(proc, signal.SIGKILL)
-                await proc.wait()
+                # 与 P1 同理直接 killpg：取消可能发生在进程已退出后的收尾宽限期，
+                # 此时 _kill_process_group 会提前返回、清不到孤儿
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                # killpg/SIGKILL 后进程必死，returncode 毫秒级就位，5s 是百倍裕量；
+                # 万一异常超时也继续走统一收尾，绝不无限挂死占住 _sem
+                await asyncio.wait_for(_wait_process_exit(proc), timeout=5.0)
             except Exception:
                 pass
-            raise
+        for t in readers:
+            t.cancel()
+        try:
+            await asyncio.gather(*readers, return_exceptions=True)
+        except Exception:
+            pass
+        if proc is not None:
+            try:
+                proc._transport.close()
+            except Exception:
+                pass
+        raise
     except Exception as e:
         status = "error"
         error = f"{type(e).__name__}: {e}"

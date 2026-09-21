@@ -10,9 +10,24 @@ from server import job_store, goal_verifier
 
 
 class _FakeProc:
-    """够用即可的假子进程：communicate 立即返回空 stdout/stderr。"""
-    async def communicate(self):
-        return (b"", b"")
+    """够用即可的假子进程：按新交互面（wait + stdout/stderr None）立即完成。
+
+    pid 取超过 Linux pid_max 上限的值，os.killpg 必抛 ProcessLookupError 被捕获，
+    测试绝不误伤任何真实进程组。
+    """
+    pid = 999999999
+    returncode = 0
+    stdout = None
+    stderr = None
+
+    async def wait(self):
+        return 0
+
+    class _Transport:
+        def close(self):
+            pass
+
+    _transport = _Transport()
 
     def kill(self):
         pass
@@ -53,3 +68,15 @@ def test_build_prompt_without_workdir_backward_compatible():
     # 回归：不传 workdir 时 prompt 不含工作目录行，与改动前逐字一致
     prompt = goal_verifier._build_prompt("目标", "标准", "产出")
     assert "【工作目录】" not in prompt
+
+
+def test_attempt_success_with_grandchild_holding_pipe():
+    # 回归：codex 退出后 git 孙进程持有 stdout 管道写端，旧 communicate() 等管道
+    # EOF 必超时丢结果；完成判据改为进程退出后必须立即成功拿到输出。
+    async def run():
+        return await job_store._attempt(
+            ["bash", "-c", "echo RESULT; sleep 5 & exit 0"], timeout=3.0, cwd=None)
+
+    out, err, status, error = asyncio.run(run())
+    assert status == "success"
+    assert "RESULT" in out
