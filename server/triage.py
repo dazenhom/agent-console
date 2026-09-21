@@ -241,7 +241,14 @@ async def _auto_dispatch_one(it: dict) -> bool:
 
 
 async def _dispatch_existing_todo(tid: str, payload: dict) -> bool:
-    """人工从收件箱派单：建隔离会话 + 目标循环，更新既有 triage todo（不新建）。异常 return False。"""
+    """人工从收件箱派单：建隔离会话 + 目标循环，更新既有 triage todo（不新建）。异常 return False。
+
+    回滚逻辑与 _auto_dispatch_one 同款（2d3c60d 修过的同类问题）：_build_and_start 成功后
+    已在 DB 落地一条 running/enabled 的 goal schedule + 一个 idle 会话，若后续
+    update_todo/set_todo_sessions 抛异常，必须禁用 schedule + 清理会话，否则留下无 todo
+    跟踪的孤立 goal，被 scheduler._tick_goal 接管后静默烧 cost。两个调用方
+    （triage 收件箱路由 + Stall Watch 待办继续）一起受益。"""
+    sess = sch = None
     try:
         sess, sch = await asyncio.to_thread(_build_and_start, payload)
         db.update_todo(
@@ -252,6 +259,17 @@ async def _dispatch_existing_todo(tid: str, payload: dict) -> bool:
         return True
     except Exception as e:
         print(f"[triage] _dispatch_existing_todo error: {type(e).__name__}: {e}")
+        # 回滚半成品：清理各自兜底，别让清理再抛异常盖掉原始错误
+        if sch:
+            try:
+                db.update_schedule(sch["id"], enabled=0, goal_status="failed")
+            except Exception as ce:
+                print(f"[triage] _dispatch_existing_todo cleanup schedule failed: {type(ce).__name__}")
+        if sess:
+            try:
+                db.delete_session(sess["id"])
+            except Exception as ce:
+                print(f"[triage] _dispatch_existing_todo cleanup session failed: {type(ce).__name__}")
         return False
 
 

@@ -89,6 +89,13 @@ async def _run_loop():
                 await _tick_fanout()
             except Exception:
                 pass
+            # Stall Watch（停滞事项主动检测，H3 triage 增强）：与 fanout 并列、独立
+            # try/except 包裹，扫描异常绝不拖垮其余调度处理。内部有时间闸（默认 15 分钟
+            # 一轮）+ to_thread，通知 fire-and-forget，不在本 tick await。
+            try:
+                await _tick_stall_watch()
+            except Exception:
+                pass
         except Exception:
             pass
         await asyncio.sleep(TICK_SEC)
@@ -795,6 +802,26 @@ def _maybe_finalize_fanout(plan_id: str) -> None:
         db.update_work_item_status_by_ref(plan_id, status)
     except Exception as e:
         print(f"[work_items] dispatch finalize failed: {type(e).__name__}: {e}")
+
+
+# ---------- Stall Watch（停滞事项主动检测，H3 triage 增强）----------
+async def _tick_stall_watch() -> None:
+    """时间闸 + 后台扫描：scan_once 是同步纯 DB 函数，放线程里跑避免阻塞事件循环。
+    有新增告警且距上次推送超过冷却期时，fire-and-forget 起推送（不在本 tick await）。
+    对 stall_watch 的引用函数内延迟 import，避免顶层循环导入。"""
+    from . import stall_watch
+    if not config.STALL_WATCH_ENABLED:
+        return
+    now = time.time()
+    # _stall_last_scan 初始化为模块导入时刻（启动宽限，防重启瞬间 hub 内存态为空误报）
+    if now - stall_watch._stall_last_scan < config.STALL_SCAN_INTERVAL_SEC:
+        return
+    stall_watch._stall_last_scan = now
+    result = await asyncio.to_thread(stall_watch.scan_once)
+    new = (result or {}).get("new") or []
+    if new and now - stall_watch._stall_last_notify >= config.STALL_NOTIFY_COOLDOWN_SEC:
+        stall_watch._stall_last_notify = now
+        asyncio.ensure_future(stall_watch.notify_stalls(new))
 
 
 

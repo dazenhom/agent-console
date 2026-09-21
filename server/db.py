@@ -246,6 +246,24 @@ def init_db() -> None:
                 created_at REAL, updated_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_workitems_origin ON work_items(origin, created_at DESC);
+            CREATE TABLE IF NOT EXISTS stall_alerts (
+                id TEXT PRIMARY KEY,
+                kind TEXT,            -- goal_exhausted / goal_paused / goal_stuck / todo_idle / dispatch_failed / dispatch_stuck
+                ref_id TEXT,          -- schedule.id / todo.id / dispatch plan_id
+                session_id TEXT DEFAULT '',
+                dedupe_key TEXT,      -- kind + ':' + ref_id，唯一
+                title TEXT,
+                detail TEXT DEFAULT '',
+                idle_sec REAL DEFAULT 0,
+                status TEXT DEFAULT 'open',  -- open / snoozed / resolved / dismissed / acted
+                snooze_until REAL DEFAULT 0,
+                acted_kind TEXT DEFAULT '',  -- continue / skip / snooze
+                acted_ref TEXT DEFAULT '',   -- 续跑产生的 schedule_id / session_id
+                notified_at REAL DEFAULT 0,
+                created_at REAL, updated_at REAL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_stall_dedupe ON stall_alerts(dedupe_key);
+            CREATE INDEX IF NOT EXISTS idx_stall_status ON stall_alerts(status);
             """
         )
         # 兼容老库：缺列就补。双进程（80/8800）可能同时启动产生竞态——
@@ -1435,3 +1453,89 @@ def list_work_items(origin: str | None = None, status: str | None = None, limit:
 def get_work_item(wid: str) -> dict | None:
     rows = _query("SELECT * FROM work_items WHERE id=?", (wid,))
     return dict(rows[0]) if rows else None
+
+
+# ---------- stall_alerts（Stall Watch 停滞事项告警：检测在 stall_watch.py，这里只管存取）----------
+def create_stall_alert(kind: str, ref_id: str, title: str, session_id: str = "",
+                       detail: str = "", idle_sec: float = 0, dedupe_key: str = "") -> dict | None:
+    """新增一条停滞告警。INSERT OR IGNORE：dedupe_key 已有记录（含 resolved/dismissed 等
+    历史行）时被唯一索引拦下、返回 None。是否复报（复活 resolved/acted 行）由调用方
+    scan_once 按既有记录状态决定，这里不做复活逻辑。"""
+    aid = new_id()
+    now = _now()
+    key = dedupe_key or f"{kind}:{ref_id}"
+    cur = _exec(
+        "INSERT OR IGNORE INTO stall_alerts(id,kind,ref_id,session_id,dedupe_key,title,detail,"
+        "idle_sec,status,snooze_until,acted_kind,acted_ref,notified_at,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (aid, kind, ref_id, session_id or "", key, title, detail or "", float(idle_sec),
+         "open", 0, "", "", 0, now, now),
+    )
+    if cur.rowcount == 0:
+        return None
+    return get_stall_alert(aid)
+
+
+def get_stall_alert(aid: str) -> dict | None:
+    rows = _query("SELECT * FROM stall_alerts WHERE id=?", (aid,))
+    return dict(rows[0]) if rows else None
+
+
+def get_stall_alert_by_dedupe(dedupe_key: str) -> dict | None:
+    """按去重键查既有告警（含任意 status 的历史行），供扫描层决定 跳过/复活/新建。"""
+    rows = _query("SELECT * FROM stall_alerts WHERE dedupe_key=?", (dedupe_key,))
+    return dict(rows[0]) if rows else None
+
+
+def stall_alert_exists(dedupe_key: str) -> bool:
+    return bool(_query("SELECT 1 FROM stall_alerts WHERE dedupe_key=? LIMIT 1", (dedupe_key,)))
+
+
+def list_stall_alerts(status: str | None = None, limit: int = 50) -> list[dict]:
+    """默认（status=None）返回需要用户关注的集合：open + 已到期的 snoozed（到期只是
+    查询口径上重新出现，不改库）；显式传 status 则精确过滤（auto_resolve/调试用）。
+    默认口径按 kind 优先级（耗尽/暂停最要紧）+ idle 降序，与收件箱展示顺序一致。"""
+    if status:
+        rows = _query(
+            "SELECT * FROM stall_alerts WHERE status=? ORDER BY created_at DESC LIMIT ?",
+            (status, limit),
+        )
+    else:
+        rows = _query(
+            "SELECT * FROM stall_alerts WHERE status='open'"
+            " OR (status='snoozed' AND snooze_until<=?)"
+            " ORDER BY CASE kind WHEN 'goal_exhausted' THEN 0 WHEN 'goal_paused' THEN 0"
+            "  WHEN 'goal_stuck' THEN 1 WHEN 'todo_idle' THEN 2 ELSE 3 END,"
+            " idle_sec DESC LIMIT ?",
+            (_now(), limit),
+        )
+    return [dict(r) for r in rows]
+
+
+def update_stall_alert(aid: str, **fields) -> bool:
+    allowed = {"kind", "ref_id", "session_id", "dedupe_key", "title", "detail", "idle_sec",
+               "status", "snooze_until", "acted_kind", "acted_ref", "notified_at", "created_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    updates["updated_at"] = _now()
+    cols = ", ".join(f"{k}=?" for k in updates)
+    cur = _exec(f"UPDATE stall_alerts SET {cols} WHERE id=?", (*updates.values(), aid))
+    return cur.rowcount > 0
+
+
+def resolve_stall_alerts_by_ref(ref_id: str, kind: str | None = None) -> int:
+    """把指向某源对象（schedule/todo/plan）的未处理告警批量置 resolved（如用户从目标
+    详情页直接点了续跑，收件箱里的对应告警应即刻消失，不必等下一轮扫描复核）。
+    dismissed/snoozed/acted 是用户的显式决定，绝不碰。返回影响行数。"""
+    if kind:
+        cur = _exec(
+            "UPDATE stall_alerts SET status='resolved', updated_at=? WHERE ref_id=? AND kind=? AND status='open'",
+            (_now(), ref_id, kind),
+        )
+    else:
+        cur = _exec(
+            "UPDATE stall_alerts SET status='resolved', updated_at=? WHERE ref_id=? AND status='open'",
+            (_now(), ref_id),
+        )
+    return cur.rowcount

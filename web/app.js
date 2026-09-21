@@ -900,8 +900,14 @@
       }
     }
     if (!archived) {
+      await renderStallInbox();
       const triageResult = await renderTriageInbox();
       return { ...triageResult, kanbanItems: sorted };
+    }
+    const stallBox = $("stall-inbox");
+    if (stallBox) {
+      stallBox.classList.add("hidden");
+      stallBox.innerHTML = "";
     }
     const triageBox = $("triage-inbox");
     if (triageBox) {
@@ -909,6 +915,178 @@
       triageBox.innerHTML = "";
     }
     return { ok: true, items: [], kanbanItems: sorted };
+  }
+
+  // 停滞事项收件箱（Stall Watch，H3 增强）：目标循环耗尽/暂停/卡死、待办无进展、
+  // 分派失败/卡死等"停在半路"的告警，等人工 继续/稍后/跳过
+  async function renderStallInbox() {
+    const box = $("stall-inbox");
+    if (!box) return { ok: false, items: null };
+    let items;
+    try { items = await api("/api/stalls"); }
+    catch (e) { return { ok: false, items: null }; }
+    if (!items || !items.length) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+      return { ok: true, items: [] };
+    }
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="stall-head">⏳ 待跟进 (${items.length})</div>`;
+    for (const it of items.slice(0, 3)) box.appendChild(renderStallRow(it));
+    if (items.length > 3) {
+      const showAll = el("button", "stall-show-all");
+      showAll.type = "button";
+      showAll.textContent = `查看全部 ${items.length} 项`;
+      showAll.onclick = () => showStallSheet(items, showAll);
+      box.appendChild(showAll);
+    }
+    return { ok: true, items };
+  }
+
+  // 停滞事项完整列表：复用待分诊 sheet 的骨架（modal-root + 独立滚动 + Escape 关闭）
+  function showStallSheet(items, opener) {
+    const root = $("modal-root");
+    if (!root) return;
+    if (root._sheetOwner && root._sheetOwner.close) root._sheetOwner.close({ suppressFocus: true });
+    let closed = false;
+    let closeBtn = null;
+    const owner = {};
+    const onKeydown = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
+    };
+    const close = (opts = {}) => {
+      if (closed) return;
+      closed = true;
+      if (root.onclick === onBackdropClick) root.onclick = null;
+      root.removeEventListener("keydown", onKeydown);
+      root.classList.remove("show");
+      setTimeout(() => {
+        if (root._sheetOwner !== owner) return;
+        root.classList.add("hidden");
+        root.innerHTML = "";
+        delete root._sheetOwner;
+        if (!opts.suppressFocus) {
+          const focusTarget = (opener && opener.isConnected)
+            ? opener
+            : document.querySelector("#stall-inbox .stall-show-all");
+          if (focusTarget) focusTarget.focus();
+        }
+      }, 200);
+    };
+    const onBackdropClick = (e) => { if (e.target === root) close(); };
+    const render = (currentItems) => {
+      if (closed) return;
+      if (!currentItems.length) {
+        close();
+        return;
+      }
+      const shouldFocusClose = root.contains(document.activeElement);
+      root.innerHTML = "";
+      const card = el("div", "modal-card triage-sheet-card");
+      card.setAttribute("role", "dialog");
+      card.setAttribute("aria-modal", "true");
+      card.setAttribute("aria-label", `全部待跟进事项，共 ${currentItems.length} 项`);
+      card.innerHTML = `
+        <div class="triage-sheet-head">
+          <div class="modal-title">待跟进 (${currentItems.length})</div>
+          <button class="triage-sheet-close" type="button" aria-label="关闭待跟进列表">关闭</button>
+        </div>
+        <div class="triage-sheet-list"></div>`;
+      const list = card.querySelector(".triage-sheet-list");
+      for (const it of currentItems) {
+        list.appendChild(renderStallRow(it, {
+          onResolved: async () => {
+            // 动作完成后重拉全量，就地重渲染剩余项
+            let fresh;
+            try { fresh = await api("/api/stalls"); } catch (e) { fresh = null; }
+            if (!closed && fresh) render(fresh);
+          },
+        }));
+      }
+      root.appendChild(card);
+      closeBtn = card.querySelector(".triage-sheet-close");
+      closeBtn.onclick = close;
+      if (shouldFocusClose) closeBtn.focus();
+    };
+    render(items);
+    if (closed) return;
+    owner.close = close;
+    root._sheetOwner = owner;
+    root.onclick = onBackdropClick;
+    root.addEventListener("keydown", onKeydown);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => {
+      if (closed) return;
+      root.classList.add("show");
+      if (closeBtn && closeBtn.isConnected) closeBtn.focus();
+    });
+  }
+
+  // 单条停滞事项：标题 + 停滞时长徽章 + 说明 + 三个操作按钮（继续/稍后/跳过）。
+  // continue 会建 worktree+隔离会话（分钟级），远超前端默认 15s 超时，必须显式放宽到 120s。
+  function renderStallRow(it, opts = {}) {
+    const row = document.createElement("div");
+    row.className = "stall-row";
+    row.dataset.id = it.id;
+    const idleSec = it.idle_sec || 0;
+    const badge = idleSec >= 86400
+      ? `已停滞 ${Math.max(1, Math.round(idleSec / 86400))} 天`
+      : `已停滞 ${Math.max(1, Math.round(idleSec / 3600))} 小时`;
+    const detail = (it.detail || "").trim();
+    row.innerHTML = `
+      <div class="stall-row-main">
+        <div class="stall-row-top">
+          <span class="stall-row-title">${escapeHtml(it.title)}</span>
+          <span class="stall-badge">${escapeHtml(badge)}</span>
+        </div>
+        ${detail ? `<div class="stall-row-reason">${escapeHtml(detail)}</div>` : ""}
+      </div>
+      <div class="stall-row-actions">
+        <button class="kanban-act-btn btn-edit" type="button" title="继续推进" aria-label="继续推进" data-act="continue">▶ 继续</button>
+        <button class="kanban-act-btn btn-edit" type="button" title="稍后提醒（24 小时）" aria-label="稍后提醒" data-act="snooze">⏰ 稍后</button>
+        <button class="kanban-act-btn btn-delete" type="button" title="跳过并不再提醒" aria-label="跳过并不再提醒" data-act="skip">✕ 跳过</button>
+      </div>`;
+
+    let inFlight = false;
+    const actionButtons = row.querySelectorAll("[data-act]");
+    const setBusy = (busy) => {
+      inFlight = busy;
+      row.setAttribute("aria-busy", String(busy));
+      actionButtons.forEach((button) => { button.disabled = busy; });
+    };
+    const finish = async (successText) => {
+      toast(successText, "success", 1500);
+      try { await renderKanban(); } catch (e) { /* 刷新失败不影响动作结果 */ }
+      if (opts.onResolved) await opts.onResolved();
+    };
+    const post = async (endpoint, body, timeoutMs) => {
+      if (inFlight) return false;
+      setBusy(true);
+      try {
+        await api(`/api/stalls/${it.id}/${endpoint}`, {
+          method: "POST", body: JSON.stringify(body || {}), ...(timeoutMs ? { timeoutMs } : {}),
+        });
+      } catch (e) {
+        if (row.isConnected) setBusy(false);
+        toast(`操作失败：${e.message}`, "error");
+        return false;
+      }
+      return true;
+    };
+    row.querySelector("[data-act='continue']").onclick = async () => {
+      // 建会话/worktree 是分钟级操作，120s 超时兜底（前端默认仅 15s）
+      if (await post("continue", {}, 120000)) await finish("已继续推进");
+    };
+    row.querySelector("[data-act='snooze']").onclick = async () => {
+      if (await post("snooze", { hours: 24 })) await finish("已稍后提醒（24 小时后再见）");
+    };
+    row.querySelector("[data-act='skip']").onclick = async () => {
+      if (await post("skip", {})) await finish("已跳过，不再提醒");
+    };
+    return row;
   }
 
   // 待分诊收件箱（H3）：秘书晚报后分诊出的待跟进事项，等人工派单/转任务/忽略
@@ -1992,6 +2170,12 @@
         const row = grp.querySelector(".dispatch-group-body li[data-sid]");
         if (row) refreshDispatchGroupSummary(row);
       }
+      return;
+    }
+    // 停滞事项新增告警（Stall Watch 扫描发现新停滞）：toast 提示 + 收件箱即时刷新
+    if (data.type === "stall_alert") {
+      toast(`⏳ ${data.count || 1} 件事停在半路`, "info", 6000);
+      renderStallInbox();
       return;
     }
     if (data.type !== "session_update") return;

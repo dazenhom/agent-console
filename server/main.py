@@ -926,12 +926,12 @@ async def schedules_subtasks(sid: str):
     return db.list_goal_subtasks(sid)
 
 
-@app.post("/api/schedules/{sid}/continue", dependencies=[Depends(require_auth)])
-async def schedules_continue(sid: str, payload: dict):
-    """目标循环「续跑」：在保留历史（iter_count/反馈/子任务）的前提下追加轮数继续迭代。
+async def _continue_goal_impl(sid: str, payload: dict):
+    """目标循环「续跑」共用实现：schedules_continue 路由与 Stall Watch 收件箱的「继续」
+    都走这里，绝不复制校验逻辑。校验不过抛 HTTPException，成功返回最新 schedule。
 
     与 PUT 的「重新启用」语义不同——PUT 对 goal 传 enabled=true 会清零 iter_count/清空反馈子任务
-    （从头重跑），本接口只抬 max_iterations + 复位 running/enabled + 重算 next_run，绝不碰历史。
+    （从头重跑），这里只抬 max_iterations + 复位 running/enabled + 重算 next_run，绝不碰历史。
     payload 全可选：prompt（改目标）、stop_condition（改完成标准）、add_iterations（追加轮数，默认 3）、
     verify_command（改验收命令）、exec_mode（改 solo/team）。这三个字段调度器每轮都现读现用
     （scheduler._build_goal_prompt/_gather_verify_context），不会改写已判过的历史轮，故续跑时可放心改；
@@ -988,7 +988,19 @@ async def schedules_continue(sid: str, payload: dict):
             raise HTTPException(status_code=400, detail="exec_mode 仅支持 solo / team")
         fields["exec_mode"] = em
     db.update_schedule(sid, **fields)
+    # 用户从目标详情页（而非停滞收件箱）续跑时，收件箱里对应告警即刻了结，
+    # 不必等下一轮扫描复核；没有告警时是幂等空操作。
+    try:
+        db.resolve_stall_alerts_by_ref(sid)
+    except Exception:
+        pass
     return db.get_schedule(sid)
+
+
+@app.post("/api/schedules/{sid}/continue", dependencies=[Depends(require_auth)])
+async def schedules_continue(sid: str, payload: dict):
+    """目标循环「续跑」路由：见 _continue_goal_impl（与 Stall Watch「继续」共用实现）。"""
+    return await _continue_goal_impl(sid, payload)
 
 
 # ---------------- 目标循环历史（H2 goal loop：列表态 + 详情态）----------------
@@ -1156,6 +1168,148 @@ async def triage_to_todo(tid: str):
         raise HTTPException(status_code=404, detail="该事项已不在待分诊状态")
     db.update_todo(tid, status="pending", source="manual")
     return {"ok": True}
+
+
+# ---------------- Stall Watch 停滞事项收件箱（H3 triage 增强）----------------
+# 检测在 server/stall_watch.py（scheduler 每 15 分钟一轮），这里只管展示与处置。
+@app.get("/api/stalls", dependencies=[Depends(require_auth)])
+async def stalls_list():
+    """open + 已到期 snoozed 的停滞告警；goal 类附迭代/验收上下文，todo 类附进展摘要，
+    供前端行内展示"耗尽到第几轮/最近在干什么"。"""
+    result = []
+    for a in db.list_stall_alerts():
+        related = {}
+        try:
+            if str(a.get("kind") or "").startswith("goal_"):
+                sch = db.get_schedule(a["ref_id"])
+                if sch:
+                    related = {
+                        "iter_count": sch.get("iter_count"),
+                        "max_iterations": sch.get("max_iterations"),
+                        "last_feedback": (sch.get("last_feedback") or "")[:200],
+                    }
+            elif a.get("kind") == "todo_idle":
+                rows = db._query("SELECT progress FROM todos WHERE id=?", (a["ref_id"],))
+                if rows:
+                    related = {"progress": rows[0][0] or ""}
+        except Exception:
+            related = {}
+        result.append({**a, "related": related})
+    return result
+
+
+@app.post("/api/stalls/scan", dependencies=[Depends(require_auth)])
+async def stalls_scan():
+    """手动触发一轮停滞扫描（ops 验证用）：绕过 15 分钟间隔闸；只扫库不触发推送。"""
+    from . import stall_watch
+    result = await asyncio.to_thread(stall_watch.scan_once)
+    return {"scanned": (result or {}).get("scanned", 0), "new": len((result or {}).get("new") or [])}
+
+
+@app.post("/api/stalls/{aid}/continue", dependencies=[Depends(require_auth)])
+async def stalls_continue(aid: str, payload: dict | None = None):
+    """按 kind 复用现有机制处置，绝不重写一套：
+      goal_exhausted/goal_paused -> _continue_goal_impl（默认 add_iterations=3）
+      goal_stuck                 -> 复位 running + 立即到期，交 scheduler tick 自然接管
+      todo_idle                  -> triage._dispatch_existing_todo（建隔离会话+目标循环）
+      dispatch_failed            -> 该 plan 下 failed/error 子任务逐个 retry_subtask
+      dispatch_stuck             -> 先标 failed 再 retry_subtask（retry 只放行 failed/error）
+    成功置 acted（acted_ref 记续跑产生的 schedule_id/plan_id）；失败告警保持 open、
+    错误原样抛给前端。注意 continue 可能建 worktree+会话（分钟级），前端已放宽超时。"""
+    alert = db.get_stall_alert(aid)
+    if not alert:
+        raise HTTPException(status_code=404, detail="告警不存在")
+    if alert.get("status") not in ("open", "snoozed"):
+        raise HTTPException(status_code=400, detail="该告警已处理过")
+    payload = payload or {}
+    kind = alert.get("kind") or ""
+    ref = alert.get("ref_id") or ""
+    acted_ref = ref
+    if kind in ("goal_exhausted", "goal_paused"):
+        await _continue_goal_impl(ref, payload)  # 校验不过会抛 400/404
+    elif kind == "goal_stuck":
+        if not db.get_schedule(ref):
+            raise HTTPException(status_code=404, detail="目标循环不存在")
+        # 复位状态机并立即到期，下一个 30s tick 自然接管；不动 iter_count/反馈历史
+        db.update_schedule(ref, goal_status="running",
+                           next_run=scheduler.compute_next_run("goal", None, None))
+    elif kind == "todo_idle":
+        rows = db._query("SELECT * FROM todos WHERE id=?", (ref,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="待办不存在")
+        todo = dict(rows[0])
+        title = todo.get("title") or "停滞待办"
+        desc = (todo.get("description") or "").strip()
+        from . import triage
+        ok = await triage._dispatch_existing_todo(ref, {
+            "title": title,
+            "goal_prompt": title + (f"\n{desc}" if desc else ""),
+            "stop_condition": desc or "完成该任务",
+        })
+        if not ok:
+            raise HTTPException(status_code=500, detail="派单失败")
+        # _dispatch_existing_todo 只返回 bool，回头读 todo 拿新 schedule id
+        fresh = db._query("SELECT dispatched_schedule_id FROM todos WHERE id=?", (ref,))
+        acted_ref = (fresh[0][0] if fresh else "") or ""
+    elif kind == "dispatch_failed":
+        subs = [s for s in db.list_dispatch_subtasks(ref) if s.get("status") in ("failed", "error")]
+        if not subs:
+            raise HTTPException(status_code=404, detail="没有可重派的失败子任务")
+        for s in subs:
+            if not await dispatcher.retry_subtask(s["id"]):
+                raise HTTPException(status_code=500, detail=f"子任务重派失败：{s['id']}")
+    elif kind == "dispatch_stuck":
+        # 动作时刻逐个复判：只处置仍处于卡死态的（updated_at 已被刷新/会话已在跑的跳过），
+        # 避免把扫描后恢复推进的子任务误杀重跑
+        from .session_hub import hub
+        now = time.time()
+        acted = 0
+        for s in db.list_dispatch_subtasks(ref):
+            if s.get("status") != "dispatched":
+                continue
+            if now - float(s.get("updated_at") or s.get("created_at") or now) <= config.STALL_DISPATCH_STUCK_SEC:
+                continue
+            sid = s.get("child_session_id") or ""
+            if sid and hub.is_running(sid):
+                continue
+            db.update_dispatch_subtask(s["id"], status="failed",
+                                       feedback="停滞检测标记：派发后长期无进展")
+            if not await dispatcher.retry_subtask(s["id"]):
+                raise HTTPException(status_code=500, detail=f"子任务重派失败：{s['id']}")
+            acted += 1
+        if not acted:
+            raise HTTPException(status_code=400, detail="没有仍处于卡死状态的子任务（可能已恢复）")
+    else:
+        raise HTTPException(status_code=400, detail=f"未知告警类型：{kind}")
+    db.update_stall_alert(aid, status="acted", acted_kind="continue", acted_ref=acted_ref)
+    return {"ok": True, "kind": kind, "ref": acted_ref}
+
+
+@app.post("/api/stalls/{aid}/skip", dependencies=[Depends(require_auth)])
+async def stalls_skip(aid: str):
+    """跳过：置 dismissed，该 dedupe_key 永不再报（唯一永久抑制态）。"""
+    alert = db.get_stall_alert(aid)
+    if not alert:
+        raise HTTPException(status_code=404, detail="告警不存在")
+    db.update_stall_alert(aid, status="dismissed", acted_kind="skip")
+    return {"ok": True}
+
+
+@app.post("/api/stalls/{aid}/snooze", dependencies=[Depends(require_auth)])
+async def stalls_snooze(aid: str, payload: dict | None = None):
+    """稍后：snoozed 到期后重新出现在列表（到期由查询口径判定，不改库）。"""
+    alert = db.get_stall_alert(aid)
+    if not alert:
+        raise HTTPException(status_code=404, detail="告警不存在")
+    try:
+        hours = float((payload or {}).get("hours") or 24)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="hours 需为数字")
+    if hours <= 0 or hours > 24 * 30:
+        raise HTTPException(status_code=400, detail="hours 需在 0-720 之间")
+    until = time.time() + hours * 3600
+    db.update_stall_alert(aid, status="snoozed", snooze_until=until, acted_kind="snooze")
+    return {"ok": True, "snooze_until": until}
 
 
 # ---------------- Backlog 导入：mandatory-backlog.md → triage 收件箱 ----------------

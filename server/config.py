@@ -299,6 +299,36 @@ TRIAGE_TIMEOUT = float(os.environ.get("TRIAGE_TIMEOUT", "90"))
 # 的默认上限（GOAL_MAX_ITERATIONS=10），维持"自动派单更保守"的整体设计。
 TRIAGE_GOAL_MAX_ITERATIONS = int(os.environ.get("TRIAGE_GOAL_MAX_ITERATIONS", "6"))
 
+# ---- Stall Watch 停滞事项主动检测（H3 triage 增强）----
+# 纯 DB 启发式（检测阶段零 LLM）：周期扫描 schedules/todos/dispatch_subtasks 三张表，
+# 找出"停在半路没人管"的事项（目标循环耗尽/暂停/卡死、in_progress 待办无进展、
+# dispatch 子任务失败堆积/卡死），落 stall_alerts 表并经 monitor WS + 企微提醒。
+# 检测与处置分离：只提醒不自动处置，用户经收件箱决定 继续/稍后/跳过。
+STALL_WATCH_ENABLED = os.environ.get("STALL_WATCH_ENABLED", "true").lower() == "true"
+# 扫描间隔（秒）：挂在 scheduler 30s tick 里的时间闸之后，默认 15 分钟一轮。
+STALL_SCAN_INTERVAL_SEC = int(os.environ.get("STALL_SCAN_INTERVAL_SEC", "900"))
+# 新增告警的推送冷却（秒）：两批推送之间至少隔 6 小时，防止反复轰炸收件箱/企微。
+STALL_NOTIFY_COOLDOWN_SEC = int(os.environ.get("STALL_NOTIFY_COOLDOWN_SEC", "21600"))
+# S1：目标循环已耗尽（exhausted）或人工暂停（enabled=0 非终态）但一直没人续跑/放弃，
+# last_run 距今超过该秒数才报（默认 2 小时，给"刚耗尽马上来看"留余地）。
+STALL_GOAL_EXHAUSTED_SEC = int(os.environ.get("STALL_GOAL_EXHAUSTED_SEC", "7200"))
+# S2：目标循环 enabled=1 但状态机停在 running/producing/verifying 超过该秒数无推进
+# （默认 6 小时；会话仍在跑的不算——hub.is_running 硬否定）。
+STALL_GOAL_STUCK_SEC = int(os.environ.get("STALL_GOAL_STUCK_SEC", "21600"))
+# S3：in_progress 待办（未归档）max(updated_at, progress_at) 距今超过该秒数无任何进展（默认 1 天）。
+STALL_TODO_SEC = int(os.environ.get("STALL_TODO_SEC", "86400"))
+# S5：dispatch 子任务 failed/error 搁置超过该秒数没人重派（默认 6 小时）。
+STALL_DISPATCH_SEC = int(os.environ.get("STALL_DISPATCH_SEC", "21600"))
+# S5：dispatch 子任务 dispatched 挂着但子会话不在跑，超过该秒数视为卡死（默认 3 小时）。
+STALL_DISPATCH_STUCK_SEC = int(os.environ.get("STALL_DISPATCH_STUCK_SEC", "10800"))
+# 超龄排除（秒）：停滞超过 14 天的老黄历不再翻出来提醒（期间没人处理基本等于事实放弃）。
+STALL_MAX_AGE_SEC = int(os.environ.get("STALL_MAX_AGE_SEC", "1209600"))
+# 单轮扫描最多落库的新告警数：按 kind 优先级 + idle 降序截断，防止淹掉收件箱。
+STALL_MAX_ALERTS_PER_SCAN = int(os.environ.get("STALL_MAX_ALERTS_PER_SCAN", "10"))
+# LLM 摘要开关（二期扩展点）：默认 false，提醒文案走中文模板；true 时才允许用便宜
+# 模型生成告警摘要。本期只保留开关位，检测阶段任何情况下都不调 LLM。
+STALL_LLM_SUMMARY = os.environ.get("STALL_LLM_SUMMARY", "false").lower() == "true"
+
 # ---- 背对背双执行 + 综合仲裁 ----
 # 同一问题背对背交给 Claude（工程师A）+ Codex（工程师B）各出一版方案，再用更强的
 # Claude 模型综合仲裁。三次都是一次性子进程（run_logged_oneshot），互不干扰会话上下文。
