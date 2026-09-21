@@ -493,12 +493,23 @@ class SessionHub:
         try:
             await self.broadcast(sid, {"type": "compacting"})
             model_name, effort = self._resolve_model_effort(sess)
-            captured = {"boundary": None, "summary": "", "saw_assistant_text": False, "result_text": ""}
+            captured = {"boundary": None, "summary": "", "saw_assistant_text": False, "result_text": "", "local_err": ""}
 
             async def on_event(evt: dict):
                 etype = evt.get("type")
                 if etype == "system" and evt.get("subtype") == "compact_boundary":
                     captured["boundary"] = evt.get("compact_metadata") or {}
+                elif etype == "system" and evt.get("subtype") == "local_command":
+                    # CLI 本地命令失败（如 /compact 被网关 400 拒绝）不走普通事件流，
+                    # 而是以 system/local_command 事件携带 <local-command-stderr> 文本；
+                    # 多次输出时累积拼接，末尾统一判定。
+                    raw = evt.get("content")
+                    if isinstance(raw, list):
+                        raw = " ".join(str(b.get("text", "")) for b in raw if isinstance(b, dict))
+                    elif not isinstance(raw, str):
+                        raw = evt.get("text") or ""
+                    if raw:
+                        captured["local_err"] += str(raw)
                 elif etype == "user":
                     content = evt.get("message", {}).get("content")
                     if isinstance(content, str) and content.startswith("This session is being continued"):
@@ -515,13 +526,28 @@ class SessionHub:
 
             r = _runner_for(sess)
             _turn_fn = r.send_turn if config.CLAUDE_PERSISTENT else r.run_turn
-            ret = await _turn_fn(
+            turn_task = asyncio.ensure_future(_turn_fn(
                 session_id=sid, message="/compact",
                 workdir=(sess or {}).get("workdir") or config.DEFAULT_WORKDIR,
                 resume_claude_session=sess.get("claude_session_id"),
                 on_event=on_event, model=model_name,
                 on_permission=None, on_session_id=_on_session_id, effort=effort,
-            )
+            ))
+            try:
+                ret = await asyncio.wait_for(asyncio.shield(turn_task), timeout=config.COMPACT_TIMEOUT)
+            except asyncio.TimeoutError:
+                # 超时：CLI 子进程可能还在跑压缩。先 cancel（杀进程并唤醒等待中的
+                # 回合，让其内部正常复位 turn_active；常驻模式下回合自动 resume 续
+                # 上下文），再给收尾宽限；确保 _turns 释放后用户能立刻再发消息。
+                try:
+                    await r.cancel(sid)
+                except Exception as e:  # noqa
+                    logger.warning("session %s: compact timeout cleanup failed: %s", sid, e)
+                try:
+                    await asyncio.wait_for(turn_task, timeout=30)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    turn_task.cancel()
+                return {"ok": False, "error": f"压缩超时（>{config.COMPACT_TIMEOUT}s），可能上下文过大导致网关拒绝"}
             if ret.get("error"):
                 return {"ok": False, "error": ret["error"]}
             if ret.get("resume_failed"):
@@ -530,6 +556,8 @@ class SessionHub:
                 await r.forget_session(sid)
                 db.update_session(sid, claude_session_id=None, codex_usage_baseline="")
                 return {"ok": True, "noop": True, "reason": "resume_failed"}
+            if "error during compaction" in captured["local_err"].lower():
+                return {"ok": False, "error": f"CLI 压缩失败：{captured['local_err'][:300]}"}
             if captured["boundary"]:
                 meta = captured["boundary"]
                 content = {
@@ -596,9 +624,31 @@ class SessionHub:
         self._turn_started[sid] = time.monotonic()
         self._stuck_notified.discard(sid)
         self._bind_out_of_turn(sid)
+        ctx_warned = False  # 本回合是否已推过上下文用量预警（每回合只报一次，避免刷屏）
 
         async def on_event(evt: dict):
+            nonlocal ctx_warned
             self._bind_out_of_turn(sid)
+            # 上下文用量预警：满上下文时 input_tokens 极小，cache_creation/cache_read
+            # 才是大头，三项相加才是真实占用。超阈值推一条 status 提示（不落库、不进
+            # 摘要，符合 translate_event 对 status 的既有约定）；同一回合只报一次。
+            if evt.get("type") == "assistant":
+                usage = (evt.get("message") or {}).get("usage") or {}
+                total = sum(
+                    int(usage.get(k) or 0)
+                    for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+                )
+                if total > config.CONTEXT_WARN_TOKENS and not ctx_warned:
+                    ctx_warned = True
+                    limit = 1_000_000 if "[1m]" in str((sess or {}).get("mode") or "") else 200_000
+                    pct = min(round(total * 100 / limit), 999)
+                    try:
+                        await self.broadcast(sid, {
+                            "type": "message", "role": "status",
+                            "content": {"text": f"上下文已用 {pct}%（约 {total:,} tokens），建议压缩上下文或另起会话"},
+                        })
+                    except Exception:
+                        pass
             for msg in translate_event(evt):
                 # assistant_delta（打字机增量）、status（瞬时状态提示）不落库：前者靠后续权威
                 # assistant 全文入库，后者纯前端提示、不该进聊天记录/摘要/通知。

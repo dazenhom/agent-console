@@ -43,6 +43,16 @@ CLAUDE_TURN_TIMEOUT = int(os.environ.get("CLAUDE_TURN_TIMEOUT", "1800"))
 # 给耐心；真正卡死另有循环检测（CLAUDE_LOOP_REPEAT/ERRORS）兜底，不靠 idle 单独判断。
 CLAUDE_IDLE_TIMEOUT = int(os.environ.get("CLAUDE_IDLE_TIMEOUT", "1800"))   # 1800s无事件 → 判定卡死
 CLAUDE_TURN_MAX = int(os.environ.get("CLAUDE_TURN_MAX", "14400"))          # 4h绝对上限（同样为大任务放宽）
+# /compact 上下文压缩的回合超时（秒）。压缩是一次真实回合但远轻于普通回合；网关
+# 拒绝时 CLI 会长时间空等（实测 67 分钟才吐 local_command 错误），看门狗口径
+# CLAUDE_TURN_MAX（4h）太宽、前端 HTTP 只等 200s，两侧差 70 倍。超时即 cancel
+# 杀进程（常驻模式下回合自动 resume 续上下文），让用户能立刻重试。
+COMPACT_TIMEOUT = int(os.environ.get("COMPACT_TIMEOUT", "300"))
+# 上下文用量预警阈值（tokens）：回合内 assistant 事件 usage 三项之和（input +
+# cache_creation + cache_read）超过该值时广播一条 status 提示（不落库、不进摘要），
+# 建议用户压缩或另起会话。默认 850k ≈ 1M 上下文模型的 85%。注意不能只看
+# input_tokens——满上下文时它极小（实测仅 2），大头全在 cache_creation 里。
+CONTEXT_WARN_TOKENS = int(os.environ.get("CONTEXT_WARN_TOKENS", "850000"))
 CLAUDE_LOOP_REPEAT = int(os.environ.get("CLAUDE_LOOP_REPEAT", "8"))        # 相同工具调用连续N次 → 循环
 CLAUDE_LOOP_ERRORS = int(os.environ.get("CLAUDE_LOOP_ERRORS", "10"))       # 连续报错N次 → 循环
 # 递进阈值：达到这些次数只"记一笔"（写日志 + 供下一回合开头劝告），不终止；只有到
