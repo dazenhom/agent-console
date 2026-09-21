@@ -193,7 +193,8 @@ body.hub-resizing {
 .session-list li:hover { background: var(--bg-3); box-shadow: var(--shadow-md); }
 .session-list li.active { border-color: var(--accent); background: var(--accent-soft); }
 .session-list li.st-running { border-left-color: var(--accent); }
-.session-list li.st-review  { border-left-color: var(--green); }
+.session-list li.st-review,
+.session-list li.st-done     { border-left-color: var(--green); }
 .session-list li.st-failed  { border-left-color: var(--red); }
 .session-list li.st-idle    { border-left-color: var(--muted-2); }
 
@@ -223,6 +224,7 @@ body.hub-resizing {
 .badge.working { background: var(--accent-soft); color: var(--accent); }
 .badge.watch   { background: var(--accent-soft); color: var(--accent); }
 .badge.review  { background: var(--yellow-soft); color: var(--yellow); }
+.badge.done    { background: var(--green-soft); color: var(--green); }
 .badge.resume  { background: var(--gray-soft); color: var(--muted); }
 .badge.failed  { background: #fdecec; color: var(--red); }
 
@@ -238,6 +240,9 @@ body.hub-resizing {
 .detail-icon-btn:disabled { opacity: .4; cursor: default; }
 /* 桌面双栏下详情常驻，"返回列表"无意义 → 隐藏；窄屏覆盖层时再显示（见响应式） */
 #detail-close-btn { display: none; }
+/* 详情页头摘要：标题下方、meta 上方，与列表行 .s-sub 同款 2 行 clamp */
+.detail-summary { font-size: 12.5px; line-height: 1.5; color: var(--muted); margin-top: 6px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.detail-summary:empty { display: none; }
 .detail-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
 .workdir-bar { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workdir-bar:hover { color: var(--accent); }

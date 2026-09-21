@@ -347,33 +347,67 @@
     state.sessions = await api("/api/sessions");
     if (!state.sessions.length) { await createSession(); return; }
     if (!state.sessions.find((s) => s.id === state.sessionId)) state.sessionId = state.sessions[0].id;
+    const cur = state.sessions.find((s) => s.id === state.sessionId);
+    // 当前会话先标记已读再渲染：Overview 的「需要关注」/未读点不把它算进去
+    if (cur) markSeen(cur.id, cur.updated_at);
     renderSessionLists();
     renderDashboard();
     renderKanban();
-    const cur = state.sessions.find((s) => s.id === state.sessionId);
     $("session-title").textContent = cur ? cur.title : "会话";
-    if (cur) {
-      updateLinkedTodoBar(cur);
-      markSeen(cur.id, cur.updated_at);  // 当前会话标记已读
-    }
+    updateDetailSummary(cur);
+    if (cur) updateLinkedTodoBar(cur);
     syncModeSelect();
     syncEffortSelect();
   }
 
-  // 渲染三个列表：Overview(全部) / Sessions(全部，可搜) / Review(待审视)
+  // 渲染三个列表：Overview(需要关注) / Sessions(全部，可搜) / Review(已完成)
   function renderSessionLists() {
-    fillListGrouped($("session-list"), state.sessions, false);
+    renderOverviewList();
     // Sessions Tab 在「归档」视图下不用活跃列表覆盖，交给 renderArchivedSessionList
     if (state.sessionView === "archived") renderArchivedSessionList();
     else fillListGrouped($("session-list-all"), state.sessions, false);
-    fillList($("session-list-review"), state.sessions.filter((s) => deriveState(s).key === "review"));
-    const sub = $("agents-sub");
-    if (sub) {
-      const active = state.sessions.filter((s) => s.status === "running").length;
-      sub.textContent = `${state.sessions.length} 个会话 · ${active} 个进行中`;
-    }
+    fillList($("session-list-review"), state.sessions.filter((s) => deriveState(s).key === "done"));
     // 重新应用 Sessions Tab 的搜索过滤
     applySessionSearch();
+  }
+
+  // Overview「需要关注」的成员口径：运行中 / 失败 / 跑完还没看过的（done 且未读）。
+  // 与 Sessions Tab 的全量列表职责拆开——首屏只回答"哪些会话现在需要我管"。
+  function attentionSessions() {
+    const seenMap = loadSeenMap();
+    return state.sessions.filter((s) => {
+      const k = deriveState(s).key;
+      if (k === "running" || k === "failed") return true;
+      return k === "done" && s.updated_at > (seenMap[s.id] || 0);
+    });
+  }
+
+  // attention 排序权重：失败(0) → 运行中(1) → 待查看(2)，先处理坏的
+  function attentionRank(s) {
+    const k = deriveState(s).key;
+    if (k === "failed") return 0;
+    if (k === "running") return 1;
+    return 2;
+  }
+
+  // Overview 列表 + Agents 副标题。renderSessionLists 与 patchSessionRow 共用：
+  // 状态翻转（空闲→运行中、运行中→已完成）时成员要实时增减，不能等下一次全量拉取。
+  function renderOverviewList() {
+    const att = attentionSessions();
+    const ul = $("session-list");
+    if (ul) {
+      if (att.length) {
+        // 失败 → 运行中 → 待查看（批次分组取组内最坏情况），同级内仍按置顶+更新时间
+        fillListGrouped(ul, att, false, (it) =>
+          it.kind === "group" ? Math.min(...it.children.map(attentionRank)) : attentionRank(it.session));
+      } else {
+        ul.innerHTML = `<div class="entity-empty"><div class="empty-emoji">✅</div><div>全部处理完了</div></div>`;
+      }
+    }
+    const sub = $("agents-sub");
+    if (sub) {
+      sub.textContent = `${att.length ? att.length + " 项待处理" : "全部处理完了 ✅"} · 共 ${state.sessions.length} 个会话`;
+    }
   }
 
   function fillList(ul, sessions, isArchived = false) {
@@ -388,7 +422,9 @@
 
   // Overview 与 Sessions Tab 主列表共用：把同一调度批次（dispatch_plan_id）的子会话折叠成一组，
   // 其余普通会话原样渲染。sessions 已按 updated_at DESC 排序。
-  function fillListGrouped(ul, sessions, isArchived = false) {
+  // sortKey 可选（item → 权重，小者在前）：仅 Overview 的「需要关注」列表传入，实现
+  // 失败 → 运行中 → 待查看 的优先级；不传时保持置顶+updated_at 原序（Sessions Tab 行为不变）。
+  function fillListGrouped(ul, sessions, isArchived = false, sortKey = null) {
     if (!ul) return;
     ul.innerHTML = "";
     if (!sessions.length) {
@@ -414,7 +450,9 @@
         items.push({ ts: s.updated_at, kind: "session", pinned: !!s.pinned, session: s });
       }
     }
-    items.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.ts || 0) - (a.ts || 0));
+    items.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)
+      || (sortKey ? sortKey(a) - sortKey(b) : 0)
+      || (b.ts || 0) - (a.ts || 0));
     for (const it of items) {
       if (it.kind === "group") {
         ul.appendChild(renderDispatchGroup(it.planId, it.title, it.children, isArchived));
@@ -656,6 +694,10 @@
     const sub = el("div", "s-sub", escapeHtml(sessionSubtitle(s)));
     const meta = el("div", "s-meta");
     meta.appendChild(el("span", null, fmtTime(s.updated_at) || ""));
+    // 轮次（user_turns）与上回合耗时：回答"这条会话做了多少事"，信息量高于 workdir
+    if (s.user_turns > 0) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, `${s.user_turns} 轮`)); }
+    const durTxt = fmtTurnDur(s.last_duration_ms);
+    if (durTxt) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, durTxt)); }
     if (s.workdir) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, shortDir(s.workdir))); }
     if (s.mode) { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", null, modeLabel(s.mode))); }
     if (s.engine === "codex") { meta.appendChild(el("span", "dot-sep", "·")); meta.appendChild(el("span", "engine-badge", "Codex")); }
@@ -704,6 +746,13 @@
   function shortDir(workdir) {
     const parts = String(workdir).replace(/\/$/, "").split("/");
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : workdir;
+  }
+  // 上回合耗时的 meta 短文案：不足 2 分钟按秒直显，往上换算成分钟，避免 3600s 这类读不动的长数字
+  function fmtTurnDur(ms) {
+    const sec = Math.round((ms || 0) / 1000);
+    if (sec <= 0) return "";
+    if (sec < 120) return sec + "s";
+    return Math.max(1, Math.round(sec / 60)) + "m";
   }
   const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","glm-5.2-ioa","hy3-ioa","gpt-6-astra","deepseek-v4-pro-ioa","deepseek-v4-flash-ioa","deepseek-v4.1-flash","hy4-preview-ioa"];
   const CLAUDE_MODELS = [
@@ -819,38 +868,47 @@
     return labels[e] || e;
   }
 
-  // 从 status + 最近 task 派生状态徽章（对齐设计图 Working / Review changes / Resume / Failed）
+  // 从 status + 回合结局派生状态徽章。优先级：运行中 > last_outcome（本回合结局，
+  // 服务端回合结束落库）> 最近一条 task（老会话在 last_outcome 落地前没有该字段，
+  // 用 /api/sessions 批量补的 last_task_status 兜底）。key: running/failed/done/idle。
   function deriveState(s) {
-    if (s.status === "running") return { key: "running", label: "Working", badgeCls: "working" };
-    const t = state.taskBySession[s.id];
-    if (t && t.status === "error") return { key: "failed", label: "Failed", badgeCls: "failed" };
-    if (t && t.status === "success") return { key: "review", label: "Review changes", badgeCls: "review" };
-    return { key: "idle", label: "Resume or archive", badgeCls: "resume" };
+    if (s.status === "running") return { key: "running", label: "运行中", badgeCls: "working" };
+    const oc = s.last_outcome || (s.last_task_status === "error" ? "error"
+              : s.last_task_status === "success" ? "success" : "");
+    if (oc === "error")       return { key: "failed",  label: "失败",   badgeCls: "failed" };
+    if (oc === "interrupted") return { key: "failed",  label: "被中断", badgeCls: "failed" };
+    if (oc === "success")     return { key: "done",    label: "已完成", badgeCls: "done" };
+    // 用户主动停止：不算失败也不需要查看，灰色静态呈现，但别误标成"未开始"
+    if (oc === "cancelled")   return { key: "idle",   label: "已取消", badgeCls: "resume" };
+    return { key: "idle", label: "未开始", badgeCls: "resume" };
   }
 
-  // 工作看板：4 个计数卡（Input / Active / Review / Failed）
+  // 工作看板：4 个计数卡（进行中 / 待查看 / 失败 / 空闲）。
+  // 「待查看」= 已完成且更新时间晚于本地已读记录（loadSeenMap），即"哪些跑完了我还没看"。
   function renderDashboard() {
     const box = $("dashboard");
     if (!box) return;
-    let active = 0, review = 0, failed = 0;
+    const seenMap = loadSeenMap();
+    let active = 0, unseen = 0, failed = 0;
     for (const s of state.sessions) {
       const k = deriveState(s).key;
       if (k === "running") active++;
-      else if (k === "review") review++;
       else if (k === "failed") failed++;
+      else if (k === "done" && s.updated_at > (seenMap[s.id] || 0)) unseen++;
     }
+    const idle = state.sessions.length - active - failed - unseen;
     const cards = [
-      { valCls: "", num: 0, label: "Input" },
-      { valCls: active > 0 ? " mini-stat-val--active" : "", num: active, label: "Active" },
-      { valCls: "", num: review, label: "Review" },
-      { valCls: failed > 0 ? " mini-stat-val--failed" : "", num: failed, label: "Failed" },
+      { valCls: active > 0 ? " mini-stat-val--active" : "", num: active, label: "进行中" },
+      { valCls: "", num: unseen, label: "待查看" },
+      { valCls: failed > 0 ? " mini-stat-val--failed" : "", num: failed, label: "失败" },
+      { valCls: "", num: idle, label: "空闲" },
     ];
     box.innerHTML = cards.map((c) =>
       `<span class="mini-stat"><span class="mini-stat-label">${c.label}</span> ` +
       `<span class="mini-stat-val${c.valCls}">${c.num}</span></span>`
     ).join("");
     const title = $("dash-title");
-    if (title) title.textContent = review || failed ? `${review + failed} 项待处理` : "暂无待办";
+    if (title) title.textContent = (unseen + failed) ? `${unseen + failed} 项待处理` : "暂无待办";
   }
 
   // ---------------- 智能任务看板 ----------------
@@ -1870,7 +1928,7 @@
       if (s.status === "running") return "dot-inprogress";
       const key = deriveState(s).key;
       if (key === "failed") return "dot-cancelled";
-      if (key === "review") return "dot-done";
+      if (key === "done") return "dot-done";
       return "dot-pending";
     }
 
@@ -1977,14 +2035,15 @@
     try { localStorage.setItem("ac_seen", JSON.stringify(m)); } catch (e) {}
   }
 
-  // 会话副标题：在跑显示「当前活动」，空闲显示行摘要
+  // 会话副标题：在跑显示「耗时 + 当前活动」（卡住给 ⚠️ 提示，stuck 是 WS 里一直在推、
+  // 之前从没被用上的现成信号），空闲显示行摘要
   function sessionSubtitle(s) {
     if (s.status === "running") {
-      if (typeof s.elapsed === "number" && s.elapsed > 0) {
-        const mins = Math.max(1, Math.round(s.elapsed / 60));
-        return `⏳ ${mins}m` + (s.activity ? " · " + s.activity : "");
-      }
-      return s.activity || "运行中…";
+      const mins = (typeof s.elapsed === "number" && s.elapsed > 0) ? Math.max(1, Math.round(s.elapsed / 60)) : null;
+      const head = s.stuck
+        ? `⚠️ ${mins ? mins + "m " : ""}无输出`
+        : (mins ? `⏳ ${mins}m` : "⏳ 运行中");
+      return head + (s.activity ? " · " + s.activity : "");
     }
     return s.summary || "";
   }
@@ -2121,11 +2180,11 @@
     if (data.type === "turn_progress") {
       const s = state.sessions.find((x) => x.id === data.session_id);
       if (s) {
-        const mins = Math.max(1, Math.round((data.elapsed || 0) / 60));
         s.status = "running";
         s.elapsed = data.elapsed;
         s.stuck = !!data.stuck;
-        s.activity = data.stuck ? `已运行 ${mins} 分钟，暂无新输出` : `已运行 ${mins} 分钟`;
+        // 不再用"已运行 N 分钟"覆盖 activity：耗时由 subtitle 的 elapsed 现算展示，
+        // 保留上次真实活动标签（工具调用/回复摘要），卡住改由 stuck 标记驱动 ⚠️ 文案
         patchSessionRow(s);
       }
       return;
@@ -2188,13 +2247,16 @@
       s.stuck = !!data.stuck;
       s.summary = data.summary || s.summary;
       if (data.title) s.title = data.title;
+      // 回合结局：不重拉 /api/sessions 也能就地翻转徽章（已完成/失败/被中断）
+      if (data.last_outcome) s.last_outcome = data.last_outcome;
       s.updated_at = data.updated_at || s.updated_at;
       patchSessionRow(s);
       renderKanbanDebounced();  // 看板卡片的关联会话名/状态可能随之变化（防抖，避免高频刷新）
-      // 当前会话同步页头标题
+      // 当前会话同步页头标题与详情摘要
       if (data.session_id === state.sessionId) {
         const titleEl = $('session-title');
         if (titleEl && data.title) titleEl.textContent = data.title;
+        updateDetailSummary(s);
       }
       // peek 面板开着且正是这个会话 → 同步刷新状态行
       if (peekState.sid === data.session_id && peekState.rerender) peekState.rerender();
@@ -2214,8 +2276,9 @@
       refreshDispatchGroupSummary(fresh);
     });
     renderDashboard();
+    renderOverviewList();  // 「需要关注」成员随状态翻转实时增减（如空闲→运行中）
     // review 列表成员可能因状态变化增减，简单起见重建一次该列表
-    fillList($("session-list-review"), state.sessions.filter((x) => deriveState(x).key === "review"));
+    fillList($("session-list-review"), state.sessions.filter((x) => deriveState(x).key === "done"));
   }
 
   // 根据某个子会话行所在的分组 body，重算并更新该分组头的状态摘要。
@@ -2645,10 +2708,13 @@
       const cur = state.sessions.find((s) => s.id === id);
       if (cur) {
         $("session-title").textContent = cur.title;
+        updateDetailSummary(cur);
         updateWorkdirBar(cur.workdir);
         updateSessionIdBar(cur.id);
         updateLinkedTodoBar(cur);
         markSeen(cur.id, cur.updated_at);
+        renderDashboard();
+        renderOverviewList();  // 标记已读后刷新：该会话不该再占"待查看"名额
       }
       document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
       syncModeSelect();
@@ -2672,10 +2738,13 @@
     const cur = state.sessions.find((s) => s.id === id);
     if (cur) {
       $("session-title").textContent = cur.title;
+      updateDetailSummary(cur);
       updateWorkdirBar(cur.workdir);
       updateSessionIdBar(cur.id);
       updateLinkedTodoBar(cur);
       markSeen(cur.id, cur.updated_at);
+      renderDashboard();
+      renderOverviewList();  // 标记已读后刷新：该会话不该再占"待查看"名额
     }
     // 高亮当前会话行（跨三个列表）
     document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
@@ -2685,6 +2754,13 @@
     if (prevId !== id) restoreDraft(id);      // 恢复新会话草稿（同会话不覆盖当前输入）
     connectWs();
     primeRunBarFromApi();
+  }
+
+  // 详情页头摘要：标题下方、meta 上方的 #detail-summary，素材与列表行 s-sub 同一份
+  function updateDetailSummary(s) {
+    const sumEl = $("detail-summary");
+    if (!sumEl) return;
+    sumEl.textContent = (s && s.summary) || "";
   }
 
   // workdir 显示栏（点击可编辑）
