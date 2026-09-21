@@ -193,7 +193,6 @@ body.hub-resizing {
 .session-list li:hover { background: var(--bg-3); box-shadow: var(--shadow-md); }
 .session-list li.active { border-color: var(--accent); background: var(--accent-soft); }
 .session-list li.st-running { border-left-color: var(--accent); }
-.session-list li.st-review,
 .session-list li.st-done     { border-left-color: var(--green); }
 .session-list li.st-failed  { border-left-color: var(--red); }
 .session-list li.st-idle    { border-left-color: var(--muted-2); }
@@ -223,7 +222,6 @@ body.hub-resizing {
 }
 .badge.working { background: var(--accent-soft); color: var(--accent); }
 .badge.watch   { background: var(--accent-soft); color: var(--accent); }
-.badge.review  { background: var(--yellow-soft); color: var(--yellow); }
 .badge.done    { background: var(--green-soft); color: var(--green); }
 .badge.resume  { background: var(--gray-soft); color: var(--muted); }
 .badge.failed  { background: #fdecec; color: var(--red); }
