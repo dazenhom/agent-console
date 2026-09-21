@@ -304,6 +304,11 @@ def init_db() -> None:
         # codex usage 是会话累计值；持久化上次累计值，供下一回合按字段差分计费。
         _add_col("sessions", "codex_usage_baseline TEXT DEFAULT ''")
         _add_col("sessions", "pinned INTEGER DEFAULT 0")
+        # 回合结局落库（success/error/cancelled/interrupted）+ 发生时间：sessions.status 只有
+        # idle/running 两态、回合结束一律写 idle，前端分不出"完成了/失败了"；而全局最近 30 条
+        # tasks 只覆盖 2.4% 的会话，徽章必须有这个会话级字段才能不恒灰。
+        _add_col("sessions", "last_outcome TEXT DEFAULT ''")
+        _add_col("sessions", "last_outcome_at REAL DEFAULT 0")
         # 看板进展摘要三列：正文 / 生成时间 / 生成时所依据的 jsonl mtime（用于缓存判断）
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")
@@ -485,6 +490,38 @@ def list_sessions(include_archived: bool = False, archived_only: bool = False) -
         pid = plan_of_sid.get(d["id"])
         d["dispatch_plan_id"] = pid
         d["dispatch_plan_title"] = title_of_plan.get(pid) if pid else None
+    # 批量补每会话最近一条 task 与消息计数（消息数/用户轮次），供前端徽章兜底与 meta
+    # 展示，避免 N+1。窗口函数取 rn=1（SQLite >= 3.25 支持，本机 3.37.2 实测确认过）。
+    task_map = {}   # session_id -> (status, duration_ms, cost_usd)
+    msg_map = {}   # session_id -> (msg_count, user_turns)
+    if sids:
+        placeholders = ",".join("?" * len(sids))
+        task_rows = _query(
+            f"SELECT session_id, status, duration_ms, cost_usd FROM ("
+            f"  SELECT session_id, status, duration_ms, cost_usd,"
+            f"         ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY started_at DESC) AS rn"
+            f"  FROM tasks WHERE session_id IN ({placeholders})"
+            f") WHERE rn = 1",
+            tuple(sids),
+        )
+        for tr in task_rows:
+            task_map[tr[0]] = (tr[1], tr[2], tr[3])
+        msg_rows = _query(
+            f"SELECT session_id, COUNT(*), SUM(role='user') FROM messages"
+            f" WHERE session_id IN ({placeholders}) GROUP BY session_id",
+            tuple(sids),
+        )
+        for mr in msg_rows:
+            msg_map[mr[0]] = (mr[1], mr[2])
+    for d in result:
+        t = task_map.get(d["id"])
+        # last_task_status 是 last_outcome 为空时的兜底（老会话的回合结局字段尚无值）
+        d["last_task_status"] = t[0] if t else None
+        d["last_duration_ms"] = t[1] if t else None
+        d["last_cost_usd"] = t[2] if t else None
+        cnt, user_turns = msg_map.get(d["id"], (0, 0))
+        d["msg_count"] = cnt or 0
+        d["user_turns"] = int(user_turns or 0)
     return result
 
 
@@ -531,6 +568,9 @@ def reconcile_stale_running() -> None:
     """进程重启后对齐"僵尸 running"状态：上次进程被杀时，DB 里可能残留 status='running'
     的会话与 tasks。它们的执行早已不在，重启后不会自愈，导致前端永久卡在"运行中"。
     启动时把它们归位：会话置 idle，未结束的任务置 error。"""
+    # 先记 interrupted 再拍 idle，顺序不能反：第二步把 status='running' 清掉之后，
+    # 第一步就再也匹配不到任何行了（写反会静默失效，僵尸只被归位而没有结局标记）。
+    _exec("UPDATE sessions SET last_outcome='interrupted', last_outcome_at=? WHERE status='running'", (_now(),))
     _exec("UPDATE sessions SET status='idle' WHERE status='running'")
     _exec("UPDATE tasks SET status='error', ended_at=? WHERE status='running'", (_now(),))
     _exec("UPDATE job_runs SET status='error', error='进程重启中断', ended_at=? WHERE status='running'", (_now(),))

@@ -11,17 +11,26 @@ from .codex_oneshot import run_codex_oneshot_text
 
 
 def _heuristic(user_text: str, reply_text: str, limit: int = 44) -> str:
-    """启发式兜底：按句切分取最后一个长度 ≥8 的完整句（结论通常在结尾），没有合格
-    句时退回复述前 N 字。优先看 Agent 回复，没有则取用户指令。"""
-    src = (reply_text or "").strip() or (user_text or "").strip()
-    if not src:
-        return ""
-    sents = [re.sub(r"\s+", " ", x).strip() for x in re.split(r"[。！？\n]", src)]
-    for sent in reversed(sents):
-        if len(sent) >= 8:
-            return sent[:limit] + ("…" if len(sent) > limit else "")
-    s = re.sub(r"\s+", " ", src)
-    return s[:limit] + ("…" if len(s) > limit else "")
+    """启发式兜底：优先取用户指令的首句（说清了"要做什么"），用户为空才退 AI 回复
+    首句——AI 回复的结尾常是反问/客套语而非结论，取末句会留下一堆"需要我继续吗"。
+    取句前先剥 markdown 标记（**/`/#），避免摘要里带符号噪声。"""
+
+    def _first_sent(src: str) -> str:
+        src = re.sub(r"[*`#]+", "", src or "")
+        for sent in re.split(r"[。！？\n]", src):
+            sent = re.sub(r"\s+", " ", sent).strip()
+            if len(sent) >= 8:
+                return sent[:limit] + ("…" if len(sent) > limit else "")
+        s = re.sub(r"\s+", " ", src).strip()
+        return (s[:limit] + ("…" if len(s) > limit else "")) if s else ""
+
+    for src in ((user_text or "").strip(), (reply_text or "").strip()):
+        if not src:
+            continue
+        out = _first_sent(src)
+        if out:
+            return out
+    return ""
 
 
 # 合并调用的说明段：严格两行输出（TITLE：/SUMMARY：），辨识度硬规则（具体对象、带数字、

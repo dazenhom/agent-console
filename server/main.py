@@ -118,7 +118,15 @@ async def login(payload: dict):
 
 @app.get("/api/sessions", dependencies=[Depends(require_auth)])
 async def get_sessions(archived: int = Query(default=0)):
-    return db.list_sessions(archived_only=bool(archived))
+    rows = db.list_sessions(archived_only=bool(archived))
+    # 合并 hub 内存态：运行中会话的实时信息（活动/耗时/卡住）只在内存里，DB 落的是回合
+    # 边界快照，不合并的话首屏列表里"运行中"的会话没有耗时与活动。elapsed 统一走
+    # progress_snapshot 现算（不读缓存），与 /api/progress 同口径，避免两处算法漂移。
+    for d in rows:
+        if hub.is_running(d["id"]):
+            d["status"] = "running"
+            d.update(hub.progress_snapshot(d["id"]))
+    return rows
 
 
 @app.get("/api/sessions/search", dependencies=[Depends(require_auth)])
@@ -2483,23 +2491,9 @@ async def post_notify(payload: dict, request: Request, authorization: str | None
 
 @app.get("/api/progress", dependencies=[Depends(require_auth)])
 async def get_progress():
-    """返回当前正在跑的会话的进度快照（内存态，不查库不加列），供前端首屏/刷新兜底展示运行中横幅。"""
-    out = []
-    for sid in hub.running_sids():
-        prog = hub._progress.get(sid) or {}
-        started = hub._turn_started.get(sid)
-        # elapsed 一律按 _turn_started 现算，不读 _progress 缓存里的值：
-        # _progress 只在 watchdog 回调（首推 PROGRESS_FIRST_SEC、之后每 PROGRESS_EVERY_SEC）
-        # 时更新，两次推送之间隔了 30 分钟，读缓存会让耗时冻在上一次推送的数字上，
-        # 状态条显示"运行中 5分"半小时不动，看着像卡死。stuck 仍取缓存（它只有 watchdog 判得出）。
-        elapsed = (time.monotonic() - started) if started is not None else prog.get("elapsed")
-        out.append({
-            "session_id": sid,
-            "activity": hub.activity(sid),
-            "elapsed": elapsed,
-            "stuck": bool(prog.get("stuck")),
-        })
-    return out
+    """返回当前正在跑的会话的进度快照（内存态，不查库不加列），供前端首屏/刷新兜底展示运行中横幅。
+    elapsed 现算不读 _progress 缓存的理由见 SessionHub.progress_snapshot 注释。"""
+    return [{"session_id": sid, **hub.progress_snapshot(sid)} for sid in hub.running_sids()]
 
 
 # ---------------- 静态前端 ----------------

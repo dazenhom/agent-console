@@ -254,6 +254,19 @@ class SessionHub:
     def activity(self, sid: str) -> str:
         return self._activity.get(sid, "")
 
+    def progress_snapshot(self, sid: str) -> dict:
+        """运行中会话的进度快照：activity / elapsed / stuck。elapsed 一律按 _turn_started
+        现算而非读 _progress 缓存——watchdog 两次进度推送之间隔了 PROGRESS_EVERY_SEC(30分钟)，
+        读缓存会让耗时冻在上次推送的数字上、看着像卡死。stuck 只有 watchdog 判得出，
+        仍取缓存。/api/progress 与 /api/sessions 共用这里，避免 elapsed 算法多处复制粘贴。"""
+        prog = self._progress.get(sid) or {}
+        started = self._turn_started.get(sid)
+        return {
+            "activity": self.activity(sid),
+            "elapsed": (time.monotonic() - started) if started is not None else prog.get("elapsed"),
+            "stuck": bool(prog.get("stuck")),
+        }
+
     # ---------- 广播 ----------
     async def broadcast(self, sid: str, obj: dict) -> None:
         for sub in list(self._subs.get(sid, ())):
@@ -279,20 +292,14 @@ class SessionHub:
             "type": "session_update",
             "session_id": sid,
             "status": "running" if self.is_running(sid) else (sess or {}).get("status", "idle"),
-            "activity": self._activity.get(sid, ""),
             "summary": (sess or {}).get("summary", ""),
             "title": (sess or {}).get("title", ""),
             "updated_at": (sess or {}).get("updated_at", 0),
+            # 回合结局一并推送：前端不重拉 /api/sessions 也能翻转徽章（已完成/失败）
+            "last_outcome": (sess or {}).get("last_outcome", ""),
         }
-        prog = self._progress.get(sid) or {}
-        # elapsed 按 _turn_started 现算而非读 _progress 缓存：watchdog 两次进度推送之间
-        # 隔了 PROGRESS_EVERY_SEC(30分钟)，读缓存会让列表里的耗时冻在上次推送的数字上。
-        # 同 /api/progress 的处理。stuck 只有 watchdog 判得出，仍取缓存。
-        started = self._turn_started.get(sid)
-        payload["elapsed"] = (
-            time.monotonic() - started if started is not None else prog.get("elapsed")
-        )
-        payload["stuck"] = bool(prog.get("stuck"))
+        # activity/elapsed/stuck 统一走 progress_snapshot（elapsed 现算不读缓存，见该方法注释）
+        payload.update(self.progress_snapshot(sid))
         payload.update(extra)
         await self.broadcast_monitor(payload)
 
@@ -393,7 +400,10 @@ class SessionHub:
                         cost_usd=final_result.get("cost_usd"),
                         num_turns=final_result.get("num_turns"),
                     )
-                    db.update_session(sid, status="idle")
+                    # 同 _run_turn 的 finally：续跑汇报也是一次真实回合，结局一并落库
+                    db.update_session(sid, status="idle",
+                                      last_outcome=final_result.get("status", "error"),
+                                      last_outcome_at=time.time())
                     self._activity[sid] = ""
                     await self._emit_session_update(sid)
                     reply_text = "\n".join(reply_parts)
@@ -830,7 +840,9 @@ class SessionHub:
                 cost_usd=final_result.get("cost_usd"),
                 num_turns=final_result.get("num_turns"),
             )
-            db.update_session(sid, status="idle")
+            # 回合结局随 status 一并落库（区分"完成了/失败了/被取消"），前端徽章不再只能灰
+            _outcome = final_result.get("status", "error")
+            db.update_session(sid, status="idle", last_outcome=_outcome, last_outcome_at=time.time())
             self._activity[sid] = ""
             self._pending_perms.pop(sid, None)  # 回合结束：清掉本会话所有待确认权限
             self._turns.pop(sid, None)
