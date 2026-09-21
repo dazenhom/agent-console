@@ -48,11 +48,14 @@ CLAUDE_TURN_MAX = int(os.environ.get("CLAUDE_TURN_MAX", "14400"))          # 4h�
 # CLAUDE_TURN_MAX（4h）太宽、前端 HTTP 只等 200s，两侧差 70 倍。超时即 cancel
 # 杀进程（常驻模式下回合自动 resume 续上下文），让用户能立刻重试。
 COMPACT_TIMEOUT = int(os.environ.get("COMPACT_TIMEOUT", "300"))
-# 上下文用量预警阈值（tokens）：回合内 assistant 事件 usage 三项之和（input +
-# cache_creation + cache_read）超过该值时广播一条 status 提示（不落库、不进摘要），
-# 建议用户压缩或另起会话。默认 850k ≈ 1M 上下文模型的 85%。注意不能只看
-# input_tokens——满上下文时它极小（实测仅 2），大头全在 cache_creation 里。
-CONTEXT_WARN_TOKENS = int(os.environ.get("CONTEXT_WARN_TOKENS", "850000"))
+# 上下文用量预警比例：按会话模型上下文上限的比例判定（默认 0.85，即 1M 模型
+# 850k、200k 模型 170k 触发）。回合内 assistant 事件 usage 三项之和（input +
+# cache_creation + cache_read）超过该比例时广播一条 status 提示（不落库、不进摘要），
+# 建议用户压缩或另起会话。历史写死 CONTEXT_WARN_TOKENS=850000（=0.85×1M，2026-09-21
+# 废弃）只对 1M 模型有意义，对 200k 模型永不触发；设 CONTEXT_WARN_RATIO=99 可软关闭。
+# 注意不能只看 input_tokens——满上下文时它极小（实测仅 2），大头全在 cache_creation/
+# cache_read，usage 三项之和才是真实占用。
+CONTEXT_WARN_RATIO = float(os.environ.get("CONTEXT_WARN_RATIO", "0.85"))
 CLAUDE_LOOP_REPEAT = int(os.environ.get("CLAUDE_LOOP_REPEAT", "8"))        # 相同工具调用连续N次 → 循环
 CLAUDE_LOOP_ERRORS = int(os.environ.get("CLAUDE_LOOP_ERRORS", "10"))       # 连续报错N次 → 循环
 # 递进阈值：达到这些次数只"记一笔"（写日志 + 供下一回合开头劝告），不终止；只有到

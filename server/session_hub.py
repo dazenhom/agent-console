@@ -698,17 +698,18 @@ class SessionHub:
             nonlocal ctx_warned
             self._bind_out_of_turn(sid)
             # 上下文用量预警：满上下文时 input_tokens 极小，cache_creation/cache_read
-            # 才是大头，三项相加才是真实占用。超阈值推一条 status 提示（不落库、不进
-            # 摘要，符合 translate_event 对 status 的既有约定）；同一回合只报一次。
+            # 才是大头，三项相加才是真实占用。按模型上下文上限的比例判阈值，超限推一条
+            # status 提示（不落库、不进摘要，符合 translate_event 对 status 的既有约定）；
+            # 同一回合只报一次。
             if evt.get("type") == "assistant":
                 usage = (evt.get("message") or {}).get("usage") or {}
                 total = sum(
                     int(usage.get(k) or 0)
                     for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
                 )
-                if total > config.CONTEXT_WARN_TOKENS and not ctx_warned:
+                limit = 1_000_000 if "[1m]" in str((sess or {}).get("mode") or "") else 200_000
+                if total > limit * config.CONTEXT_WARN_RATIO and not ctx_warned:
                     ctx_warned = True
-                    limit = 1_000_000 if "[1m]" in str((sess or {}).get("mode") or "") else 200_000
                     pct = min(round(total * 100 / limit), 999)
                     try:
                         await self.broadcast(sid, {
