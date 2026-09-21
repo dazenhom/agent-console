@@ -1187,8 +1187,8 @@ async def triage_to_todo(tid: str):
 # 检测在 server/stall_watch.py（scheduler 每 15 分钟一轮），这里只管展示与处置。
 @app.get("/api/stalls", dependencies=[Depends(require_auth)])
 async def stalls_list():
-    """open + 已到期 snoozed 的停滞告警；goal 类附迭代/验收上下文，todo 类附进展摘要，
-    供前端行内展示"耗尽到第几轮/最近在干什么"。"""
+    """open + 已到期 snoozed 的停滞告警；goal 类附迭代/验收上下文（goal_cost_capped 额外
+    附成本上下文），todo 类附进展摘要，供前端行内展示"耗尽到第几轮/最近在干什么"。"""
     result = []
     for a in db.list_stall_alerts():
         related = {}
@@ -1196,19 +1196,22 @@ async def stalls_list():
             if str(a.get("kind") or "").startswith("goal_"):
                 sch = db.get_schedule(a["ref_id"])
                 if sch:
-                    # 成本上下文供前端 goal_cost_capped 行「继续」时 prompt 新上限预填
-                    # （取数失败由外层 except 兜住，整块 related 退化为空，不阻断列表）
-                    cost_limit = float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD
                     related = {
                         "iter_count": sch.get("iter_count"),
                         "max_iterations": sch.get("max_iterations"),
                         "last_feedback": (sch.get("last_feedback") or "")[:200],
                         "finish_reason": sch.get("finish_reason") or "",
-                        "cost_limit": cost_limit,
-                        "spent_usd": db.sum_session_cost(
-                            sch.get("session_id") or "",
-                            sch.get("cost_base_ts") or sch.get("created_at") or 0),
                     }
+                    # 成本上下文只给 goal_cost_capped：它要供前端「继续」时 prompt 新上限并
+                    # 预填。与 stall_watch 侧"只在成本熔断分支查花费"同口径——sum_session_cost
+                    # 是聚合扫描，其他 goal 分型的行用不上，不必每次刷新白付这份开销
+                    # （取数失败由外层 except 兜住，整块 related 退化为空，不阻断列表）。
+                    if a.get("kind") == "goal_cost_capped":
+                        related["cost_limit"] = (
+                            float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD)
+                        related["spent_usd"] = db.sum_session_cost(
+                            sch.get("session_id") or "",
+                            sch.get("cost_base_ts") or sch.get("created_at") or 0)
             elif a.get("kind") == "todo_idle":
                 rows = db._query("SELECT progress FROM todos WHERE id=?", (a["ref_id"],))
                 if rows:

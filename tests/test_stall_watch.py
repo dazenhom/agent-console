@@ -491,6 +491,20 @@ def test_api_stalls_list_exposes_cost_context(api_client):
     assert rel["spent_usd"] == pytest.approx(12.5)
 
 
+def test_api_stalls_list_cost_context_only_for_cost_capped(api_client):
+    """成本上下文只给 goal_cost_capped（与 stall_watch 侧"只在成本熔断分支查花费"同口径）：
+    其他 goal 分型不白查一次聚合花费，但迭代/反馈上下文照旧带。"""
+    _mk_goal(goal_status="exhausted", enabled=0, age=7300, finish_reason="iter_cap")
+    stall_watch.scan_once()
+    items = api_client.get("/api/stalls",
+                           headers={"Authorization": "Bearer unit-token"}).json()
+    assert len(items) == 1 and items[0]["kind"] == "goal_exhausted"
+    rel = items[0]["related"]
+    assert rel["finish_reason"] == "iter_cap"
+    assert rel["max_iterations"] == 6 and "iter_count" in rel
+    assert "cost_limit" not in rel and "spent_usd" not in rel
+
+
 def test_api_continue_goal_stuck_happy_path(api_client):
     """继续（goal_stuck）：复位状态机 + 立即到期，交 scheduler tick 接管。"""
     sch = _mk_goal(goal_status="running", enabled=1, age=7 * 3600)
@@ -530,3 +544,54 @@ def test_api_snooze_happy_path(api_client):
     a = db.get_stall_alert(aid)
     assert a["status"] == "snoozed" and a["snooze_until"] == body["snooze_until"]
     assert db.list_stall_alerts() == []  # 未到期：不出现在默认列表
+
+
+# ---------- 老库迁移回归（finish_reason 回填 → dedupe_key 去 kind → kind 改判） ----------
+def _mk_legacy_goal(session_id, feedback):
+    """按本次改动前的数据形态直写库：finish_reason 是新列，老行里恒为空串，当时只有
+    last_feedback 的自然语言能表达"为什么终止"，告警侧也只有 kind + ref 拼出的旧 dedupe_key。"""
+    sid = db.new_id()
+    db._exec(
+        "INSERT INTO schedules(id,session_id,prompt,kind,enabled,created_at,goal_status,"
+        "last_feedback,finish_reason) VALUES(?,?,?,?,?,?,?,?,'')",
+        (sid, session_id, "把训练曲线画出来", "goal", 0, time.time(), "exhausted", feedback),
+    )
+    return sid
+
+
+def test_init_db_migrates_legacy_rows_and_is_idempotent(temp_db):
+    """temp_db 建的是空库，三段迁移都命中 0 行——存量库的迁移行为零覆盖。这里先按旧格式
+    落库（finish_reason 空串、dedupe_key 带 kind 前缀、kind=goal_exhausted），再跑 init_db
+    让迁移真正落在已有旧数据上，最后再跑一次确认幂等（迁移重跑不能刷新记录/撞唯一索引）。"""
+    sess = db.create_session("老会话", "/tmp/stall-test")
+    cost_sid = _mk_legacy_goal(sess["id"], "已达成本上限（$25 ≥ $20），如需继续请提高上限")
+    iter_sid = _mk_legacy_goal(sess["id"], "已达迭代上限（6/6 轮），请人工介入")
+    cost_a = db.create_stall_alert(kind="goal_exhausted", ref_id=cost_sid, title="目标循环已耗尽",
+                                   detail="老文案", dedupe_key=f"goal_exhausted:{cost_sid}")
+    iter_a = db.create_stall_alert(kind="goal_exhausted", ref_id=iter_sid, title="目标循环已耗尽",
+                                   detail="老文案", dedupe_key=f"goal_exhausted:{iter_sid}")
+    # 前置断言：迁移前确实长成旧格式。少了这步，将来 fixture 若顺手升级成"新列已填"，
+    # 本测试会退化成空转（迁移一行没碰也算通过）。
+    assert db.get_schedule(cost_sid)["finish_reason"] == ""
+    assert db.get_stall_alert(cost_a["id"])["dedupe_key"] == f"goal_exhausted:{cost_sid}"
+
+    db.init_db()
+
+    # 1) 按 last_feedback 文案回填结构化终止原因
+    assert db.get_schedule(cost_sid)["finish_reason"] == "cost_cap"
+    assert db.get_schedule(iter_sid)["finish_reason"] == "iter_cap"
+    # 2)+3) 成本熔断那行：dedupe_key 去 kind 化 + kind 按 finish_reason 改判（顺序敏感：
+    # 若 kind 迁移跑在回填之前，这里拿到的还是 goal_exhausted）
+    c = db.get_stall_alert(cost_a["id"])
+    assert c["dedupe_key"] == f"goal:{cost_sid}" and c["kind"] == "goal_cost_capped"
+    # 对照行：非成本熔断的分型与阈值都不变，dedupe_key 同样去 kind 化
+    i = db.get_stall_alert(iter_a["id"])
+    assert i["dedupe_key"] == f"goal:{iter_sid}" and i["kind"] == "goal_exhausted"
+    assert c["status"] == "open" and i["status"] == "open"
+
+    # 幂等：二次 init_db 后逐字段原样（含 updated_at——迁移若重跑会把它再刷一遍）
+    db.init_db()
+    assert db.get_stall_alert(cost_a["id"]) == c
+    assert db.get_stall_alert(iter_a["id"]) == i
+    assert db.get_schedule(cost_sid)["finish_reason"] == "cost_cap"
+    assert len(db._query("SELECT * FROM stall_alerts")) == 2

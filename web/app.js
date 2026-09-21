@@ -1140,15 +1140,21 @@
       return true;
     };
     row.querySelector("[data-act='continue']").onclick = async () => {
-      // 成本熔断的续跑会开新成本窗口（已花额度重新计），先问用户新上限；留空沿用旧值
+      // 成本熔断的续跑会开新成本窗口（已花额度重新计），先问用户新上限；留空 = 不改上限
       const body = {};
       if (it.kind === "goal_cost_capped") {
-        const cur = (it.related && it.related.cost_limit) || 20;
-        const spent = (it.related && it.related.spent_usd) != null
-          ? it.related.spent_usd.toFixed(2) : "?";
+        // related 缺失（后端成本取数失败时整块退化为空）时不能硬编码一个上限兜底：
+        // GOAL_MAX_COST_USD 是可配 env，写成 20 只在默认配置下巧合正确，会拿着错数字
+        // 诱导用户定预算；此时改说「未知」，输入框也不预填（留空 = 不改上限，后端沿用原值）。
+        const rel = it.related || {};
+        const hasLimit = rel.cost_limit != null && String(rel.cost_limit) !== "";
+        const limitText = hasLimit ? `上限 $${rel.cost_limit}` : "上限未知";
+        const spentText = rel.spent_usd != null && !Number.isNaN(Number(rel.spent_usd))
+          ? `$${Number(rel.spent_usd).toFixed(2)}` : "未知";
         const ans = prompt(
-          `新的成本上限（美元）。该会话本成本窗口已花 $${spent} / 上限 $${cur}。留空则沿用 $${cur}：`,
-          String(cur));
+          `新的成本上限（美元）。该会话本成本窗口已花 ${spentText} / ${limitText}。`
+          + `留空则${hasLimit ? `沿用 $${rel.cost_limit}` : "不设新上限"}：`,
+          hasLimit ? String(rel.cost_limit) : "");
         if (ans === null) return; // 取消不动
         if (ans.trim() !== "") {
           const v = Number(ans);
