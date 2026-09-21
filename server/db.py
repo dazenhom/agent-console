@@ -616,10 +616,17 @@ def delete_session(sid: str) -> None:
     _exec("DELETE FROM sessions WHERE id=?", (sid,))
 
 
-def update_session(sid: str, **fields) -> None:
+def update_session(sid: str, _touch: bool = True, **fields) -> None:
+    """写会话字段，默认顺手把 updated_at 刷成现在（列表按它排序 = "最近活动"）。
+
+    _touch=False 用于离线补写历史内容（如 backfill_summary 回填旧标题/摘要）：那是补历史，
+    不是新活动，刷 updated_at 会让这些老会话瞬移到列表最前面、打乱顺序（2026-09-22 踩过）。
+    注意 _touch 是关键字参数不是列名——sessions 现有 23 列里没有同名列，但仍别拿它当字段传。
+    """
     if not fields:
         return
-    fields["updated_at"] = _now()
+    if _touch:
+        fields["updated_at"] = _now()
     cols = ",".join(f"{k}=?" for k in fields)
     _exec(f"UPDATE sessions SET {cols} WHERE id=?", (*fields.values(), sid))
 

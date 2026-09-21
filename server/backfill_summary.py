@@ -99,7 +99,9 @@ async def _run(dry_run: bool, limit: int) -> None:
                     fields["title"] = title
                     fields["title_auto"] = 1
                 if fields:
-                    db.update_session(sid, **fields)
+                    # 回填是补写历史内容，不是新活动：_touch=False 别动 updated_at。
+                    # 默认刷的话这些老会话会集体跳到列表最前面，打乱「最近更新」顺序（2026-09-22 已踩）。
+                    db.update_session(sid, _touch=False, **fields)
                     print(f"[{i}/{total}] {sid}: {old_title} → {fields.get('title', '(标题保持)')}")
                     done += 1
                 else:
