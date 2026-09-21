@@ -707,6 +707,7 @@
   }
   const CODEX_MODELS = ["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5","gpt-5.4","gpt-5.3-codex","gpt-5.1-codex","gpt-5.1-codex-mini","glm-5.2-ioa","hy3-ioa","gpt-6-astra","deepseek-v4-pro-ioa","deepseek-v4-flash-ioa","deepseek-v4.1-flash","hy4-preview-ioa"];
   const CLAUDE_MODELS = [
+    "claude-glm-5.3[1m]",
     "claude-sonnet-5","claude-sonnet-5[1m]",
     "claude-sonnet-4-6","claude-sonnet-4-6[1m]",
     "claude-opus-5","claude-opus-5[1m]",
@@ -715,7 +716,7 @@
     "claude-opus-4-6","claude-opus-4-6[1m]",
     "claude-haiku-4-5","claude-hy3","opusplan",
     "claude-glm-5.2","claude-glm-5.2[1m]",
-    "claude-glm-5.3","claude-glm-5.3[1m]",
+    "claude-glm-5.3",
     "claude-glm-5.3-flash[1m]",
     "claude-kimi-k3[1m]",
     "claude-deepseek-v4.1-flash[1m]",

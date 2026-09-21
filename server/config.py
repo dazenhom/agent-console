@@ -89,9 +89,9 @@ CLAUDE_STREAM_PARTIAL = os.environ.get("CLAUDE_STREAM_PARTIAL", "true").lower() 
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
 CLAUDE_MODEL_STRONG = os.environ.get("CLAUDE_MODEL_STRONG", "claude-sonnet-5")
 CLAUDE_MODEL_SUPER = os.environ.get("CLAUDE_MODEL_SUPER", "claude-opus-5[1m]")
-# 前端可选的完整模型列表（mode 直接存模型 ID）。claude-sonnet-5 放首位作为默认（GLM 5.2 曾
-# 出过问题，撤下默认位，仍保留在列表里可手动选）。
+# 前端可选的完整模型列表（mode 直接存模型 ID）。claude-glm-5.3[1m] 放首位作为默认。
 CLAUDE_MODELS = [
+    "claude-glm-5.3[1m]",
     "claude-sonnet-5", "claude-sonnet-5[1m]",
     "claude-sonnet-4-6", "claude-sonnet-4-6[1m]",
     "claude-opus-5", "claude-opus-5[1m]",
@@ -100,7 +100,7 @@ CLAUDE_MODELS = [
     "claude-opus-4-6", "claude-opus-4-6[1m]",
     "claude-haiku-4-5", "claude-hy3", "opusplan",
     "claude-glm-5.2", "claude-glm-5.2[1m]",
-    "claude-glm-5.3", "claude-glm-5.3[1m]",
+    "claude-glm-5.3",
     "claude-glm-5.3-flash[1m]",
     "claude-kimi-k3[1m]",
     "claude-deepseek-v4.1-flash[1m]",
@@ -108,9 +108,9 @@ CLAUDE_MODELS = [
     "claude-deepseek-v4-pro", "claude-deepseek-v4-pro[1m]",
     "claude-deepseek-v4-flash", "claude-deepseek-v4-flash[1m]",
 ]
-# 新会话默认模型：Sonnet 5。（GLM 5.2 曾用作默认，出问题后改回；旧档位 fast/strong/super
+# 新会话默认模型：claude-glm-5.3[1m]。（旧档位 fast/strong/super
 # 仍兼容，见 session_hub 的 _LEGACY_MAP。）
-CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "claude-sonnet-5")
+CLAUDE_DEFAULT_MODE = os.environ.get("CLAUDE_DEFAULT_MODE", "claude-glm-5.3[1m]")
 # 编排层"便宜模型"一次性机械任务（看板摘要/分诊/目标循环总览/行摘要/标题）统一用的模型：
 # 走 codex 引擎（tcodex），与生产会话（claude 引擎）分离。原来是 claude 侧 hy3/haiku，
 # 换成 gpt-5.6-luna（sol/terra/luna 三档里最轻量的一档，见 CODEX_MODELS）。

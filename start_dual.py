@@ -132,7 +132,7 @@ def build_base_env(
             "CLAUDE_MODEL_FAST": "claude-haiku-4-5",
             "CLAUDE_MODEL_STRONG": "claude-sonnet-5",
             "CLAUDE_MODEL_SUPER": "claude-opus-5[1m]",
-            "CLAUDE_DEFAULT_MODE": "claude-sonnet-5",
+            "CLAUDE_DEFAULT_MODE": "claude-glm-5.3[1m]",
             "CLAUDE_EFFORT": "medium",
             "CLAUDE_PERSISTENT": source_env.get("CLAUDE_PERSISTENT", "true"),
             "CLAUDE_SESSION_IDLE_SEC": "3600",

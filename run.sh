@@ -56,9 +56,9 @@ export ASR2_TIMEOUT="${ASR2_TIMEOUT:-30}"
 export CLAUDE_MODEL_FAST="${CLAUDE_MODEL_FAST:-claude-haiku-4-5}"
 export CLAUDE_MODEL_STRONG="${CLAUDE_MODEL_STRONG:-claude-sonnet-4-6}"
 export CLAUDE_MODEL_SUPER="${CLAUDE_MODEL_SUPER:-claude-opus-4-8[1m]}"
-export CLAUDE_DEFAULT_MODE="${CLAUDE_DEFAULT_MODE:-claude-sonnet-4-6}"
+export CLAUDE_DEFAULT_MODE="${CLAUDE_DEFAULT_MODE:-claude-glm-5.3[1m]}"
 # 兼容旧档位：若仍设为旧值则覆盖为新默认
-case "$CLAUDE_DEFAULT_MODE" in fast|strong|super) export CLAUDE_DEFAULT_MODE="claude-sonnet-4-6" ;; esac
+case "$CLAUDE_DEFAULT_MODE" in fast|strong|super) export CLAUDE_DEFAULT_MODE="claude-glm-5.3[1m]" ;; esac
 
 # Agent 默认工作目录
 export AGENT_WORKDIR="${AGENT_WORKDIR:-$(cd .. && pwd)}"
