@@ -4985,7 +4985,7 @@
     if (!span) return;
     if (meta.model) span.dataset.model = meta.model;  // resolvedModel 比启动时配置更权威
     const parts = [];
-    if (span.dataset.model) parts.push(span.dataset.model);
+    if (span.dataset.model) parts.push(modeLabel(span.dataset.model));
     const dur = fmtAgentDuration(meta.duration_ms);
     if (dur) parts.push(dur);
     const tok = fmtAgentTokens(meta.tokens);
@@ -5103,7 +5103,7 @@
         const metaEl = node.querySelector(".subagent-meta");
         if (content.model && metaEl) {
           metaEl.dataset.model = content.model;
-          metaEl.textContent = content.model;
+          metaEl.textContent = modeLabel(content.model);
         }
         node.querySelector(".subagent-head").addEventListener("click", function() {
           const isOpen = node.classList.toggle("open");
