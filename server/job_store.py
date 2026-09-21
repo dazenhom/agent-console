@@ -254,14 +254,24 @@ def parse_claude_result_line(text: str) -> str:
 def parse_done_verdict(text: str) -> tuple[bool, str]:
     """把评委的原始答复解析成 (done, reason)。
 
-    取首个非空行精确匹配 == "DONE" 才算完成（容忍前后空白、大小写），像 "DONE, but…"
-    这类带尾巴的一律当 CONTINUE；从第二行起为判断理由，压平空白后截断 200 字。
+    扫描全文取第一个 strip 后恰等于 DONE 或 CONTINUE 的独占行作为 verdict 行，
+    reason 取该行之后的内容，压平空白后截断 200 字。只看首个非空行时，terra 档
+    评委常先吐一条前导说明再给 verdict（parse_codex_jsonl 用 "\\n\\n".join 拼接
+    多条 agent_message），首行变自然语言导致系统性误判 CONTINUE、多烧整轮迭代。
+    仍保持严格：只有独占一行的裸 DONE 才算完成，"DONE, but…" 这类带尾巴的一律
+    当 CONTINUE；全文找不到任何 verdict 行时按 CONTINUE 兜底，绝不误判完成。
     空 reason 时按 done 给默认文案。
     """
     lines = (text or "").splitlines()
-    first = next((ln.strip() for ln in lines if ln.strip()), "")
-    done = first.upper() == "DONE"
-    reason = re.sub(r"\s+", " ", " ".join(lines[1:])).strip()[:200]
+    verdict_idx = -1
+    for i, ln in enumerate(lines):
+        if ln.strip().upper() in ("DONE", "CONTINUE"):
+            verdict_idx = i
+            break
+    if verdict_idx < 0:
+        return False, "尚未达成，继续迭代"
+    done = lines[verdict_idx].strip().upper() == "DONE"
+    reason = re.sub(r"\s+", " ", " ".join(lines[verdict_idx + 1:])).strip()[:200]
     if not reason:
         reason = "已达成完成标准" if done else "尚未达成，继续迭代"
     return done, reason

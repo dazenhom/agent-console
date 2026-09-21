@@ -41,6 +41,8 @@ def _build_prompt(goal: str, stop_condition: str, produced: str,
         "请判断当前是否已经真正达成完成标准。\n"
         "输出格式：\n"
         "- 第一行只能是 DONE 或 CONTINUE 之一，不带任何其它字符。\n"
+        "- 不要在 DONE/CONTINUE 之前输出任何前导说明或计划：先给判定，再给理由"
+        "（判据解析只认独占一行的裸 DONE/CONTINUE）。\n"
         "- 只有在你有充分把握确认完成标准已全部满足时才输出 DONE；"
         "任何不确定、部分完成、或无法从产出中确认的情况，一律输出 CONTINUE。\n"
         "- 从第二行起，简述判断理由；若为 CONTINUE，请给出下一步应该做什么的具体指示。\n"

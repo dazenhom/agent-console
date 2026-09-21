@@ -126,6 +126,8 @@ CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 # 新会话默认 effort：不显式指定则沿用全局 CLAUDE_EFFORT。
 CLAUDE_DEFAULT_EFFORT = os.environ.get("CLAUDE_DEFAULT_EFFORT", CLAUDE_EFFORT)
 # 一次性子进程（摘要/标题/看板/验收/分诊等机械型任务）用的 effort：默认 low，省 token、更快。
+# 当前仅对零流量的 claude 路径生效（codex 路径刻意不传 effort，见 codex_oneshot.py 的
+# prewarm bug 记录），不要把它当成能调 codex 侧验证/摘要深度的旋钮。
 CLAUDE_ONESHOT_EFFORT = os.environ.get("CLAUDE_ONESHOT_EFFORT", "low")
 # 常驻进程模式：每会话维持一个长生命周期 tclaude 进程（--input-format stream-json），
 # 更接近交互式，上下文常驻进程内。false=老的每回合新进程+resume 模式（回退用）。

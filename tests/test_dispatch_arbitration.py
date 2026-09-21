@@ -70,6 +70,13 @@ def test_parse_verdict_rules():
     assert job_store.parse_done_verdict("DONE, but not sure")[0] is False
     assert job_store.parse_done_verdict("CONTINUE\n还需改")[0] is False
     assert job_store.parse_done_verdict("")[0] is False
+    # terra 档评委常先吐一条前导说明再给 verdict（多条 agent_message 被 \n\n 拼接）：
+    # 扫描全文找首个独占 verdict 行，而不是只看首个非空行（后者会系统性误判 CONTINUE）
+    done, reason = job_store.parse_done_verdict("我先核对…\n\nDONE\n理由")
+    assert done is True and reason == "理由"
+    assert job_store.parse_done_verdict("我先核对…\n\nCONTINUE\n理由")[0] is False
+    # 全文没有任何独占 verdict 行时按 CONTINUE 兜底，绝不误判完成
+    assert job_store.parse_done_verdict("我再想想\n没有结论")[0] is False
 
 
 def test_b2b_workdir_into_prompt_and_cwd(monkeypatch):
