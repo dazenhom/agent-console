@@ -1,10 +1,10 @@
 """秘书 Agent：定时日报生成与推送。"""
 import asyncio
 import json
-import time
 from datetime import date, datetime, timedelta
 
 from . import config, db
+from .codex_oneshot import run_codex_oneshot_text
 from .logging_util import get_logger
 
 logger = get_logger(__name__)
@@ -159,54 +159,24 @@ async def run_report(report_type: str) -> None:
         sec_sess = db.ensure_secretary_session(config.DEFAULT_WORKDIR)
         sec_sid = sec_sess["id"]
 
+        # 日报生成走 codex oneshot 而非常驻会话：198 次调用全是 num_turns=1 的纯文本
+        # 生成，prompt 完全自包含（数据由 gather_day_data 现算注入），根本不需要历史
+        # 上下文；复用同一条常驻会话反而让 transcript cache 单调膨胀（49k→114k）且
+        # cache_read 恒 0，单份日报最高烧到 $19。一次性子进程每轮从零开始，成本回到
+        # token 实际量。秘书会话记录仍保留（会话列表靠 is_secretary 排除），只是不再
+        # 往它 start_turn。
         try:
-            from .session_hub import hub
-            started = await hub.start_turn(sec_sid, prompt)
-            if not started:
-                return
+            _jid, report_content, stderr_text, status = await run_codex_oneshot_text(
+                "secretary_report", prompt, config.SECRETARY_TIMEOUT,
+                model=config.CHEAP_MODEL, session_id=sec_sid,
+            )
         except Exception:
             return
-
-        # 等回合完成（最多 5 分钟）
-        deadline = time.monotonic() + 300
-        while time.monotonic() < deadline:
-            try:
-                from .session_hub import hub as _hub
-                if not _hub.is_running(sec_sid):
-                    break
-            except Exception:
-                break
-            await asyncio.sleep(5)
-
-        # 检查是否超时（回合仍在运行）——若超时则放弃本次，避免读到上一份旧报告
-        try:
-            from .session_hub import hub as _hub2
-            if _hub2.is_running(sec_sid):
-                return
-        except Exception:
-            pass
-
-        # 读最后一条 assistant 消息
-        msgs = db.list_messages(sec_sid)
-        assistant_msgs = [m for m in msgs if m.get("role") == "assistant"]
-        if not assistant_msgs:
+        if status != "success" or not (report_content or "").strip():
+            if status != "success":
+                logger.warning("secretary 日报 oneshot %s: %s", status, stderr_text)
             return
-
-        last = assistant_msgs[-1]
-        content_raw = last.get("content", "")
-        if isinstance(content_raw, str):
-            try:
-                c = json.loads(content_raw)
-                report_content = c.get("text") or c.get("content") or content_raw
-            except Exception:
-                report_content = content_raw
-        elif isinstance(content_raw, dict):
-            report_content = content_raw.get("text") or content_raw.get("content") or str(content_raw)
-        else:
-            report_content = str(content_raw)
-
-        if not report_content:
-            return
+        report_content = report_content.strip()
 
         db.create_report(date_str, report_type, report_content, session_id=sec_sid)
 

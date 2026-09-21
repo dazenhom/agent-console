@@ -492,6 +492,9 @@ SNIPPETS = [
 SECRETARY_ENABLED = os.environ.get("SECRETARY_ENABLED", "true").lower() == "true"
 SECRETARY_EVENING_TIME = os.environ.get("SECRETARY_EVENING_TIME", "21:00")
 SECRETARY_MORNING_TIME = os.environ.get("SECRETARY_MORNING_TIME", "09:00")
+# 日报 oneshot 子进程超时（秒）。prompt 完全自包含（数据由 gather_day_data 现算注入），
+# 实测生成耗时 13~37s，给 5 倍裕量；超时放弃本次（当天已有报告会挡住重试，等次日）。
+SECRETARY_TIMEOUT = float(os.environ.get("SECRETARY_TIMEOUT", "180"))
 
 # ---- 备忘录每日提醒 ----
 # 每天定点把开启提醒的备忘汇总推送一次（同一天只推一次）。时间用本地时区 HH:MM。
