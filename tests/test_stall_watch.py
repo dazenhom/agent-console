@@ -505,6 +505,87 @@ def test_api_stalls_list_cost_context_only_for_cost_capped(api_client):
     assert "cost_limit" not in rel and "spent_usd" not in rel
 
 
+def test_api_stalls_list_todo_idle_exposes_session_ids(api_client):
+    """todo_idle 随行透出关联会话（供行主体点开只读预览）：口径与 /api/todos 一致，
+    created_at 早的是主会话。"""
+    todo = _mk_stale_todo(age=2 * 86400)
+    s1 = db.create_session("主会话", "/tmp/stall-t1")
+    s2 = db.create_session("旁支会话", "/tmp/stall-t2")
+    db.set_todo_sessions(todo["id"], [s1["id"], s2["id"]])
+    # 同一次 set_todo_sessions 写下的 created_at 是同一个时间戳，排序会退化成不确定；
+    # 显式错开，让"最早的那个在前"可判。关联动作可能刷新 todos.updated_at，回拨放最后。
+    db._exec("UPDATE todo_sessions SET created_at=? WHERE todo_id=? AND session_id=?",
+             (time.time() - 60, todo["id"], s1["id"]))
+    _backdate("todos", todo["id"], 2 * 86400)
+    stall_watch.scan_once()
+    items = api_client.get("/api/stalls",
+                           headers={"Authorization": "Bearer unit-token"}).json()
+    assert len(items) == 1 and items[0]["kind"] == "todo_idle"
+    rel = items[0]["related"]
+    assert rel["session_ids"] == [s1["id"], s2["id"]]
+    assert "progress" in rel  # 原来的进展摘要不能被新字段挤掉
+
+
+def test_api_stalls_list_todo_idle_without_session_gives_empty_list(api_client):
+    """没关联任何会话的待办给空数组（前端据此只提示、不开空弹层），不是缺字段。"""
+    _mk_stale_todo(age=2 * 86400)
+    stall_watch.scan_once()
+    items = api_client.get("/api/stalls",
+                           headers={"Authorization": "Bearer unit-token"}).json()
+    assert items[0]["related"]["session_ids"] == []
+
+
+def test_api_stalls_list_dispatch_failed_exposes_child_session_ids(api_client):
+    """dispatch_failed 随行透出失败子会话：updated_at 早的在前、上限 10 条，
+    总数（failed_count）照实报，别让前端以为只有列出来的这些。"""
+    plan_id = db.new_id()
+    for seq in range(12):
+        sub = db.create_dispatch_subtask(
+            plan_id=plan_id, parent_session_id="parent", seq=seq,
+            title=f"子任务{seq}", instruction="干活", category="dev",
+            engine="claude", model="strong", child_session_id=f"sess-{seq}",
+            status="failed" if seq % 2 == 0 else "error",  # failed/error 都算失败态
+        )
+        _backdate("dispatch_subtasks", sub["id"], 7 * 3600 - seq)  # seq 越大越新
+    stall_watch.scan_once()
+    items = api_client.get("/api/stalls",
+                           headers={"Authorization": "Bearer unit-token"}).json()
+    assert len(items) == 1 and items[0]["kind"] == "dispatch_failed"
+    rel = items[0]["related"]
+    assert rel["child_session_ids"] == [f"sess-{i}" for i in range(10)]
+    assert rel["failed_count"] == 12
+
+
+def test_api_stalls_list_dispatch_sessions_deduped_and_blank_skipped(api_client):
+    """去空去重：重派过的子任务可能复用同一子会话，空白 child_session_id 也不该造出
+    一个预览不出来的空条目。"""
+    plan_id = db.new_id()
+    for seq, sid in enumerate(["sess-a", "", "sess-a"]):
+        sub = db.create_dispatch_subtask(
+            plan_id=plan_id, parent_session_id="parent", seq=seq,
+            title=f"子任务{seq}", instruction="干活", category="dev",
+            engine="claude", model="strong", child_session_id=sid, status="failed",
+        )
+        _backdate("dispatch_subtasks", sub["id"], 7 * 3600)
+    stall_watch.scan_once()
+    items = api_client.get("/api/stalls",
+                           headers={"Authorization": "Bearer unit-token"}).json()
+    rel = items[0]["related"]
+    assert rel["child_session_ids"] == ["sess-a"]
+    assert rel["failed_count"] == 1
+
+
+def test_api_stalls_list_dispatch_stuck_uses_dispatched_sessions(api_client):
+    """卡死分支取 dispatched 态的子会话（与 stall_watch 判据同口径）。"""
+    plan_id = db.new_id()
+    _mk_failed_subtask(plan_id, age=4 * 3600, status="dispatched")
+    stall_watch.scan_once()
+    items = api_client.get("/api/stalls",
+                           headers={"Authorization": "Bearer unit-token"}).json()
+    assert len(items) == 1 and items[0]["kind"] == "dispatch_stuck"
+    assert items[0]["related"]["child_session_ids"] == ["sess-x"]
+
+
 def test_api_continue_goal_stuck_happy_path(api_client):
     """继续（goal_stuck）：复位状态机 + 立即到期，交 scheduler tick 接管。"""
     sch = _mk_goal(goal_status="running", enabled=1, age=7 * 3600)

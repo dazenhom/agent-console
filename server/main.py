@@ -1220,7 +1220,9 @@ async def triage_to_todo(tid: str):
 @app.get("/api/stalls", dependencies=[Depends(require_auth)])
 async def stalls_list():
     """open + 已到期 snoozed 的停滞告警；goal 类附迭代/验收上下文（goal_cost_capped 额外
-    附成本上下文），todo 类附进展摘要，供前端行内展示"耗尽到第几轮/最近在干什么"。"""
+    附成本上下文），todo 类附进展摘要，供前端行内展示"耗尽到第几轮/最近在干什么"。
+    todo/dispatch 类还附关联会话 id（related.session_ids / child_session_ids）：
+    行主体的只读预览靠它拿到要展示哪些会话。"""
     result = []
     for a in db.list_stall_alerts():
         related = {}
@@ -1248,6 +1250,30 @@ async def stalls_list():
                 rows = db._query("SELECT progress FROM todos WHERE id=?", (a["ref_id"],))
                 if rows:
                     related = {"progress": rows[0][0] or ""}
+                # 关联会话随行透出：前端点行主体开只读预览要用。排序口径与
+                # db.list_todos 的 session_ids 回填一致（created_at 升序，第一个是主会话）
+                related["session_ids"] = db.list_todo_session_ids(a["ref_id"])
+            elif a.get("kind") in ("dispatch_failed", "dispatch_stuck"):
+                # 子会话关联：failed/error 堆积取失败态、卡死取 dispatched 态，与
+                # stall_watch 侧的判据同口径。取全量再在 Python 里去空/去重/截断——
+                # 直接在 SQL 里 LIMIT 会在去重之前截断，可能拿到不足 10 条会话，
+                # 而且这里还要给出未截断的总数供前端提示。
+                statuses = (("dispatched",) if a.get("kind") == "dispatch_stuck"
+                            else ("failed", "error"))
+                placeholders = ",".join("?" * len(statuses))
+                rows = db._query(
+                    "SELECT child_session_id FROM dispatch_subtasks"
+                    f" WHERE plan_id=? AND status IN ({placeholders})"
+                    " ORDER BY COALESCE(updated_at, created_at) ASC",
+                    (a["ref_id"], *statuses),
+                )
+                sids: list[str] = []
+                for r in rows:
+                    sid = (r[0] or "").strip()
+                    if sid and sid not in sids:
+                        sids.append(sid)
+                # failed_count 是去空去重之后的会话总数（含被 10 条上限挡在外面的）
+                related = {"child_session_ids": sids[:10], "failed_count": len(sids)}
         except Exception:
             related = {}
         result.append({**a, "related": related})

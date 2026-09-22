@@ -1077,7 +1077,7 @@
       ? `<span class="stall-badge">💰 成本上限</span>` : "";
     const detail = (it.detail || "").trim();
     row.innerHTML = `
-      <div class="stall-row-main">
+      <div class="stall-row-main" tabindex="-1" title="点击查看会话内容">
         <div class="stall-row-top">
           <span class="stall-row-title">${escapeHtml(it.title)}</span>
           <span class="stall-badge">${escapeHtml(badge)}</span>
@@ -1090,6 +1090,35 @@
         <button class="kanban-act-btn btn-edit" type="button" title="稍后提醒（24 小时）" aria-label="稍后提醒" data-act="snooze">⏰ 稍后</button>
         <button class="kanban-act-btn btn-delete" type="button" title="跳过并不再提醒" aria-label="跳过并不再提醒" data-act="skip">✕ 跳过</button>
       </div>`;
+
+    // 行主体点击 = 只读预览关联会话（看板卡片同款弹层）。三个动作按钮在
+    // .stall-row-actions 里、不是 main 的后代，天然不会冒泡到这里，不用另做隔离。
+    // tabindex="-1" 是为了让 opener.focus() 在 sheet 关闭后真能生效（kanban 卡片的
+    // 教训：不可聚焦的 div 上 focus() 是静默 no-op，Esc 关闭后焦点会掉到 body）。
+    const mainEl = row.querySelector(".stall-row-main");
+    mainEl.onclick = () => {
+      const kind = it.kind || "";
+      const rel = it.related || {};
+      let sessions = [];
+      let goalScheduleId = "";
+      if (kind.indexOf("goal_") === 0) {
+        // goal 类的会话在告警行自己身上（session_id），后端不另查 schedule
+        const sid = it.session_id || "";
+        sessions = sid ? [sid] : [];
+        goalScheduleId = it.ref_id || "";
+      } else if (kind === "todo_idle") {
+        sessions = rel.session_ids || [];
+      } else if (kind.indexOf("dispatch_") === 0) {
+        sessions = rel.child_session_ids || [];
+      }
+      if (!sessions.length) {
+        // 无关联会话不给空弹层：收件箱行的"继续/稍后/跳过"已够用，多说一句省得用户
+        // 以为点坏了（区别于看板卡片的空态——那里有"去关联"的入口，这里没有）
+        toast("该事项无关联会话", "info", 1500);
+        return;
+      }
+      showSessionTranscript(sessions[0], { opener: mainEl, sessions, goalScheduleId });
+    };
 
     let inFlight = false;
     const actionButtons = row.querySelectorAll("[data-act]");
@@ -1449,6 +1478,9 @@
 
   // sid 为 null 表示"这个任务还没关联任何会话"——仍开 sheet，走空态 + 关联入口，
   // 保证"点开卡片一定看得到东西"，而不是又弹一个编辑框。
+  // opts.sessions / opts.goalScheduleId 是收件箱行（stall）路径的新入参：前者直接给
+  // 权威会话列表（那里只有 id 数组，没有 todo 对象可解析），后者给 🎯 目标循环入口。
+  // 两者都缺省时行为与看板卡片路径完全一致（回落 todo + todo.dispatched_schedule_id）。
   async function showSessionTranscript(sid, opts = {}) {
     const root = $("modal-root");
     if (!root) return;
@@ -1487,7 +1519,9 @@
     };
     const onBackdropClick = (e) => { if (e.target === root) close(); };
 
-    const ids = todoSessionIds(opts.todo);
+    const ids = (Array.isArray(opts.sessions) && opts.sessions.length)
+      ? opts.sessions
+      : todoSessionIds(opts.todo);
     const initialSid = sid || ids[0] || null;
     const shouldFocusClose = root.contains(document.activeElement);
     root.innerHTML = "";
@@ -1645,9 +1679,11 @@
     }
 
     // goal 任务：sheet 头部给一个跳转目标循环详情的入口（复用现有 openGoalDetail，
-    // 不在这里重画 goal_iterations）。
-    const scheduleId = (opts.todo && opts.todo.dispatched_schedule_id)
-      ? opts.todo.dispatched_schedule_id.trim() : "";
+    // 不在这里重画 goal_iterations）。schedule id 两个来源：收件箱行直接传
+    // goalScheduleId（那里的 ref_id 就是 schedule id），看板卡片从 todo 上取。
+    const scheduleId = (opts.goalScheduleId || "")
+      || ((opts.todo && opts.todo.dispatched_schedule_id)
+        ? opts.todo.dispatched_schedule_id.trim() : "");
     if (scheduleId) {
       tabsEl.classList.remove("hidden");
       const goalBtn = el("button", "transcript-goal", "🎯 目标循环");

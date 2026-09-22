@@ -11,6 +11,9 @@ from pathlib import Path
 APP_JS = (
     Path(__file__).resolve().parents[1] / "web" / "app.js"
 ).read_text(encoding="utf-8")
+STYLE_CSS = (
+    Path(__file__).resolve().parents[1] / "web" / "style.css"
+).read_text(encoding="utf-8")
 
 
 def _continue_handler() -> str:
@@ -36,3 +39,10 @@ def test_cost_capped_prompt_prefills_only_when_limit_known():
     body = _continue_handler()
     # 预填第二参：有上限才预填具体值，缺失时传空串（留空 = 不改上限，由后端沿用原值）
     assert 'hasLimit ? String(rel.cost_limit) : ""' in body
+
+
+def test_stall_row_main_is_clickable():
+    """行主体可点开只读会话预览，光标得跟着变（否则用户不知道这儿能点）。"""
+    m = re.search(r"\.stall-row-main \{(?P<body>.*?)\n\}", STYLE_CSS, re.DOTALL)
+    assert m, "style.css 里找不到 .stall-row-main 规则块"
+    assert "cursor: pointer" in m.group("body")

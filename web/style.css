@@ -1646,6 +1646,7 @@ select[multiple] { min-height: 80px; height: auto; }
   flex-direction: column;
   gap: 3px;
   overflow: hidden;
+  cursor: pointer;  /* 可点开只读会话预览（动作按钮在 .stall-row-actions，不受影响） */
 }
 .stall-row-top {
   display: flex;

@@ -72,6 +72,38 @@ def test_kanban_row_main_is_focusable_as_preview_opener():
     assert 'tabindex="-1"' in m.group(1)
 
 
+def test_transcript_accepts_explicit_sessions_and_goal_schedule_id():
+    """向收件箱行泛化：opts.sessions 是权威会话列表（那一侧没有 todo 对象可解析），
+    opts.goalScheduleId 给 🎯 入口。两个入参都缺省时必须回落旧路径（看板卡片行为不变）。"""
+    body = _function_body("showSessionTranscript")
+    assert "opts.sessions" in body
+    assert "todoSessionIds(opts.todo)" in body
+    assert "opts.goalScheduleId" in body
+    # goal 入口的旧来源仍在：两个来源走同一条判断，别把看板那条删了
+    assert "opts.todo.dispatched_schedule_id" in body
+
+
+def test_stall_row_main_opens_the_same_preview():
+    """收件箱行主体 = 同一个只读预览弹层：三类 kind 的会话来源在后端 related 里
+    （todo_idle -> session_ids，dispatch_* -> child_session_ids），goal 类用行自身的
+    session_id + ref_id 当目标循环入口；无会话时只提示、不开空弹层。"""
+    body = _function_body("renderStallRow")
+    assert "showSessionTranscript(" in body
+    assert "session_ids" in body and "child_session_ids" in body
+    assert 'it.session_id' in body and "it.ref_id" in body
+    assert "该事项无关联会话" in body
+    # 只有 main 一个点击入口，动作按钮区照旧各有各的 onclick
+    assert body.count("showSessionTranscript(") == 1
+
+
+def test_stall_row_main_is_focusable_as_preview_opener():
+    """与 .kanban-row-main 同款教训：非可聚焦元素上 opener.focus() 是静默 no-op。"""
+    m = re.search(r'<div class="stall-row-main"([^>]*)>', APP_JS)
+    assert m, "app.js 里找不到 .stall-row-main 的元素构建处"
+    assert 'tabindex="-1"' in m.group(1)
+    assert "点击查看会话内容" in m.group(1)
+
+
 def test_transcript_card_overrides_modal_narrow_width():
     """会话预览要覆盖 .modal-card 的 max-width: 340px，否则正文被挤成一条窄缝。"""
     m = re.search(r"\.transcript-card \{(?P<body>.*?)\n\}", STYLE_CSS, re.DOTALL)
