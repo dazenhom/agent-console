@@ -1190,6 +1190,11 @@ select[multiple] { min-height: 80px; height: auto; }
    否则正在看的那行 border 高亮会被吃掉。 */
 #session-list-review-unseen li { background: var(--accent-soft); border-left-color: var(--accent); }
 #session-list-review-unseen li .s-title { font-weight: 700; }
+/* 未查看段的行底色是 --accent-soft，ID 选择器恒压过 .session-list li:hover 的 --bg-3，
+   hover 反馈会整段消失（box-shadow 没被压，故只有底色分层丢失）。这里照同款手法补一条显式
+   hover：底色在 --accent-soft 基础上加深一档（本文件没有更深的 accent-soft 变量，取字面值）。
+   必须排在下面 li.active 之前——两者优先级相同（1,1,1），后者靠顺序赢，选中态才不会被 hover 顶掉。 */
+#session-list-review-unseen li:hover { background: #d8e6fd; }
 #session-list-review-unseen li.active { border-color: var(--accent); }
 /* 未查看段全看完的空态：不能复用 fillList 的「这里还没有会话」（那是"没有会话"，口径不符） */
 .review-allread { padding: 14px 4px; font-size: 12.5px; color: var(--muted); }
