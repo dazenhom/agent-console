@@ -1775,9 +1775,11 @@
     // 无关联会话时给一条轻量提示，引导用户去编辑里关联 Agent
     const sessCount = (t.session_ids && t.session_ids.length) || (t.session_id ? 1 : 0);
 
+    // .kanban-row-main 带 tabindex="-1"：它是会话预览的 opener，关闭预览时要把焦点还回来；
+    // 纯 div 默认不可聚焦，opener.focus() 会静默失效导致焦点掉到 body。不进 Tab 序。
     row.innerHTML = `
       <span class="kanban-dot ${dot.cls}">${dot.html}</span>
-      <div class="kanban-row-main">
+      <div class="kanban-row-main" tabindex="-1">
         <span class="kanban-row-title">${escapeHtml(t.title)}</span>
         ${progress ? `<span class="kanban-row-progress">${escapeHtml(progress)}</span>`
           : (sessCount ? "" : `<span class="kanban-row-hint">＋ 点击关联 Agent</span>`)}

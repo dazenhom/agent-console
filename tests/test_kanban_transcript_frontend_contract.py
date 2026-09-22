@@ -63,6 +63,15 @@ def test_jump_falls_back_to_loading_archived_sessions():
     assert "doJumpToSession(" not in APP_JS.replace("doJumpToSessionEnsured(", "")
 
 
+def test_kanban_row_main_is_focusable_as_preview_opener():
+    """预览的 opener 是 .kanban-row-main（纯 div），不带 tabindex 时 focus() 是静默
+    no-op，Esc 关闭预览后焦点掉到 body —— 键盘/读屏用户丢失位置。这里钉住 tabindex
+    只在构建处出现一次，防止将来重构把属性丢掉。"""
+    m = re.search(r'<div class="kanban-row-main"([^>]*)>', APP_JS)
+    assert m, "app.js 里找不到 .kanban-row-main 的元素构建处"
+    assert 'tabindex="-1"' in m.group(1)
+
+
 def test_transcript_card_overrides_modal_narrow_width():
     """会话预览要覆盖 .modal-card 的 max-width: 340px，否则正文被挤成一条窄缝。"""
     m = re.search(r"\.transcript-card \{(?P<body>.*?)\n\}", STYLE_CSS, re.DOTALL)
