@@ -313,6 +313,9 @@ def init_db() -> None:
         # tasks 只覆盖 2.4% 的会话，徽章必须有这个会话级字段才能不恒灰。
         _add_col("sessions", "last_outcome TEXT DEFAULT ''")
         _add_col("sessions", "last_outcome_at REAL DEFAULT 0")
+        # 已读水位：前端点开会话时写入，用于「未查看」判定。原来只存浏览器 localStorage，
+        # 多设备下手机看过桌面仍标未读。判定取 max(本列, 本地记录)。
+        _add_col("sessions", "last_seen_at REAL DEFAULT 0")
         # 看板进展摘要三列：正文 / 生成时间 / 生成时所依据的 jsonl mtime（用于缓存判断）
         _add_col("todos", "progress TEXT DEFAULT ''")
         _add_col("todos", "progress_at REAL DEFAULT 0")
@@ -643,6 +646,16 @@ def update_session(sid: str, _touch: bool = True, **fields) -> None:
 
 def set_session_pinned(sid: str, pinned: bool) -> None:
     _exec("UPDATE sessions SET pinned=? WHERE id=?", (1 if pinned else 0, sid))
+
+
+def set_session_seen(sid: str, ts: float | None = None) -> None:
+    """写已读水位。故意不走 update_session——那会刷 updated_at，把刚点开的会话顶到列表最前
+    并再次标成未读（2026-09-22 踩过）。水位 = max(ts 或当前时间, updated_at)：抬到 updated_at
+    是为了防调用方只传了本地的 updated_at、恰好与 seen 同毫秒时仍判未读。"""
+    _exec(
+        "UPDATE sessions SET last_seen_at=MAX(?, COALESCE(updated_at,0)) WHERE id=?",
+        (ts or _now(), sid),
+    )
 
 
 def reconcile_stale_running() -> None:

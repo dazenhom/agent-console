@@ -319,6 +319,16 @@ async def unpin_session(sid: str):
     return {"ok": True, "pinned": False}
 
 
+# 标记已读：只写水位、不刷 updated_at（否则刚点开的会话会被顶到列表最前又变未读）。
+# 不广播 WS——未读是"我"的视角而非会话状态，广播会让别的窗口白白整表重建。
+@app.post("/api/sessions/{sid}/seen", dependencies=[Depends(require_auth)])
+async def mark_session_seen(sid: str):
+    if not db.get_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    db.set_session_seen(sid)
+    return {"ok": True}
+
+
 @app.post("/api/sessions/{sid}/resume", dependencies=[Depends(require_auth)])
 async def resume_session(sid: str):
     sess = db.get_session(sid)
