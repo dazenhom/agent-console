@@ -283,6 +283,10 @@ GOAL_CMD_TIMEOUT = float(os.environ.get("GOAL_CMD_TIMEOUT", "1800"))
 GOAL_SPILL_PRODUCED_BYTES = int(os.environ.get("GOAL_SPILL_PRODUCED_BYTES", "6000"))
 GOAL_SPILL_CMD_RESULT_BYTES = int(os.environ.get("GOAL_SPILL_CMD_RESULT_BYTES", "4000"))
 GOAL_SPILL_GIT_DIFF_BYTES = int(os.environ.get("GOAL_SPILL_GIT_DIFF_BYTES", "3000"))
+# 确定性证据包（server/verify_evidence.py：文件树 + 改动文件摘要 + 完成标准关键词命中行）
+# 在 prompt 里的字节上限。证据是"先替评委做掉无争议探查"的产物，命令数才是成本杠杆
+# （input ≈ 19768*T + 1313*T²），所以给它独立预算，不与 produced/git_diff 抢额度。
+GOAL_SPILL_EVIDENCE_BYTES = int(os.environ.get("GOAL_SPILL_EVIDENCE_BYTES", "8000"))
 # 验收取证（produced）从会话 jsonl 抽多少：原来复用看板摘要的口径（尾 40 行、
 # assistant 每条 300 字、user 200 字、总 3000 字），实测真实会话 jsonl 有 0.2~6MB、
 # 几百到数千行，抽出来只剩 1000~1400 字（约 0.05%），跑通的测试结论/报错原因基本都被

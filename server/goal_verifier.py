@@ -7,9 +7,25 @@
 CLAUDE_MODEL_KANBAN，在没有 verify_command 时验收员要自己去 workdir 里 Glob/Read
 核实产出，复杂真实项目（大型数据管线等）常在旧的 300s 超时内探不完、频繁"验收超时按
 未完成继续"（多个目标循环的系统性未完成出口）；换成更强的 gpt-5.6-terra + 600s 缓解。
-任何不确定（超时/异常/无输出/首行非 DONE）一律当 CONTINUE——绝不误判完成，宁可多迭代
+任何不确定（超时/异常/无输出/判据缺失）一律当 CONTINUE——绝不误判完成，宁可多迭代
 一轮也不提前收工。命令拼装与 JSONL 解析统一走 codex_oneshot.run_codex_oneshot_text。
+
+证据链设计（成本治理，2026-09-22 上线）：
+- 成本事实：goal_verify 占 oneshot 成本 96.5%，input ≈ 19768*T + 1313*T²（T = 命令数 + 1），
+  corr(命令数, input) = 0.806——每多一条自探命令就多带一份完整上下文，压命令数是唯一有效
+  杠杆。评委 317 条命令里 read_file/grep/list_tree/git_status_diff/stat 占 64.4%，
+  都能被确定性代码替代。
+- 因此验收 prompt 里除产出/命令结果/git diff 外，多一段「已为你预先收集的工作区证据」
+  （server/verify_evidence.py：文件树 + 本轮改动文件摘要 + 完成标准关键词命中行），
+  并显式引导评委先据证据判断、不要重复已提供的 ls/find/git status 类探查。
+  只塞证据不加引导语不会减少自探（已有数据证明），故两者同批上线。
+- 红线（历史教训，不可回退）：不给评委设硬命令轮次上限；不降 GOAL_VERIFY_MODEL；
+  不降 GOAL_VERIFY_TIMEOUT（900s 余量是"探不完 → 假 CONTINUE"的保险，便宜模型验收曾
+  系统性超时误判）。省成本只能靠"少让评委白探"，不能靠"让评委探不动"。
+- 判据解析：扫描全文取第一个独占一行的裸 DONE/CONTINUE（见 job_store.parse_done_verdict），
+  不是"首行非 DONE 就当 CONTINUE"——terra 档评委常先给前导说明再给判定。
 """
+
 from . import config, db, spill
 from .codex_oneshot import run_codex_oneshot_text
 from .job_store import parse_done_verdict
@@ -17,7 +33,7 @@ from .job_store import parse_done_verdict
 
 def _build_prompt(goal: str, stop_condition: str, produced: str,
                   cmd_result: str = "", git_diff: str = "", workdir: str | None = None,
-                  session_id: str | None = None) -> str:
+                  session_id: str | None = None, evidence: str = "") -> str:
     # 目标/完成标准是人写的短文本，盲截断即可（超长本身说明目标没写清）。
     # 三段证据走 spill：全文落盘 + 首尾预览 + 文件路径，避免被砍掉的尾部无声消失
     # 而导致假 CONTINUE（见 server/spill.py 开头）。
@@ -35,6 +51,11 @@ def _build_prompt(goal: str, stop_condition: str, produced: str,
         (git_diff or "").strip(), config.GOAL_SPILL_GIT_DIFF_BYTES,
         label="git_diff", session_id=session_id,
     )
+    # 预先收集好的工作区证据：独立预算（GOAL_SPILL_EVIDENCE_BYTES），不与上面三段抢额度
+    evidence = spill.spill_text(
+        (evidence or "").strip(), config.GOAL_SPILL_EVIDENCE_BYTES,
+        label="evidence", session_id=session_id,
+    )
     workdir = (workdir or "").strip()
     parts = [
         "你是一个严格的验收员。下面是一个 AI 开发任务的【目标】【完成标准】和【本轮产出片段】。"
@@ -47,7 +68,12 @@ def _build_prompt(goal: str, stop_condition: str, produced: str,
         "任何不确定、部分完成、或无法从产出中确认的情况，一律输出 CONTINUE。\n"
         "- 从第二行起，简述判断理由；若为 CONTINUE，请给出下一步应该做什么的具体指示。\n"
         "- 下方证据若出现「此处省略 N 字节，完整内容已存于文件：<路径>」，说明该段证据过长已落盘："
-        "请直接读取该文件或用 grep 检索，据完整内容判断，不要因为预览被省略就判 CONTINUE。\n\n"
+        "请直接读取该文件或用 grep 检索，据完整内容判断，不要因为预览被省略就判 CONTINUE。\n"
+        "- 下方已为你预先收集了工作区文件树、本轮改动文件清单与完成标准关键词命中行，"
+        "请先据这些证据判断；这些信息无需再用 shell 重新获取。\n"
+        "- 仍需核实时请直接针对存疑点执行命令（如跑测试、查库、读具体文件行），"
+        "不要重复已提供的 ls/find/git status/git log 类探查；你有充分的时间预算，"
+        "该核实的必须核实，不要为省事直接判定。\n\n"
     ]
     if workdir:
         # 隔离 worktree 等场景：明确告知评委去哪个目录核实产出，避免在错误的 cwd 下
@@ -63,20 +89,26 @@ def _build_prompt(goal: str, stop_condition: str, produced: str,
         parts.append(f"\n【验收命令执行结果（退出码 0 通常表示通过）】\n{cmd_result}\n")
     if git_diff:
         parts.append(f"\n【本轮代码改动（git diff --stat）】\n{git_diff}\n")
+    if evidence:
+        parts.append(f"\n【已为你预先收集的工作区证据】\n{evidence}\n")
     return "".join(parts)
 
 
 async def verify(goal: str, stop_condition: str, produced: str,
                  session_id: str | None = None, schedule_id: str | None = None,
                  cmd_result: str = "", git_diff: str = "",
-                 workdir: str | None = None) -> tuple[bool, str]:
+                 workdir: str | None = None, evidence: str = "") -> tuple[bool, str]:
     """返回 (done, reason)。done=True 表示判定达成；任何异常/超时/无输出都返回 (False, 说明)。
 
     cmd_result / git_diff 为可选的客观上下文（验收命令输出、代码改动 stat），有则拼进 prompt。
+    evidence 为确定性证据包（server/verify_evidence.collect 的产物，文件树 + 本轮改动文件
+    摘要 + 完成标准关键词命中行），有则拼成「已为你预先收集的工作区证据」段，并配套 prompt
+    引导语让评委少做重复探查（只塞证据不加引导语不会减少自探）；为空时 prompt 与旧版一致。
     workdir 为任务实际执行目录（如隔离 worktree）：非空时既写进 prompt 告知评委去哪核实，
     也作为子进程 cwd，避免评委在错误目录下核实产出而假阴性；None 时保持原行为。"""
     prompt = _build_prompt(goal, stop_condition, produced, cmd_result=cmd_result,
-                           git_diff=git_diff, workdir=workdir, session_id=session_id)
+                           git_diff=git_diff, workdir=workdir, session_id=session_id,
+                           evidence=evidence)
     jid, result, stderr_text, status = await run_codex_oneshot_text(
         "goal_verify", prompt, config.GOAL_VERIFY_TIMEOUT,
         model=config.GOAL_VERIFY_MODEL, session_id=session_id, schedule_id=schedule_id,
