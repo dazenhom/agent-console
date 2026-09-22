@@ -922,6 +922,9 @@ async def schedules_update(sid: str, payload: dict):
                 "goal_status": "running", "iter_count": 0, "last_feedback": "",
                 # planned 相关状态全部复位，旧子任务清空——下个 tick 会按新目标重新拆解
                 "plan_status": "", "active_subtask_id": "",
+                # 改成 goal 等同于从头重跑：清掉续跑注入文本，否则上一条目标残留的背景
+                # 会窜到新目标的第一次迭代 prompt 里
+                "resume_note": "",
             })
             db.replace_goal_subtasks(sid, [])
             fields["next_run"] = scheduler.compute_next_run("goal", None, None)
@@ -939,6 +942,8 @@ async def schedules_update(sid: str, payload: dict):
             # planned 循环重启也要复位拆解态并清子任务，才能按当前目标重新拆
             fields["plan_status"] = ""
             fields["active_subtask_id"] = ""
+            # 从头重跑：清掉续跑注入文本，否则"上次为什么停"的背景会窜进新循环第一轮
+            fields["resume_note"] = ""
             db.replace_goal_subtasks(sid, [])
             fields["next_run"] = scheduler.compute_next_run("goal", None, None)
         elif not sch.get("next_run"):
@@ -978,9 +983,15 @@ async def _continue_goal_impl(sid: str, payload: dict):
     （从头重跑），这里只抬 max_iterations + 复位 running/enabled + 重算 next_run，绝不碰历史。
     payload 全可选：prompt（改目标）、stop_condition（改完成标准）、add_iterations（追加轮数，默认 3）、
     verify_command（改验收命令）、exec_mode（改 solo/team）、max_cost_usd（改成本上限，Stall Watch
-    收件箱对 goal_cost_capped 告警点「继续」时由前端 prompt 新上限后经此字段透传）。这几个字段调度器每轮都现读现用
+    收件箱对 goal_cost_capped 告警点「继续」时由前端表单给新上限后经此字段透传）、resume_note
+    （本次续跑的附加指示，见下）。这几个字段调度器每轮都现读现用
     （scheduler._build_goal_prompt/_gather_verify_context），不会改写已判过的历史轮，故续跑时可放心改；
-    唯独 session_id 不在此列——所有历史轮次的会话上下文/worktree 都挂在同一个会话上，续跑不允许换会话。"""
+    唯独 session_id 不在此列——所有历史轮次的会话上下文/worktree 都挂在同一个会话上，续跑不允许换会话。
+
+    resume_note 是「一次性」字段：这里用它 + 改库前的 sch 快照拼好整段注入文本（停滞原因背景 +
+    用户指示）存进 schedules.resume_note，调度器两条 prompt 链（flat 的 _build_goal_prompt /
+    planned 的 _build_subtask_prompt，planned 同样生效）在下一轮读到非空即注入，start_turn 成功后
+    立刻清空，所以只影响续跑后的第一轮，之后各轮回到常规 prompt。"""
     sch = db.get_schedule(sid)
     if not sch:
         raise HTTPException(status_code=404, detail="定时任务不存在")
@@ -1032,6 +1043,12 @@ async def _continue_goal_impl(sid: str, payload: dict):
         if em not in ("solo", "team"):
             raise HTTPException(status_code=400, detail="exec_mode 仅支持 solo / team")
         fields["exec_mode"] = em
+    note = (payload.get("resume_note") or "").strip()
+    if len(note) > 2000:
+        raise HTTPException(status_code=400, detail="续跑指示不要超过 2000 字")
+    # 背景必须用改库前的 sch 快照拼：上面 fields 已把 goal_status/enabled 复位成 running/1，
+    # 落库后再也看不出"这次是从耗尽还是从人工暂停续的、停在第几轮"
+    fields["resume_note"] = scheduler.build_resume_note(sch, note)
     db.update_schedule(sid, **fields)
     # 用户从目标详情页（而非停滞收件箱）续跑时，收件箱里对应告警即刻了结，
     # 不必等下一轮扫描复核；没有告警时是幂等空操作。
@@ -1294,6 +1311,8 @@ async def stalls_continue(aid: str, payload: dict | None = None):
       goal_cost_capped           -> _continue_goal_impl（默认 add_iterations=3；前端会带
                                     新 max_cost_usd，续跑时重置成本窗口）
       goal_exhausted/goal_paused -> _continue_goal_impl（默认 add_iterations=3）
+                                    以上 goal 三类都支持 payload.resume_note（本次续跑的
+                                    附加指示，一次性注入续跑后的第一轮）；其余 kind 不支持
       goal_stuck                 -> 复位 running + 立即到期，交 scheduler tick 自然接管
       todo_idle                  -> triage._dispatch_existing_todo（建隔离会话+目标循环）
       dispatch_failed            -> 该 plan 下 failed/error 子任务逐个 retry_subtask

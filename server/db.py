@@ -353,6 +353,11 @@ def init_db() -> None:
         # 供 Stall Watch 按原因分级告警（成本熔断用更短的阈值、更醒目的文案），
         # 不必再去 LIKE 匹配 last_feedback 的自然语言。
         _add_col("schedules", "finish_reason TEXT DEFAULT ''")
+        # 「继续（带记忆续跑）」的一次性注入文本：点「继续」时由 main._continue_goal_impl 用
+        # 改库前的 schedule 快照拼好（停滞原因 + 用户本次附加指示）存进来，调度器两条 prompt
+        # 链（_build_goal_prompt / _build_subtask_prompt）读到非空即插在验收反馈之后，
+        # start_turn 成功后立刻清空——只影响续跑后的第一轮，之后各轮回到常规 prompt。
+        _add_col("schedules", "resume_note TEXT DEFAULT ''")
         # 老库 goal_iterations 补 produced_excerpt 列（新库已在 CREATE TABLE 里带上）
         _add_col("goal_iterations", "produced_excerpt TEXT DEFAULT ''")
         # 阶段4：给四张来源子表补 work_item_id 关联列，把它们挂到统一的 work_items 观测视图。
@@ -1460,6 +1465,20 @@ def list_goal_iterations(schedule_id: str) -> list[dict]:
         else:
             d["task"] = None
     return result
+
+
+def last_scored_iteration_feedback(schedule_id: str) -> str:
+    """该目标循环最近一次"有验收判定"那轮的反馈文本（verdict 非空中 iter_no 最大的一条）。
+
+    专供续跑背景拼装：不能用 list_goal_iterations——它会按 task_id 逐轮回查 tasks
+    （N+1），只为拿一条 feedback 白付几十次查询。取不到（从没验收过）返回空串。
+    """
+    rows = _query(
+        "SELECT feedback FROM goal_iterations WHERE schedule_id=? AND COALESCE(verdict,'')<>''"
+        " ORDER BY iter_no DESC, started_at DESC LIMIT 1",
+        (schedule_id,),
+    )
+    return (rows[0][0] or "") if rows else ""
 
 
 def list_goal_loops(limit: int = 50) -> list[dict]:

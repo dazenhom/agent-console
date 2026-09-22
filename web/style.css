@@ -1633,6 +1633,7 @@ select[multiple] { min-height: 80px; height: auto; }
 .stall-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;  /* 行内续跑表单（flex-basis:100%）要能换到第二行，不挤压主体与按钮 */
   gap: 10px;
   padding: 8px 8px;
   border-radius: 6px;
@@ -1691,6 +1692,31 @@ select[multiple] { min-height: 80px; height: auto; }
   font-size: 12px;
 }
 .stall-row[aria-busy="true"] { opacity: .65; }
+
+/* 停滞行内展开的续跑表单：独占一行（flex-basis:100% 配合 .stall-row 的 flex-wrap），
+   落在 .stall-row-main 之外，点表单不会触发主体 onclick 的只读会话预览。 */
+.stall-continue-form {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px;
+}
+.stall-continue-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--muted, #6b7280);
+}
+.stall-continue-form .form-input {
+  width: 100%;
+  box-sizing: border-box;  /* 移动端宽度 100% + padding 不溢出容器 */
+}
+.stall-continue-actions {
+  display: flex;
+  gap: 6px;
+}
 
 /* 活跃任务完整列表：与待分诊 sheet 一致，内部独立滚动。 */
 .kanban-sheet-card {

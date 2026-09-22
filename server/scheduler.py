@@ -137,12 +137,74 @@ def _solo_expand(sch: dict, prompt: str) -> str:
     return prompt
 
 
+# finish_reason（_finish_goal 写的结构化终止原因）→ 续跑背景里的人话。续跑要交代"上次
+# 为什么停"，直接甩 finish_reason 的英文码没用；未知/空值归到"验收未通过且轮次耗尽"。
+_FINISH_REASON_TEXT = {
+    "cost_cap": "成本达到上限（预算耗尽）",
+    "iter_cap": "迭代轮数达到上限",
+    "plan_fail": "目标拆解失败",
+    "plan_error": "目标拆解异常",
+}
+_RESUME_DEFAULT_REASON = "验收未通过且轮次耗尽"
+
+
+def build_resume_note(sch: dict, user_note: str) -> str:
+    """拼一次「继续（带记忆续跑）」的注入文本：续跑背景 + 用户本次的附加指示。
+
+    在点「继续」那一刻由 main._continue_goal_impl 用**改库前**的 sch 快照算好（改库后
+    goal_status/enabled 已被复位成 running/1，就算不出"为什么停的"了），存进
+    schedules.resume_note；调度器两条 prompt 链读到非空即注入，start_turn 成功后清空，
+    所以只影响续跑后的第一轮。
+
+    背景里的停滞原因不能用 last_feedback：_finish_goal 进终态时会把熔断文案（"已达成本
+    上限…"）覆盖上去，真实末轮验收反馈在 goal_iterations 里 verdict 非空的那条。人工暂停
+    更不能读 finish_reason——暂停走 PUT 只改 enabled，库里残留的是上一次终止时的旧原因，
+    照读会编造出"成本达到上限"这类假背景。
+    """
+    note = (user_note or "").strip()
+    iter_count = int(sch.get("iter_count") or 0)
+    max_iter = int(sch.get("max_iterations") or config.GOAL_MAX_ITERATIONS)
+    status = sch.get("goal_status") or ""
+    reason = (sch.get("finish_reason") or "").strip()
+    # 成本熔断只在「确系成本终止」时认定：人工暂停的库里可能残留着上次的 cost_cap，
+    # 照读会平白多说一句"重新开了成本窗口"。
+    cost_capped = status == "exhausted" and reason == "cost_cap"
+    if status == "exhausted":
+        why = _FINISH_REASON_TEXT.get(reason, _RESUME_DEFAULT_REASON)
+    else:
+        # 续跑的准入条件只有「已耗尽 / 人工暂停」两种，非终态即人工暂停
+        why = "被人工暂停"
+    from .stall_watch import _fmt_dur  # 停滞时长的既有格式化口径，不另写一份
+    now = time.time()
+    anchor = float(sch.get("last_run") or sch.get("created_at") or now)
+    stalled = _fmt_dur(max(0.0, now - anchor))
+    lines = [f"上一轮目标循环在第 {iter_count}/{max_iter} 轮因「{why}」停止，"
+             f"之后停滞 {stalled}才被人工续跑。"]
+    # 末轮真实验收反馈（截断 400 字）：拿不到就不写这一行，不编内容
+    try:
+        fb = db.last_scored_iteration_feedback(sch.get("id") or "").strip()
+    except Exception:
+        fb = ""
+    if fb:
+        lines.append("最后一轮验收反馈：" + (fb if len(fb) <= 400 else fb[:400]))
+    if cost_capped:
+        lines.append("注意：这次续跑重新开了成本窗口，请优先选省钱的做法，"
+                     "先拿到可验收的最小成果，别把预算花在探索上。")
+    parts = ["【续跑背景｜仅供参考，不是新任务】\n" + "\n".join(lines)]
+    if note:
+        parts.append("【本次续跑的额外指示｜优先遵守】\n" + note)
+    return "\n\n".join(parts)
+
+
 def _build_goal_prompt(sch: dict) -> str:
-    """拼一轮迭代指令：目标 + 完成标准 +（有则）上轮验收反馈 + 轮次提示。
+    """拼一轮迭代指令：目标 + 完成标准 +（有则）上轮验收反馈 +（有则）续跑背景 + 轮次提示。
 
     exec_mode=='team' 时在最前面注入 /console-dev 四角流水线（复用 skill_store 的斜杠展开），
     让这一轮以 analyst→developer→reviewer→ops 的方式产出；solo（默认）走裸 prompt，
     但目标本身以 /<skill> 开头时同样在执行时展开，行为向普通会话看齐。
+
+    resume_note 是「继续」时写好的一次性注入文本（见 build_resume_note），插在验收反馈
+    之后、轮次提示之前，只在本轮出现，start_turn 成功后由 _tick_goal 清空。
     """
     iter_no = int(sch.get("iter_count") or 0) + 1
     parts = [
@@ -152,6 +214,9 @@ def _build_goal_prompt(sch: dict) -> str:
     feedback = (sch.get("last_feedback") or "").strip()
     if feedback:
         parts.append("\n【上一轮验收反馈，请针对性改进】\n" + feedback)
+    note = (sch.get("resume_note") or "").strip()
+    if note:
+        parts.append("\n" + note)
     parts.append(f"\n（这是第 {iter_no} 轮迭代，请朝完成标准推进，做完即可，不必啰嗦汇报。）")
     return _team_wrap(sch, "".join(parts))
 
@@ -218,7 +283,8 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
         db.update_schedule(scid, next_run=compute_next_run("goal", None, None, after=now))
         return
     db.update_schedule(scid, goal_status="producing", iter_count=iter_count + 1,
-                       last_run=now, next_run=compute_next_run("goal", None, None, after=now))
+                       last_run=now, next_run=compute_next_run("goal", None, None, after=now),
+                       resume_note="")  # 注入只对第一轮生效：起回合成功即清，下一轮回常规 prompt
     _broadcast_goal_progress(scid)
     # 记录本轮迭代历史：start_turn 内已同步落 tasks 记录，此刻取回即为本轮任务
     # 阶段4：顺手关联 work_item（按 schedule id 反查影子记录），拿不到就留空，不影响主流程
@@ -487,8 +553,12 @@ async def _finish_goal(scid: str, sess: dict, status: str, reason: str,
 # producing=某子任务回合在跑，verifying=后台在验收（子任务级或收尾级，由 plan_status 区分）。
 
 def _build_subtask_prompt(sch: dict, subtask: dict, done_cnt: int, total: int) -> str:
-    """拼某个子任务的委派指令：总目标背景 + 当前子任务 +（重试时）上轮反馈 + 进度提示。
-    exec_mode=='team' 时同样注入 /console-dev 流水线。"""
+    """拼某个子任务的委派指令：总目标背景 + 当前子任务 +（重试时）上轮反馈 +（续跑后首轮）续跑背景。
+    exec_mode=='team' 时同样注入 /console-dev 流水线。
+
+    planned 链的续跑同样要带记忆：这条 prompt 过去完全不读 last_feedback，续跑背景只能从
+    resume_note 走，否则「换个跑法」的指示在 planned 目标上会被静默丢掉。
+    """
     parts = [
         "你在按计划分步推进一个较大的目标，现在只需专注完成【当前子任务】，做完即可，不必啰嗦汇报。",
         "\n【总目标】\n" + (sch.get("prompt") or "").strip(),
@@ -501,6 +571,9 @@ def _build_subtask_prompt(sch: dict, subtask: dict, done_cnt: int, total: int) -
     fb = (subtask.get("last_feedback") or "").strip()
     if fb:
         parts.append("\n【上一轮该子任务的验收反馈，请针对性改进】\n" + fb)
+    note = (sch.get("resume_note") or "").strip()
+    if note:
+        parts.append("\n" + note)
     return _team_wrap(sch, "".join(parts))
 
 
@@ -589,7 +662,8 @@ async def _tick_goal_planned(sch: dict, sess: dict, now: float) -> None:
     db.update_goal_subtask(nxt["id"], status="running", attempts=int(nxt.get("attempts") or 0) + 1)
     db.update_schedule(scid, goal_status="producing", active_subtask_id=nxt["id"],
                        iter_count=iter_count + 1, last_run=now,
-                       next_run=compute_next_run("goal", None, None, after=now))
+                       next_run=compute_next_run("goal", None, None, after=now),
+                       resume_note="")  # 同 flat 链：注入只对本轮（续跑后第一个子任务）生效
     _broadcast_goal_progress(scid)
     # 阶段4：顺手关联 work_item（按 schedule id 反查），拿不到留空，不影响主流程
     try:

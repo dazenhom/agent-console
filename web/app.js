@@ -1062,6 +1062,61 @@
     });
   }
 
+  // goal 三类停滞事项的行内续跑表单：能顺手定新成本上限（仅成本熔断）+ 写一句"这次换个
+  // 跑法"的指示（resume_note，后端拼进续跑后的第一轮 prompt）。返回的元素要挂在
+  // .stall-row 上、必须在 .stall-row-main 之外——行主体的 onclick 是打开只读会话预览，
+  // 表单若放进 main 里，点一下输入框就会弹预览把表单顶掉。
+  function buildStallContinueForm(it, onSubmit, onCancel) {
+    const form = el("div", "stall-continue-form");
+    const rel = it.related || {};
+    let costHtml = "";
+    if (it.kind === "goal_cost_capped") {
+      // related 缺失（后端成本取数失败时整块退化为空）时不能硬编码一个上限兜底：
+      // GOAL_MAX_COST_USD 是可配 env，写成 20 只在默认配置下巧合正确，会拿着错数字
+      // 诱导用户定预算；此时改说「未知」，输入框也不预填（留空 = 不改上限，后端沿用原值）。
+      const hasLimit = rel.cost_limit != null && String(rel.cost_limit) !== "";
+      const limitText = hasLimit ? `上限 $${rel.cost_limit}` : "上限未知";
+      const spentText = rel.spent_usd != null && !Number.isNaN(Number(rel.spent_usd))
+        ? `$${Number(rel.spent_usd).toFixed(2)}` : "未知";
+      // 文案搬自原来的 prompt()：花费/上限写在 label 上而不是 placeholder——有上限时输入框
+      // 是预填的，placeholder 根本不会显示，用户就看不到"本窗口已花多少"了
+      costHtml = `<label>新的成本上限（美元）。该会话本成本窗口已花 ${spentText} / ${limitText}。留空则${hasLimit ? `沿用 $${rel.cost_limit}` : "不设新上限"}
+        <input class="form-input" type="number" min="0" step="0.01" data-act="continue-cost"
+          value="${hasLimit ? String(rel.cost_limit) : ""}" />
+      </label>`;
+    }
+    form.innerHTML = `${costHtml}
+      <label>这次换个跑法（可选）
+        <textarea class="form-input tall" rows="2" data-act="continue-note"
+          placeholder="例：先做完 A 再动 B；优先用便宜的方式，别再全量重跑"></textarea>
+      </label>
+      <div class="stall-continue-actions">
+        <button class="kanban-act-btn btn-edit" type="button" data-act="continue-submit">确认继续</button>
+        <button class="kanban-act-btn" type="button" data-act="continue-cancel">取消</button>
+      </div>`;
+    form.querySelector("[data-act='continue-submit']").onclick = async () => {
+      const costEl = form.querySelector("[data-act='continue-cost']");
+      let maxCost;
+      if (costEl) {
+        const raw = costEl.value.trim();
+        if (raw !== "") {
+          const v = Number(raw);
+          if (!(v >= 0)) { toast("上限需为非负数字", "error"); return; }
+          maxCost = v;
+        }
+      }
+      const resumeNote = (form.querySelector("[data-act='continue-note']").value || "").trim();
+      if (resumeNote.length > 2000) { toast("续跑指示不要超过 2000 字", "error"); return; }
+      const body = {};
+      // 留空即不传：上限沿用后端原值，指示为空则退回不带记忆的续跑
+      if (maxCost !== undefined) body.max_cost_usd = maxCost;
+      if (resumeNote) body.resume_note = resumeNote;
+      await onSubmit(body);
+    };
+    form.querySelector("[data-act='continue-cancel']").onclick = () => onCancel();
+    return form;
+  }
+
   // 单条停滞事项：标题 + 停滞时长徽章 + 说明 + 三个操作按钮（继续/稍后/跳过）。
   // continue 会建 worktree+隔离会话（分钟级），远超前端默认 15s 超时，必须显式放宽到 120s。
   function renderStallRow(it, opts = {}) {
@@ -1121,11 +1176,12 @@
     };
 
     let inFlight = false;
-    const actionButtons = row.querySelectorAll("[data-act]");
     const setBusy = (busy) => {
       inFlight = busy;
       row.setAttribute("aria-busy", String(busy));
-      actionButtons.forEach((button) => { button.disabled = busy; });
+      // 每次现查而非渲染时缓存一份 NodeList：行内续跑表单是点开「继续」后才 append 的，
+      // 缓存的那份收不到它，确认/取消按钮就会漏掉防抖禁用
+      row.querySelectorAll("[data-act]").forEach((button) => { button.disabled = busy; });
     };
     const finish = async (successText) => {
       toast(successText, "success", 1500);
@@ -1146,31 +1202,28 @@
       }
       return true;
     };
-    row.querySelector("[data-act='continue']").onclick = async () => {
-      // 成本熔断的续跑会开新成本窗口（已花额度重新计），先问用户新上限；留空 = 不改上限
-      const body = {};
-      if (it.kind === "goal_cost_capped") {
-        // related 缺失（后端成本取数失败时整块退化为空）时不能硬编码一个上限兜底：
-        // GOAL_MAX_COST_USD 是可配 env，写成 20 只在默认配置下巧合正确，会拿着错数字
-        // 诱导用户定预算；此时改说「未知」，输入框也不预填（留空 = 不改上限，后端沿用原值）。
-        const rel = it.related || {};
-        const hasLimit = rel.cost_limit != null && String(rel.cost_limit) !== "";
-        const limitText = hasLimit ? `上限 $${rel.cost_limit}` : "上限未知";
-        const spentText = rel.spent_usd != null && !Number.isNaN(Number(rel.spent_usd))
-          ? `$${Number(rel.spent_usd).toFixed(2)}` : "未知";
-        const ans = prompt(
-          `新的成本上限（美元）。该会话本成本窗口已花 ${spentText} / ${limitText}。`
-          + `留空则${hasLimit ? `沿用 $${rel.cost_limit}` : "不设新上限"}：`,
-          hasLimit ? String(rel.cost_limit) : "");
-        if (ans === null) return; // 取消不动
-        if (ans.trim() !== "") {
-          const v = Number(ans);
-          if (!(v >= 0)) { toast("上限需为非负数字", "error"); return; }
-          body.max_cost_usd = v;
-        }
-      }
+    // goal 三类的行内续跑表单：懒建 + 再点「继续」收起。append 到 row（不是 .stall-row-main），
+    // mainEl.onclick 只挂在行主体上，表单里的点击不会冒泡过去。
+    let formEl = null;
+    const closeForm = () => { if (formEl) { formEl.remove(); formEl = null; } };
+    const openForm = () => {
+      if (formEl) return;
       // 建会话/worktree 是分钟级操作，120s 超时兜底（前端默认仅 15s）
-      if (await post("continue", body, 120000)) await finish("已继续推进");
+      formEl = buildStallContinueForm(
+        it, async (body) => { if (await post("continue", body, 120000)) await finish("已继续推进"); },
+        closeForm);
+      row.appendChild(formEl);
+    };
+    row.querySelector("[data-act='continue']").onclick = async () => {
+      // 成本熔断/耗尽/暂停三类的续跑支持带记忆（停滞原因背景 + 用户本次指示 = resume_note），
+      // 先展开表单让用户当场写；再点一次收起。其余 kind（goal_stuck/todo_idle/dispatch_*）
+      // 保持一键直发、零变化。
+      const kind = it.kind || "";
+      if (kind === "goal_cost_capped" || kind === "goal_exhausted" || kind === "goal_paused") {
+        if (formEl) closeForm(); else openForm();
+        return;
+      }
+      if (await post("continue", {}, 120000)) await finish("已继续推进");
     };
     row.querySelector("[data-act='snooze']").onclick = async () => {
       if (await post("snooze", { hours: 24 })) await finish("已稍后提醒（24 小时后再见）");
@@ -3988,6 +4041,9 @@
         <label>成本上限（美元，留空不改）
           <input id="gc-maxcost" class="form-input" type="number" min="0" step="0.01" placeholder="默认 ${GOAL_COST_DEFAULT}" value="${it.max_cost_usd ? escapeAttr(String(it.max_cost_usd)) : ''}" />
         </label>
+        <label>这次换个跑法（可选，只影响续跑后的第一轮）
+          <textarea id="gc-note" class="form-input tall" rows="2" placeholder="例：先做完 A 再动 B；优先用便宜的方式，别再全量重跑"></textarea>
+        </label>
       </div>
       <div class="form-err" id="gc-err"></div>
       <div class="modal-actions">
@@ -4004,6 +4060,8 @@
       const errEl = card.querySelector("#gc-err");
       const add = parseInt(card.querySelector("#gc-add").value, 10);
       if (!(add >= 1 && add <= 50)) { errEl.textContent = "追加轮数需在 1-50 之间"; return; }
+      const resumeNote = (card.querySelector("#gc-note").value || "").trim();
+      if (resumeNote.length > 2000) { errEl.textContent = "续跑指示不要超过 2000 字"; return; }
       const payload = {
         prompt: card.querySelector("#gc-prompt").value.trim(),
         stop_condition: card.querySelector("#gc-stop").value.trim(),
@@ -4011,6 +4069,7 @@
         exec_mode: card.querySelector("#gc-mode").value,
         add_iterations: add,
         max_cost_usd: card.querySelector("#gc-maxcost").value === "" ? undefined : parseFloat(card.querySelector("#gc-maxcost").value),
+        resume_note: resumeNote || undefined,
       };
       try {
         await api(`/api/schedules/${encodeURIComponent(it.id)}/continue`, { method: "POST", body: JSON.stringify(payload) });
