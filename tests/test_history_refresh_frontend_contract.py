@@ -49,6 +49,14 @@ def test_reselecting_current_session_does_not_reload_history():
     assert guard < load
 
 
+def test_load_earlier_sends_composite_cursor():
+    # 两处"加载更早"（实时会话 + 看板 transcript 预览）都必须带上最早一条的 id 作次级游标：
+    # created_at 只有秒级精度，只按它翻页会跨页静默丢同秒消息
+    assert APP_JS.count("&before_id=${encodeURIComponent(msgs[0].id)}") == 2
+    assert "?limit=${HISTORY_WINDOW}&before=${msgs[0].created_at}${bId}" in APP_JS
+    assert "?limit=${TRANSCRIPT_WINDOW}&before=${msgs[0].created_at}${bId}" in APP_JS
+
+
 def test_ws_echo_of_locally_rendered_user_message_is_deduplicated():
     assert "function recordWsHistory(role, content)" in APP_JS
     assert "last._liveLocal && isSameLiveMessage(last, role, content)" in APP_JS

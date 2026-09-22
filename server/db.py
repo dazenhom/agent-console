@@ -677,22 +677,33 @@ def count_user_messages(session_id: str) -> int:
 
 
 def list_messages(session_id: str, limit: int | None = None,
-                  before: float | None = None) -> list[dict]:
-    """按时间升序返回会话消息。limit/before 实现尾部翻页：取 created_at < before 的
-    最近 limit 条（DESC），在 Python 侧反转回升序，返回结构逐字段与全量模式一致；
+                  before: float | None = None, before_id: str | None = None) -> list[dict]:
+    """按时间升序返回会话消息。limit/before 实现尾部翻页：取游标之前的最近 limit 条
+    （DESC），在 Python 侧反转回升序，返回结构逐字段与全量模式一致；
     limit 为 None/<=0 且不传 before 时全量，行为与旧版完全一致——内部调用方
-    （resume 恢复 prompt、后台脚本等）靠默认全量取尾部若干条，不要改短。"""
+    （resume 恢复 prompt、后台脚本等）靠默认全量取尾部若干条，不要改短。
+
+    排序键是 (created_at, id) 这个全序：created_at 只有秒级精度，同秒消息之间原本没有
+    确定顺序，翻页游标只比 created_at 时边界那一秒的消息会被静默跳过（实测 1+8+1 条、
+    limit=5 翻两页只拿回 6/10）。游标比较必须与 ORDER BY 用同一个全序，否则"丢消息"和
+    "重复拿"二选一。before_id 是可选次级游标：不传时保持旧的单值游标语义（只比
+    created_at，老调用方行为不变），只是排序变稳定。"""
     sql = "SELECT * FROM messages WHERE session_id=?"
     args: list = [session_id]
     if before is not None:
-        sql += " AND created_at < ?"
-        args.append(before)
+        if before_id:
+            # 与下面 (created_at, id) DESC 全序对应的"严格更早"：同秒靠 id 继续往下翻
+            sql += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            args += [before, before, before_id]
+        else:
+            sql += " AND created_at < ?"
+            args.append(before)
     if limit is not None and limit > 0:
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
         args.append(limit)
         rows = list(reversed(_query(sql, tuple(args))))
     else:
-        sql += " ORDER BY created_at ASC"
+        sql += " ORDER BY created_at ASC, id ASC"
         rows = _query(sql, tuple(args))
     out = []
     for r in rows:

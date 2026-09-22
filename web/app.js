@@ -1541,10 +1541,12 @@
         if (transcript.complete || !msgs.length || !msgs[0].created_at) { btn.remove(); return; }
         const targetSid = transcript.sid;
         btn.disabled = true;
+        // 游标带上 id 作次级键：同秒消息只按 created_at 翻页会跨页静默丢消息
+        const bId = msgs[0].id ? `&before_id=${encodeURIComponent(msgs[0].id)}` : "";
         let older;
         try {
           older = await api(`/api/sessions/${encodeURIComponent(targetSid)}/messages`
-            + `?limit=${TRANSCRIPT_WINDOW}&before=${msgs[0].created_at}`);
+            + `?limit=${TRANSCRIPT_WINDOW}&before=${msgs[0].created_at}${bId}`);
         } catch (e) {
           if (!closed && btn.isConnected) btn.disabled = false;
           toast("加载更早消息失败：" + e.message, "error");
@@ -3373,10 +3375,12 @@
       }
       if (state.histComplete || !msgs.length || !msgs[0].created_at) { renderLoadEarlierBtn(); return; }
       // 第二层：本地已渲染到头，按当前最早一条的 created_at 作 before 游标续拉更早一页
+      // （带上该条的 id 作次级游标，同秒多条的边界才不会被吞掉）
       const reqSid = state.sessionId;
+      const bId = msgs[0].id ? `&before_id=${encodeURIComponent(msgs[0].id)}` : "";
       btn.disabled = true;
       try {
-        const older = await api(`/api/sessions/${reqSid}/messages?limit=${HISTORY_WINDOW}&before=${msgs[0].created_at}`);
+        const older = await api(`/api/sessions/${reqSid}/messages?limit=${HISTORY_WINDOW}&before=${msgs[0].created_at}${bId}`);
         if (reqSid !== state.sessionId) return;   // 用户已切走，丢弃结果
         if (state.histMsgs !== msgs) { renderLoadEarlierBtn(); return; }   // 快照已被刷新替换，勿往重建后的 DOM 插
         if (!older.length) { state.histComplete = true; renderLoadEarlierBtn(); return; }
