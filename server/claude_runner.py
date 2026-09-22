@@ -166,6 +166,29 @@ def build_loop_advice(warnings: list[dict], reason: str = "") -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def stamp_turn_cost(sess: dict, evt: dict) -> None:
+    """把 result 事件的 total_cost_usd（进程内累计）换算成「本回合增量」，挂到 turn_cost_usd。
+
+    常驻会话下同一条 tclaude 子进程跨回合复用，CLI 报的 total_cost_usd 是「从进程启动至今的
+    累计花费」：每回合单调递增，只有进程重生（idle 回收/崩溃/resume）才归零。直接落库会被
+    sum_session_cost 加成天文数字——2026-09-22 实测全站 14 天成本虚高 10.4x（$43,987 vs 真实
+    $4,240），目标循环的成本熔断因此误杀 3 条 goal（真实 $5.01/$7.90/$7.08 时按 $20+ 掐死）。
+    所以这里在事件转发前换算成增量，落库/展示一律取 turn_cost_usd；total_cost_usd 原样保留，
+    便于排查时看到 CLI 的原始累计值。
+
+    进程重生后 CLI 的计数从 0 重来、会小于游标：此时 delta 取现值本身，绝不落负数。
+    老模式 run_turn 每回合一个新进程，total_cost_usd 天然就是回合花费，不走这条路径。
+    """
+    raw = evt.get("total_cost_usd")
+    # bool 是 int 的子类，显式排除；非数值（None/字符串）不落 turn_cost_usd，上层回落原字段
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return
+    baseline = sess.get("cost_baseline", 0.0)
+    delta = raw - baseline if raw >= baseline else raw
+    sess["cost_baseline"] = raw
+    evt["turn_cost_usd"] = delta
+
+
 class ClaudeRunner(AgentProvider):
     def __init__(self):
         # session_id -> {"proc": Process, "cancelled": bool}  （老模式：每回合一个进程）
@@ -472,6 +495,9 @@ class ClaudeRunner(AgentProvider):
             "cancelled": False, "on_event": None, "on_permission": None,
             "on_session_id": None, "out_of_turn_cb": None,
             "result_evt": None, "workdir": workdir,
+            # 成本游标：本进程上一回合 result 报的累计 total_cost_usd，用来把累计值换算成
+            # 回合增量（见 stamp_turn_cost）。随 sess 记录走——进程重生即新 sess、游标归 0。
+            "cost_baseline": 0.0,
             "model": model,
             # 看门狗：循环检测器 + 循环命中标记（reader 里喂事件，send_turn 里轮询判定）
             "loop_detector": LoopDetector(config.CLAUDE_LOOP_REPEAT, config.CLAUDE_LOOP_ERRORS,
@@ -562,6 +588,11 @@ class ClaudeRunner(AgentProvider):
                     if ev:
                         ev.set()
                     continue  # 不转发这条坏 result
+            # 回合结束时把累计成本换算成回合增量再转发：本函数是 result 事件通往两处落库
+            # （回合内 on_event / 回合外 out_of_turn_cb）的唯一出口，在这里盖章最省事也最
+            # 不容易漏；漏盖就会把进程累计花费当回合花费落库（见 stamp_turn_cost 注释）。
+            if evt.get("type") == "result":
+                stamp_turn_cost(sess, evt)
             cb = sess.get("on_event") if sess.get("turn_active") else sess.get("out_of_turn_cb")
             if cb:
                 try:

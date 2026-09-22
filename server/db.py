@@ -888,7 +888,14 @@ def due_schedules(now_ts: float) -> list[dict]:
 
 
 def sum_session_cost(session_id: str, since_ts: float) -> float:
-    """某会话自 since_ts 起累计的回合花费（美元），用于目标循环的成本熔断。"""
+    """某会话自 since_ts 起累计的回合花费（美元），用于目标循环的成本熔断。
+
+    tasks.cost_usd 口径分水岭在 2026-09-22：之前落的是常驻 tclaude 进程「从启动至今的累计
+    花费」，每回合重复计入，SUM 出来全站虚高约 10.4x（$43,987 vs 真实 $4,240）、把 3 条 goal
+    按虚高金额误熔断；此后由 claude_runner.stamp_turn_cost 换算成回合增量再落库。历史行不回填
+    （回填脚本曾误伤 updated_at，见 fix_backfill_updated_at.py 事故），所以跨该日界的窗口里
+    旧行仍偏大——只影响这一天的历史读数，不影响新窗口的熔断判定。
+    """
     rows = _query(
         "SELECT COALESCE(SUM(cost_usd),0) FROM tasks WHERE session_id=? AND started_at>=?",
         (session_id, since_ts),

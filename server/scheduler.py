@@ -268,8 +268,10 @@ async def _tick_goal(sch: dict, sess: dict, now: float) -> None:
     # 成本熔断
     cost_limit = float(sch.get("max_cost_usd") or 0) or config.GOAL_MAX_COST_USD
     if cost_limit > 0:
-        # 已知局限（一期接受）：sum_session_cost 从 created_at 起算，会把用户在同一会话里的
-        # 手动回合成本也计入目标循环预算——可能偏保守提前熔断。二期若要精确应按 goal 启动时间戳起算。
+        # 已知局限（一期接受）：sum_session_cost 从 cost_base_ts/created_at 起算，会把用户在同一
+        # 会话里的手动回合成本也计入目标循环预算——可能偏保守提前熔断。二期若要精确应按 goal
+        # 启动时间戳起算。2026-09-22 起 tasks.cost_usd 已是「回合增量」（此前误存常驻进程的累计
+        # 花费，实测把预算虚高 10.4x、3 条 goal 被误熔断），窗口口径的偏差从此只剩上面这一项。
         spent = db.sum_session_cost(sid, sch.get("cost_base_ts") or sch.get("created_at") or 0)
         if spent >= cost_limit:
             await _finish_goal(scid, sess, "exhausted",

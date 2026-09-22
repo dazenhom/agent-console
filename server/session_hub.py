@@ -167,7 +167,10 @@ def translate_event(evt: dict) -> list[dict]:
             "content": {
                 "subtype": evt.get("subtype"),
                 "duration_ms": evt.get("duration_ms"),
-                "cost_usd": evt.get("total_cost_usd"),
+                # cost_usd 口径 = 本回合花费：常驻 claude 进程报的 total_cost_usd 是进程内
+                # 累计值，runner 已换算成增量挂在 turn_cost_usd（见 claude_runner.stamp_turn_cost）；
+                # codex 侧 total_cost_usd 本就是增量（codex_runner 自己减 baseline），故回落取它。
+                "cost_usd": evt.get("turn_cost_usd", evt.get("total_cost_usd")),
                 "num_turns": evt.get("num_turns"),
                 "result": evt.get("result"),
                 "is_error": evt.get("is_error", False),
@@ -396,6 +399,8 @@ class SessionHub:
                     await self._emit_session_update(sid)
                 if role == "result":
                     content = msg["content"]
+                    # cost_usd 已是本回合花费（translate_event 取 runner 换算的 turn_cost_usd），
+                    # 直接落库；此处若改取 CLI 的累计 total_cost_usd 会让成本统计重新虚高 10x。
                     final_result = {
                         "status": "error" if content.get("is_error") else "success",
                         "duration_ms": content.get("duration_ms"),
@@ -777,6 +782,8 @@ class SessionHub:
                     await self._emit_session_update(sid)
                 if msg["role"] == "result":
                     c = msg["content"]
+                    # 同 _on_out_of_turn：cost_usd 已是本回合增量口径（见 translate_event），
+                    # 两处必须同源，否则同一会话回合内/回合外的花费会按不同口径落库。
                     final_result.update({
                         "status": "error" if c.get("is_error") else "success",
                         "duration_ms": c.get("duration_ms"),
