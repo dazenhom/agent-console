@@ -1902,24 +1902,8 @@
   // 改此值即可切换整体行为，无需改下面的调用点。
   const KANBAN_JUMP_MODE = "picker";
 
-  // 优先级 → 竖色条颜色。数值 priority（DB 存 INTEGER，1=⚡高优）与未来的字符串级别都支持。
-  const KANBAN_PRIORITY_COLORS = { high: "#ff4d4f", medium: "#faad14", low: "#52c41a", none: "#8c8c8c" };
-  function kanbanPriorityLevel(p) {
-    if (typeof p === "string") return KANBAN_PRIORITY_COLORS[p] ? p : "none";
-    if (p >= 2) return "high";
-    if (p === 1) return "high";   // 现有 UI 把 priority=1 标为「⚡高优」，映射为高优红条
-    return "none";
-  }
-  // 状态徽章文案 + class 后缀
-  const KANBAN_BADGE = {
-    pending: { text: "待开始", cls: "pending" },
-    in_progress: { text: "进行中", cls: "inprogress" },
-    done: { text: "已完成", cls: "done" },
-    cancelled: { text: "已取消", cls: "cancelled" },
-  };
-
   // 统一处理看板任务的会话跳转。t 为 todo 对象。
-  // onNoSession 可选：无关联会话时的回调（行视图传打开编辑，卡片视图传 toast）。
+  // onNoSession 可选：无关联会话时的回调（行视图传打开编辑）。
   // 跳转决策集中在此处 + KANBAN_JUMP_MODE，两处调用点只调本函数，换策略无需改调用点。
   function jumpToTodoSession(t, onNoSession) {
     const ids = todoSessionIds(t);
@@ -1984,106 +1968,6 @@
     card.querySelectorAll(".jump-item").forEach((item) => {
       item.onclick = () => { close(); doJumpToSessionEnsured(item.dataset.sid); };
     });
-  }
-
-  // 单张看板卡（v3）：右上角操作按钮组（编辑/刷新/删除）+ 可点击主体（跳转会话）+ 底部时间/徽章，支持拖拽换列
-  function renderKanbanCard(t, status) {
-    const sessCount = t.session_ids ? t.session_ids.length : (t.session_id ? 1 : 0);
-    const hasProgress = t.progress && t.progress.trim();
-    const progressText = hasProgress ? t.progress : "暂无进展";
-    const timeText = t.progress_at ? fmtRelTime(t.progress_at) : (t.updated_at ? fmtRelTime(t.updated_at) : "");
-    // 徽章按 todo 的真实 status（done 桶里可能混入 cancelled）
-    const badge = KANBAN_BADGE[t.status] || KANBAN_BADGE[status] || KANBAN_BADGE.pending;
-    const level = kanbanPriorityLevel(t.priority);
-
-    const card = el("div", "kanban-card kanban-card-v3");
-    card.dataset.id = t.id;
-    card.draggable = true;
-    card.style.borderLeftColor = KANBAN_PRIORITY_COLORS[level];
-    card.innerHTML = `
-      <div class="kanban-actions">
-        <button class="kanban-act-btn btn-edit" title="编辑" data-act="edit">✎</button>
-        ${sessCount > 0 ? `<button class="kanban-act-btn btn-refresh" title="刷新进展" data-act="refresh">↻</button>` : ""}
-        <button class="kanban-act-btn btn-delete" title="删除" data-act="delete">🗑</button>
-      </div>
-      <div class="kanban-card-main">
-        <div class="kanban-card-title">${escapeHtml(t.title)}</div>
-        <div class="kanban-card-body">${escapeHtml(progressText)}</div>
-      </div>
-      <div class="kanban-card-footer">
-        <span class="kanban-card-time">${timeText ? "🕐 " + escapeHtml(timeText) : ""}</span>
-        <span class="kanban-footer-right">
-          ${sessCount > 0 ? `<span class="badge-sessions" title="关联会话数">🔗${sessCount}</span>` : ""}
-          <span class="kanban-badge kanban-badge--${badge.cls}">${badge.text}</span>
-        </span>
-      </div>`;
-
-    const bodyEl = card.querySelector(".kanban-card-body");
-    if (!hasProgress) bodyEl.classList.add("no-progress");
-
-    // ---- 拖拽换列 ----
-    card.addEventListener("dragstart", () => {
-      state.dragTodoId = t.id;
-      state.dragTodoStatus = status;
-      card.classList.add("kanban-card-dragging");
-    });
-    card.addEventListener("dragend", () => card.classList.remove("kanban-card-dragging"));
-
-    // ---- 点击卡片：跳转关联会话（策略见 KANBAN_JUMP_MODE）----
-    card.onclick = () => jumpToTodoSession(t, () => toast("暂无关联会话", "info", 1500));
-
-    // ---- 操作按钮：编辑 ----
-    const editBtn = card.querySelector('[data-act="edit"]');
-    if (editBtn) editBtn.onclick = (e) => {
-      e.stopPropagation();
-      showEditTodoModal(t);
-    };
-
-    // ---- 操作按钮：刷新进展 ----
-    const refreshBtn = card.querySelector('[data-act="refresh"]');
-    if (refreshBtn) refreshBtn.onclick = async (e) => {
-      e.stopPropagation();
-      refreshBtn.disabled = true;
-      refreshBtn.classList.add("is-loading");
-      try {
-        const res = await api(`/api/todos/${t.id}/refresh_progress?force=true`, { method: "POST", retry: true });
-        if (res && res.progress) {
-          bodyEl.textContent = res.progress;
-          bodyEl.classList.remove("no-progress");
-          if (res.progress_at) {
-            const tEl = card.querySelector(".kanban-card-time");
-            if (tEl) tEl.textContent = "🕐 " + fmtRelTime(res.progress_at);
-          }
-          toast(res.cached ? "进展无变化" : "进展已更新", "success", 1500);
-        } else {
-          toast(res.reason || "刷新失败", "info", 2200);
-        }
-      } catch (err) {
-        toast("刷新失败：" + err.message, "error");
-      } finally {
-        refreshBtn.disabled = false;
-        refreshBtn.classList.remove("is-loading");
-      }
-    };
-
-    // ---- 操作按钮：删除（二次确认后就地移除并更新列计数）----
-    const delBtn = card.querySelector('[data-act="delete"]');
-    if (delBtn) delBtn.onclick = async (e) => {
-      e.stopPropagation();
-      const yes = await confirmDialog(`确定删除任务「${t.title}」？`, { okText: "删除", danger: true });
-      if (!yes) return;
-      try {
-        await api(`/api/todos/${t.id}`, { method: "DELETE" });
-        const col = card.closest(".kanban-col");
-        card.remove();
-        if (col) {
-          const cntEl = col.querySelector(".col-count");
-          if (cntEl) cntEl.textContent = Math.max(0, parseInt(cntEl.textContent || "0") - 1);
-        }
-        toast("已删除", "success", 1500);
-      } catch (err) { toast("删除失败：" + err.message, "error"); }
-    };
-    return card;
   }
 
   // 顶部「刷新进展」：批量刷新进行中的任务，完成后重渲染看板
