@@ -224,12 +224,22 @@
           </div>
         </div>
 
-        <!-- Review：待审视会话 -->
+        <!-- Review：已完成回合，按「未查看 / 已查看」两段（口径见 app.js isUnseen） -->
         <div class="tab-pane list-pane" data-pane="review">
           <div class="list-pane-inner">
-            <div class="pane-head">待审视</div>
-            <div class="agents-sub" style="margin-bottom:12px">已有成功回合的会话</div>
-            <ul id="session-list-review" class="session-list"></ul>
+            <div class="pane-head">已完成回合</div>
+            <div class="agents-sub" id="review-sub" style="margin-bottom:12px"></div>
+
+            <!-- 未查看：点开一条后会稍后归到下面那段，不做过滤器（行不会从视图消失） -->
+            <div id="review-unseen-section">
+              <div class="section-label" id="review-unseen-label">未查看</div>
+              <ul id="session-list-review-unseen" class="session-list"></ul>
+            </div>
+
+            <div id="review-seen-section" class="hidden">
+              <div class="section-label" id="review-seen-label">已查看</div>
+              <ul id="session-list-review-seen" class="session-list"></ul>
+            </div>
           </div>
         </div>
 

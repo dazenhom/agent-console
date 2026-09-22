@@ -361,15 +361,53 @@
     syncEffortSelect();
   }
 
-  // 渲染三个列表：Overview(全部 + 进行中小节) / Sessions(全部，可搜) / Review(已有成功回合)
+  // 渲染三个列表：Overview(全部 + 进行中小节) / Sessions(全部，可搜) / Review(已完成，分未查看/已查看)
   function renderSessionLists() {
     renderOverviewList();
     // Sessions Tab 在「归档」视图下不用活跃列表覆盖，交给 renderArchivedSessionList
     if (state.sessionView === "archived") renderArchivedSessionList();
     else fillListGrouped($("session-list-all"), state.sessions, false);
-    fillList($("session-list-review"), state.sessions.filter((s) => deriveState(s).key === "done"));
+    renderReviewList();
     // 重新应用 Sessions Tab 的搜索过滤
     applySessionSearch();
+  }
+
+  // Review Tab:done 会话按「未查看/已查看」两段渲染。两段都渲染、不做过滤器——
+  // 点开一条只会让它稍后换段，不会从视图消失（Overview 上踩过"点开就消失"，2026-09-22）。
+  function renderReviewList() {
+    const done = state.sessions.filter((s) => deriveState(s).key === "done");
+    const map = loadSeenMap();
+    const unseen = done.filter((s) => isUnseen(s, map));
+    const seen = done.filter((s) => !isUnseen(s, map));
+    const uLbl = $("review-unseen-label");
+    if (uLbl) uLbl.textContent = `未查看 ${unseen.length}`;
+    const sLbl = $("review-seen-label");
+    if (sLbl) sLbl.textContent = `已查看 ${seen.length}`;
+    const uUl = $("session-list-review-unseen");
+    if (uUl) {
+      if (unseen.length) fillList(uUl, unseen);
+      // fillList 的空态文案是「这里还没有会话」，对"全都看过了"语义不对，未查看段自带一个
+      else uUl.innerHTML = `<div class="review-allread">✅ 都看过了</div>`;
+    }
+    fillList($("session-list-review-seen"), seen);
+    const sec = $("review-seen-section");
+    if (sec) sec.classList.toggle("hidden", seen.length === 0);
+    const sub = $("review-sub");
+    if (sub) sub.textContent = `已完成 ${done.length} 个会话 · 未查看 ${unseen.length}`;
+  }
+
+  // Review 两段计数实时减，但不重建列表——重建会让刚点开的行立刻从「未查看」跳到「已查看」，
+  // 滚动位置也丢。行留原位，下次全量渲染或 patch 时再归段。
+  function refreshReviewCounts() {
+    const done = state.sessions.filter((s) => deriveState(s).key === "done");
+    const map = loadSeenMap();
+    const n = done.filter((s) => isUnseen(s, map)).length;
+    const uLbl = $("review-unseen-label");
+    if (uLbl) uLbl.textContent = `未查看 ${n}`;
+    const sLbl = $("review-seen-label");
+    if (sLbl) sLbl.textContent = `已查看 ${done.length - n}`;
+    const sub = $("review-sub");
+    if (sub) sub.textContent = `已完成 ${done.length} 个会话 · 未查看 ${n}`;
   }
 
   // Overview 列表 + Agents 副标题。renderSessionLists 与 patchSessionRow 共用：
@@ -666,8 +704,8 @@
     // （失败/被中断、运行中、未开始/已取消仍照常显示）
     if (!st.silent) row1.append(el("span", "badge " + st.badgeCls, st.label));
     row1.append(title);
-    const seen = loadSeenMap()[s.id] || 0;
-    if (s.updated_at > seen && s.id !== state.sessionId) {
+    // 当前会话不算未读（它就在眼前）；其余按 isUnseen 的唯一口径（服务端水位 ∪ 本地记录）
+    if (s.id !== state.sessionId && isUnseen(s)) {
       row1.prepend(el("span", "s-dot unread"));
     }
     const sub = el("div", "s-sub", escapeHtml(sessionSubtitle(s)));
@@ -863,29 +901,32 @@
   }
 
   // 工作看板：4 个计数卡（进行中 / 待查看 / 失败 / 空闲）。
-  // 「待查看」= 已完成且更新时间晚于本地已读记录（loadSeenMap），即"哪些跑完了我还没看"。
+  // 「待查看」= 已完成且 isUnseen 为真（服务端水位 ∪ 本地记录，见 isUnseen），即"哪些跑完了我还没看"。
   function renderDashboard() {
     const box = $("dashboard");
     if (!box) return;
-    const seenMap = loadSeenMap();
+    const seenMap = loadSeenMap();  // 循环外取一次，别在每轮里反复 JSON.parse
     let active = 0, unseen = 0, failed = 0;
     for (const s of state.sessions) {
       const k = deriveState(s).key;
       if (k === "running") active++;
       else if (k === "failed") failed++;
-      else if (k === "done" && s.updated_at > (seenMap[s.id] || 0)) unseen++;
+      else if (k === "done" && isUnseen(s, seenMap)) unseen++;
     }
     const idle = state.sessions.length - active - failed - unseen;
+    // jump 只给「待查看」：Review Tab 才有未查看/已查看两段，其余三项没有对应分区可跳
     const cards = [
       { valCls: active > 0 ? " mini-stat-val--active" : "", num: active, label: "进行中" },
-      { valCls: "", num: unseen, label: "待查看" },
+      { valCls: "", num: unseen, label: "待查看", jump: "review" },
       { valCls: failed > 0 ? " mini-stat-val--failed" : "", num: failed, label: "失败" },
       { valCls: "", num: idle, label: "空闲" },
     ];
     box.innerHTML = cards.map((c) =>
-      `<span class="mini-stat"><span class="mini-stat-label">${c.label}</span> ` +
+      `<span class="mini-stat${c.jump ? " mini-stat--jump" : ""}"${c.jump ? ` data-jump="${c.jump}"` : ""}>` +
+      `<span class="mini-stat-label">${c.label}</span> ` +
       `<span class="mini-stat-val${c.valCls}">${c.num}</span></span>`
     ).join("");
+    box.querySelectorAll("[data-jump]").forEach((n) => { n.onclick = () => switchTab(n.dataset.jump); });
     const title = $("dash-title");
     if (title) title.textContent = (unseen + failed) ? `${unseen + failed} 项待处理` : "暂无待办";
   }
@@ -2325,14 +2366,28 @@
     };
   }
 
-  // 已读时间记录（localStorage）：用于未读标记
+  // 已读时间记录（localStorage）：用于未读标记。服务端也存一份水位（sessions.last_seen_at），
+  // 判定见 isUnseen——换设备/清缓存后不会集体翻回未读。
   function loadSeenMap() {
     try { return JSON.parse(localStorage.getItem("ac_seen") || "{}"); } catch (e) { return {}; }
   }
   function markSeen(sid, ts) {
     const m = loadSeenMap();
-    m[sid] = Math.max(ts || 0, Date.now() / 1000);
+    const prev = m[sid] || 0;
+    const next = Math.max(ts || 0, Date.now() / 1000);
+    m[sid] = next;
     try { localStorage.setItem("ac_seen", JSON.stringify(m)); } catch (e) {}
+    // 水位没往前推（这条的更新时间早就读过）就别再打服务端：loadSessions 每轮轮询都会对
+    // 当前会话调 markSeen，否则每次轮询都白搭一个 POST。
+    if (prev >= (ts || 0) && prev > 0) return;
+    api(`/api/sessions/${sid}/seen`, { method: "POST", retry: true }).catch(() => {});
+  }
+
+  // 未查看判定唯一口径：服务端水位与本地记录取 max（本地只能让"更已读"，不能翻回未读）。
+  function isUnseen(s, map) {
+    const m = map || loadSeenMap();
+    const seen = Math.max(s.last_seen_at || 0, m[s.id] || 0);
+    return (s.updated_at || 0) > seen;
   }
 
   // 会话副标题：在跑显示「耗时 + 当前活动」（卡住给 ⚠️ 提示，stuck 是 WS 里一直在推、
@@ -2580,8 +2635,8 @@
     });
     renderDashboard();
     renderOverviewList();  // 状态翻转要反映到主列表行与「进行中」小节（如空闲→运行中）
-    // review 列表成员可能因状态变化增减，简单起见重建一次该列表
-    fillList($("session-list-review"), state.sessions.filter((x) => deriveState(x).key === "done"));
+    // review 列表成员可能因状态变化增减（也可能换了段），简单起见重建一次该列表
+    renderReviewList();
   }
 
   // 根据某个子会话行所在的分组 body，重算并更新该分组头的状态摘要。
@@ -3021,6 +3076,7 @@
         // 不限容器按 data-sid 全局选——同一会话可能同时出现在主列表/进行中/Review/归档里，
         // session id 是 uuid 截断全局唯一，不会误伤别的行。
         document.querySelectorAll(`li[data-sid="${cur.id}"] .s-dot.unread`).forEach((d) => d.remove());
+        refreshReviewCounts();  // Review 两段计数联动减，但不重建列表（见 refreshReviewCounts）
         renderDashboard();  // 「待查看」计数要实时减
       }
       document.querySelectorAll("li[data-sid]").forEach((li) => li.classList.toggle("active", li.dataset.sid === id));
@@ -3052,6 +3108,7 @@
       markSeen(cur.id, cur.updated_at);
       // 同第一次点击分支：只摘圆点不整表重建，保住刚点开那行的位置与滚动条；同样全局选所有列表
       document.querySelectorAll(`li[data-sid="${cur.id}"] .s-dot.unread`).forEach((d) => d.remove());
+      refreshReviewCounts();  // 同上：只改计数，行留原位
       renderDashboard();  // 「待查看」计数要实时减
     }
     // 高亮当前会话行（跨三个列表）

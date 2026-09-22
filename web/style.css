@@ -1173,13 +1173,26 @@ select[multiple] { min-height: 80px; height: auto; }
   display: flex; align-items: center; justify-content: space-between;
   margin: 4px 0 10px;
 }
-/* 小节标题：「智能任务看板」抬头与 Overview「进行中」小节共用（后者不在 .kanban-head 里，故显式并列） */
+/* 小节标题：「智能任务看板」抬头与 Overview「进行中」、Review「未查看/已查看」小节共用
+   （后两者不在 .kanban-head 里，故显式并列；漏了它们两个 label 就是无样式裸文本） */
 .kanban-head .section-label,
-#running-section .section-label {
+#running-section .section-label,
+#review-unseen-section .section-label,
+#review-seen-section .section-label {
   font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: .2px;
 }
 /* 进行中小节与下方「所有会话」抬头之间的呼吸位（列表自身只有 margin-top） */
 #running-section { margin-bottom: 14px; }
+/* Review 未查看段与已查看段之间同理 */
+#review-unseen-section { margin-bottom: 14px; }
+/* Review「未查看」段的行强化：ID 作用域只作用于这一段，不动 renderSessionRow 那份通用样式。
+   下面两条的优先级比 .session-list li.active 高，故必须补一条 li.active 把选中态兜回来，
+   否则正在看的那行 border 高亮会被吃掉。 */
+#session-list-review-unseen li { background: var(--accent-soft); border-left-color: var(--accent); }
+#session-list-review-unseen li .s-title { font-weight: 700; }
+#session-list-review-unseen li.active { border-color: var(--accent); }
+/* 未查看段全看完的空态：不能复用 fillList 的「这里还没有会话」（那是"没有会话"，口径不符） */
+.review-allread { padding: 14px 4px; font-size: 12.5px; color: var(--muted); }
 .kanban-actions { display: flex; gap: 6px; }
 .btn-ghost {
   background: var(--bg-2); border: 1px solid var(--line); color: var(--muted);
@@ -1351,6 +1364,9 @@ select[multiple] { min-height: 80px; height: auto; }
 .mini-stat-val { font-size: 14px; font-weight: 600; color: var(--text); }
 .mini-stat-val--active { color: var(--accent); }
 .mini-stat-val--failed { color: #ff4d4f; }
+/* 「待查看」卡可点，跳 Review Tab（只有它带 data-jump：其余三项没有对应分区可跳） */
+.mini-stat--jump { cursor: pointer; }
+.mini-stat--jump:hover .mini-stat-val { color: var(--accent); }
 
 .kanban-act-btn {
   width: 22px;
