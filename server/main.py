@@ -148,11 +148,11 @@ async def create_session(payload: dict):
     effort = payload.get("effort") if payload.get("effort") in _VALID_EFFORTS else None
     engine = payload.get("engine")
     engine = engine if engine in config.VALID_ENGINES else config.DEFAULT_ENGINE
-    workdir, branch, is_wt, wt_base, notice = await asyncio.to_thread(
+    workdir, branch, is_wt, wt_base, notice, wt_sha = await asyncio.to_thread(
         worktree.provision_workdir, workdir, title, bool(payload.get("isolate")))
     s = db.create_session(title, workdir, mode,
                           worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base,
-                          engine=engine, effort=effort)
+                          engine=engine, effort=effort, worktree_base_sha=wt_sha)
     if notice:
         s["isolate_notice"] = notice  # 仅本次响应提示，不入库
     return s

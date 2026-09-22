@@ -16,7 +16,7 @@ import signal
 import time
 from datetime import datetime, timedelta, date
 
-from . import db, config
+from . import db, config, worktree
 from .logging_util import get_logger
 
 logger = get_logger(__name__)
@@ -268,11 +268,11 @@ async def _run_shell(command: str, cwd: str, timeout: float) -> str:
     )
 
 
-async def _git_diff_stat(cwd: str) -> str:
-    """worktree 会话取 git diff --stat 作为代码改动上下文；非 git 或失败返回空串。"""
+async def _git_out(cwd: str, args: list[str]) -> str:
+    """跑一条只读 git 命令，返回 stdout。失败/超时/git 不存在一律返回空串（绝不抛）。"""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--stat", cwd=cwd,
+            "git", *args, cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
@@ -282,11 +282,39 @@ async def _git_diff_stat(cwd: str) -> str:
         return ""
 
 
+async def _git_diff_stat(cwd: str, base_sha: str = "") -> str:
+    """worktree 会话取代码改动摘要作为验收上下文；非 git 或失败返回空串。
+
+    base_sha 非空（worktree 创建时落库的 base HEAD）时给 base..HEAD 的结构化摘要：
+    原来只跑无 ref 的 `git diff --stat`，而它只看未提交改动——agent 干完活会自己 commit，
+    于是实测三个真实 worktree 会话的输出全是空的，评委只能在零证据下自己跑 97 条 git
+    命令手工重建改动清单（worktree 会话验收成本 27.1 万 tok vs 共享会话 11.5 万）。
+    这里只给 log/stat/name-status 三类结构化摘要，不给完整 patch（避免 prompt 被 diff
+    正文撑爆）；超大由 GOAL_SPILL_GIT_DIFF_BYTES 兜底。无 sha（历史会话/非隔离）时
+    保持原行为：只看未提交改动。"""
+    if not worktree.is_commit_sha(base_sha):
+        return await _git_out(cwd, ["diff", "--stat"])
+    log, stat, names, dirty = await asyncio.gather(
+        _git_out(cwd, ["log", "--oneline", f"{base_sha}..HEAD"]),
+        _git_out(cwd, ["diff", "--stat", f"{base_sha}..HEAD"]),
+        _git_out(cwd, ["diff", "--name-status", f"{base_sha}..HEAD"]),
+        _git_out(cwd, ["diff", "--stat"]),
+    )
+    parts = [
+        f"[基线 {base_sha[:10]}..HEAD]",
+        f"$ git log --oneline\n{log or '(本轮无新提交)'}",
+        f"$ git diff --stat\n{stat or '(无改动)'}",
+        f"$ git diff --name-status\n{names or '(无改动)'}",
+        f"[未提交改动]\n$ git diff --stat\n{dirty or '(无未提交改动)'}",
+    ]
+    return "\n".join(parts)
+
+
 async def _gather_verify_context(sess: dict, verify_command: str | None = None) -> tuple[str, str, str]:
     """读取会话本轮验收上下文，返回 (produced, cmd_result, git_diff)。三处后台验收共用：
       produced    最新产出片段（会话 jsonl 尾部文本）
       cmd_result  仅当传入 verify_command 时在会话工作区跑一遍（退出码+输出尾部），否则空串
-      git_diff    worktree 会话取 git diff --stat，否则空串
+      git_diff    worktree 会话取改动摘要（有 base sha 时给 base..HEAD，见 _git_diff_stat），否则空串
     只读上下文，不做任何判定/落库。"""
     from . import kanban
     produced = ""
@@ -308,7 +336,7 @@ async def _gather_verify_context(sess: dict, verify_command: str | None = None) 
         cmd_result = await _run_shell(cmd, workdir, config.GOAL_CMD_TIMEOUT)
     git_diff = ""
     if sess.get("is_worktree") and workdir:
-        git_diff = await _git_diff_stat(workdir)
+        git_diff = await _git_diff_stat(workdir, sess.get("worktree_base_sha") or "")
     return produced, cmd_result, git_diff
 
 
@@ -355,7 +383,7 @@ async def _run_goal_verify(scid: str) -> None:
             verdict, status = "continue", "continue"
         iteration = db.get_goal_iteration_by_no(scid, iter_count)
         if iteration:
-            # 存一份喂给 verifier 的内容摘要（产出+命令结果+改动），截断避免爆库
+            # 存一份喂给 verifier 的内容摘要（产出+命令结果+改动+证据包），截断避免爆库
             excerpt = "\n\n".join(x for x in (produced, cmd_result, git_diff) if x)[:4000]
             db.update_goal_iteration(iteration["id"], verify_job_id=(job or {}).get("id") or "",
                                      verdict=verdict, feedback=reason, status=status,

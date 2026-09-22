@@ -296,6 +296,10 @@ def init_db() -> None:
             _add_col("sessions", "is_worktree INTEGER DEFAULT 0")
         if "worktree_base" not in cols:
             _add_col("sessions", "worktree_base TEXT DEFAULT ''")
+        # worktree 创建点的 base HEAD sha：验收侧据此算 base..HEAD 改动（无 ref 的
+        # git diff --stat 只能看未提交改动，而 agent 干完活会自己 commit，实测恒为空）。
+        # 历史会话没有这个值 → 留空，验收侧按无基线降级，不报错。
+        _add_col("sessions", "worktree_base_sha TEXT DEFAULT ''")
         # /compact 上下文压缩：待注入下一条消息的摘要前缀（拿到新 claude_session_id 后清空）/ 最近一次压缩时间戳
         if "pending_compact_summary" not in cols:
             _add_col("sessions", "pending_compact_summary TEXT DEFAULT ''")
@@ -479,17 +483,18 @@ def _query(sql: str, params: tuple = ()):  # 读操作
 # ---------- sessions ----------
 def create_session(title: str, workdir: str, mode: str | None = None,
                    worktree_branch: str = "", is_worktree: int = 0, worktree_base: str = "",
-                   engine: str = "claude", effort: str | None = None) -> dict:
+                   engine: str = "claude", effort: str | None = None,
+                   worktree_base_sha: str = "") -> dict:
     sid = new_id()
     now = _now()
     m = mode or config.CLAUDE_DEFAULT_MODE
     eff = effort or config.CLAUDE_DEFAULT_EFFORT
     _exec(
         "INSERT INTO sessions(id,title,claude_session_id,workdir,status,mode,effort,engine,"
-        "worktree_branch,is_worktree,worktree_base,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "worktree_branch,is_worktree,worktree_base,worktree_base_sha,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, title or "新会话", None, workdir, "idle", m, eff, engine,
-         worktree_branch, is_worktree, worktree_base, now, now),
+         worktree_branch, is_worktree, worktree_base, worktree_base_sha, now, now),
     )
     return get_session(sid)
 

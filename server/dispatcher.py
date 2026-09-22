@@ -216,11 +216,12 @@ async def dispatch(request: str, parent_session_id: str | None, workdir: str,
     for seq, st in enumerate(subtasks):
         engine, model, category = _route(st)
         try:
-            wd, branch, is_wt, wt_base, _ = await asyncio.to_thread(
+            wd, branch, is_wt, wt_base, _, wt_sha = await asyncio.to_thread(
                 worktree.provision_workdir, workdir, st["title"][:24], isolate)
             child = db.create_session(
                 title=st["title"][:80], workdir=wd, mode=model, engine=engine,
                 worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base,
+                worktree_base_sha=wt_sha,
             )
             subtask = db.create_dispatch_subtask(
                 plan_id=plan_id, parent_session_id=parent_session_id, seq=seq,
@@ -274,11 +275,12 @@ async def retry_subtask(subtask_id: str) -> dict | None:
 
     engine, model = sub.get("engine") or "claude", sub.get("model") or config.CLAUDE_MODEL_STRONG
     title, instruction = sub.get("title") or "", sub.get("instruction") or ""
-    wd, branch, is_wt, wt_base, _ = await asyncio.to_thread(
+    wd, branch, is_wt, wt_base, _, wt_sha = await asyncio.to_thread(
         worktree.provision_workdir, base, title[:24], isolate)
     child = db.create_session(
         title=title[:80], workdir=wd, mode=model, engine=engine,
         worktree_branch=branch, is_worktree=is_wt, worktree_base=wt_base,
+        worktree_base_sha=wt_sha,
     )
     # 重置回 dispatched 并指向新会话，清空上一次判定的 verdict/feedback（避免前端把旧的失败
     # 原因错挂在正在重跑的子任务上；本项目无子任务历史表，UI 真实性优先于留痕）。

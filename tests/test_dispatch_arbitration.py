@@ -207,7 +207,7 @@ def test_subtask_defaults_zero(temp_db):
 def test_retry_preserves_need_arbitration(temp_db, monkeypatch):
     # 重派不碰 need_arbitration（update 白名单不含该列），困难标记应原样保留
     monkeypatch.setattr(worktree, "provision_workdir",
-                        lambda base, hint, isolate: ("/tmp", "", 0, "", ""))
+                        lambda base, hint, isolate: ("/tmp", "", 0, "", "", ""))
     monkeypatch.setattr(db, "create_session",
                         lambda **kw: {"id": "new-sess"})
 

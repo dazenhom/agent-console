@@ -32,11 +32,29 @@ def _slug(sid_hint: str) -> str:
     return s or "s"
 
 
-def create(base, sid_hint) -> tuple[str, str]:
-    """为会话创建独立 worktree + 分支。成功返回 (path, branch)；
-    base 不是 git 仓库或创建失败 → 降级返回 (base, "")。"""
+def head_sha(base) -> str:
+    """取仓库当前 HEAD 的完整 sha（worktree 的基线）。非 git 仓库/失败返回 ""。
+    调用方一律把空串当"没有基线"降级处理，绝不因此报错。"""
+    try:
+        r = _run(["git", "-C", base, "rev-parse", "HEAD"])
+    except Exception as e:
+        log.warning("读取 base HEAD sha 异常：%s", e)
+        return ""
+    if r.returncode != 0:
+        return ""
+    return r.stdout.strip()
+
+
+def create(base, sid_hint) -> tuple[str, str, str]:
+    """为会话创建独立 worktree + 分支。成功返回 (path, branch, base_sha)；
+    base 不是 git 仓库或创建失败 → 降级返回 (base, "", "")。
+
+    base_sha 是创建点的 base HEAD：隔离会话干完活会自己 commit，之后无 ref 的
+    `git diff --stat`（只看未提交改动）恒为空，验收员只能自己跑几十条 git 命令手工重建
+    改动清单（实测 worktree 会话验收贵 2.4 倍）。记下这个 sha，验收侧才能稳定给出
+    base..HEAD 的结构化摘要。取不到就留空，验收侧按无基线降级。"""
     if not is_git_repo(base):
-        return base, ""
+        return base, "", ""
     name = f"{_slug(sid_hint)}-{secrets.token_hex(3)}"
     branch = f"agent/{name}"
     root = Path(config.WORKTREES_ROOT)
@@ -46,25 +64,27 @@ def create(base, sid_hint) -> tuple[str, str]:
         r = _run(["git", "-C", base, "worktree", "add", "-b", branch, str(path), "HEAD"])
     except Exception as e:
         log.warning("worktree create 异常，降级为共享工作区：%s", e)
-        return base, ""
+        return base, "", ""
     if r.returncode != 0:
         log.warning("worktree create 失败，降级为共享工作区：%s", r.stderr.strip())
-        return base, ""
-    return str(path), branch
+        return base, "", ""
+    return str(path), branch, head_sha(base)
 
 
-def provision_workdir(base: str, hint: str, isolate: bool) -> tuple[str, str, int, str, str]:
+def provision_workdir(base: str, hint: str, isolate: bool) -> tuple[str, str, int, str, str, str]:
     """统一隔离工作区编排：把"调 create → 判是否真隔离 → 定 worktree 元信息 → 拼降级提示"
-    这段散落在多处的逻辑收成一个入口。返回 (workdir, branch, is_worktree, worktree_base, notice)：
+    这段散落在多处的逻辑收成一个入口。
+    返回 (workdir, branch, is_worktree, worktree_base, notice, base_sha)：
     - isolate=False：不隔离，直接返回共享 base；
-    - isolate=True 且建 worktree 成功：返回隔离目录 + 分支元信息；
+    - isolate=True 且建 worktree 成功：返回隔离目录 + 分支元信息 + 创建点的 base HEAD sha
+      （供验收侧算 base..HEAD 改动，见 create 的说明）；
     - isolate=True 但 base 非 git 仓库 / 创建失败：降级为共享 base，并给出提示文案。"""
     if not isolate:
-        return base, "", 0, "", ""
-    path, branch = create(base, hint)
+        return base, "", 0, "", "", ""
+    path, branch, base_sha = create(base, hint)
     if branch:
-        return path, branch, 1, base, ""
-    return base, "", 0, "", "该目录不是 Git 仓库（或创建 worktree 失败），已使用共享工作区，未隔离。"
+        return path, branch, 1, base, "", base_sha
+    return base, "", 0, "", "该目录不是 Git 仓库（或创建 worktree 失败），已使用共享工作区，未隔离。", ""
 
 
 def remove(path, base) -> None:
@@ -97,6 +117,15 @@ _BRANCH_RE = re.compile(r"^agent/[A-Za-z0-9._-]+$")
 
 def is_agent_branch(branch: str) -> bool:
     return bool(_BRANCH_RE.match(branch or ""))
+
+
+# 提交 sha 白名单：落库的 worktree_base_sha 会被拼进 git 命令当 revision 用，
+# 先按形态把关（7~40 位十六进制），防脏数据/误传分支名夹带 revision 表达式。
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def is_commit_sha(sha: str) -> bool:
+    return bool(_SHA_RE.match((sha or "").strip()))
 
 
 def list_agent_branches(base) -> list[dict]:
