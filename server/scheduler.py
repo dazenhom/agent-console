@@ -217,7 +217,15 @@ def _build_goal_prompt(sch: dict) -> str:
     note = (sch.get("resume_note") or "").strip()
     if note:
         parts.append("\n" + note)
-    parts.append(f"\n（这是第 {iter_no} 轮迭代，请朝完成标准推进，做完即可，不必啰嗦汇报。）")
+    # 轮询节奏钉死：producing 回合里 agent 等长任务（训练/全量测试/长构建）时会自己 sleep +
+    # 轮询，单次等待一旦跨过 5 分钟 prompt 缓存 TTL，之后每次都要重建 ~103k token 的缓存
+    # （120-240 秒轮询只 ~14.7k，贵 7 倍）；实测 9-10 分钟等待桶 74 次烧掉 7.6M token。
+    # 上下限都给：只写上界容易被读成"越勤越好"，变成高频忙等刷屏。
+    parts.append(
+        f"\n（这是第 {iter_no} 轮迭代，请朝完成标准推进，做完即可，不必啰嗦汇报。）"
+        "\n（等长任务时轮询间隔固定 120-180 秒——不低于 120 秒，也绝不 sleep 超过 240 秒；"
+        "需要等更久就起后台任务、下一轮再收结果，不要在同一回合里长睡。）"
+    )
     return _team_wrap(sch, "".join(parts))
 
 
