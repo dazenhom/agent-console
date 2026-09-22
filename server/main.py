@@ -355,6 +355,33 @@ async def compact_session(sid: str):
     return res
 
 
+@app.get("/api/sessions/{sid}/meta", dependencies=[Depends(require_auth)])
+async def get_session_meta(sid: str):
+    """会话预览（只读 transcript 弹层）用的轻量元信息。
+
+    白名单挑字段返回，绝不 `return sess` 整行——sessions 表现有 23 列，其中
+    claude_session_id / pending_compact_summary / codex_usage_baseline 等只供进程内部
+    使用，一旦整行返回，任何新加的列都会自动外泄给前端。下面这 8 个字段是预览头部
+    （标题 + 归档徽章 + 运行状态）的全部依赖。
+    """
+    sess = db.get_session(sid)
+    if not sess:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    # 运行态只存在 hub 内存里（DB 落的是回合边界快照），与 /api/sessions 同口径合并，
+    # 否则预览头部会把正在跑的会话显示成「空闲」。
+    status = "running" if hub.is_running(sid) else (sess.get("status") or "idle")
+    return {
+        "id": sess["id"],
+        "title": sess.get("title") or "",
+        "status": status,
+        "summary": sess.get("summary") or "",
+        "archived": 1 if sess.get("archived") else 0,
+        "workdir": sess.get("workdir") or "",
+        "engine": sess.get("engine") or "claude",
+        "updated_at": sess.get("updated_at"),
+    }
+
+
 @app.get("/api/sessions/{sid}/messages", dependencies=[Depends(require_auth)])
 async def get_messages(sid: str, limit: int = 200, before: float | None = None):
     """尾部翻页：默认只取最近 limit 条，before（当前最早一条的 created_at）续拉更早。

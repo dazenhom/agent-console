@@ -1399,6 +1399,304 @@
     });
   }
 
+  // ---------------- 看板卡片 → 只读会话内容预览 sheet ----------------
+  // 与 peek 速览面板的分工：peek 带输入框、能直接往会话里发消息（会改会话状态），
+  // 卡片预览是纯回放——"点一下看看这个任务做到哪了"不该顺手改到会话，故不复用 peek，
+  // 本弹层内不存在任何输入框（硬护栏见下方 TRANSCRIPT_INTERACTIVE_SEL）。
+  // 正文复用实时会话同一套消息构建器 appendMsgWithPreview，气泡/markdown/工具卡样式一致。
+  const TRANSCRIPT_WINDOW = 200;  // 首屏条数。绝不传 limit=0：大会话全量拉会打爆前端。
+
+  // 只读预览里必须摘掉的交互按钮：这两类都会往**主输入框**写内容（重发把指令填回输入框、
+  // qr 快捷回复同理），点一下就把预览变成编辑态并抢走焦点。
+  // ⚠️ 以后新增任何"写主输入框"的按钮，必须同步加进这个选择器。
+  const TRANSCRIPT_INTERACTIVE_SEL = ".msg-resend, .qr-btn";
+
+  function stripInteractiveBtns(root) {
+    root.querySelectorAll(TRANSCRIPT_INTERACTIVE_SEL).forEach((b) => b.remove());
+    // 摘空后的快捷栏留着会多出一道空行（.qr-bar 自带 margin-top）
+    root.querySelectorAll(".qr-bar").forEach((bar) => { if (!bar.children.length) bar.remove(); });
+  }
+
+  // 关联会话 id 解析：session_ids（多关联）优先，回落旧的单值 session_id。
+  function todoSessionIds(t) {
+    if (!t) return [];
+    return (t.session_ids && t.session_ids.length) ? t.session_ids : (t.session_id ? [t.session_id] : []);
+  }
+
+  // 会话元信息：活跃会话在 state.sessions 里已有（且带 hub 合并的运行态），命中就不打网络，
+  // 归档会话列表未加载时才回落到 /api/sessions/{sid}/meta。
+  async function fetchSessionMeta(sid) {
+    const local = (state.sessions || []).find((s) => s.id === sid)
+               || (state.archivedSessions || []).find((s) => s.id === sid);
+    if (local) {
+      return {
+        id: sid,
+        title: local.title || "",
+        status: local.status || "idle",
+        summary: local.summary || "",
+        archived: local.archived ? 1 : 0,
+        workdir: local.workdir || "",
+        engine: local.engine || "claude",
+        updated_at: local.updated_at || null,
+      };
+    }
+    try {
+      return await api(`/api/sessions/${encodeURIComponent(sid)}/meta`);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // sid 为 null 表示"这个任务还没关联任何会话"——仍开 sheet，走空态 + 关联入口，
+  // 保证"点开卡片一定看得到东西"，而不是又弹一个编辑框。
+  async function showSessionTranscript(sid, opts = {}) {
+    const root = $("modal-root");
+    if (!root) return;
+    if (root._sheetOwner && root._sheetOwner.close) root._sheetOwner.close({ suppressFocus: true });
+    let closed = false;
+    let closeBtn = null;
+    const owner = {};
+    const onKeydown = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
+    };
+    const close = (o = {}) => {
+      if (closed) return;
+      closed = true;
+      if (root.onclick === onBackdropClick) root.onclick = null;
+      root.removeEventListener("keydown", onKeydown);
+      root.classList.remove("show");
+      setTimeout(() => {
+        if (root._sheetOwner !== owner) return;
+        root.classList.add("hidden");
+        root.innerHTML = "";
+        delete root._sheetOwner;
+        if (o.afterClose) {
+          o.afterClose();
+          return;
+        }
+        if (!o.suppressFocus) {
+          const focusTarget = (opts.opener && opts.opener.isConnected)
+            ? opts.opener
+            : document.querySelector("#kanban-list .kanban-show-all");
+          if (focusTarget) focusTarget.focus();
+        }
+      }, 200);
+    };
+    const onBackdropClick = (e) => { if (e.target === root) close(); };
+
+    const ids = todoSessionIds(opts.todo);
+    const initialSid = sid || ids[0] || null;
+    const shouldFocusClose = root.contains(document.activeElement);
+    root.innerHTML = "";
+    const card = el("div", "modal-card transcript-card");
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-modal", "true");
+    card.innerHTML = `
+      <div class="transcript-head">
+        <span class="transcript-title"></span>
+        <span class="transcript-badges"></span>
+        <button class="transcript-close" type="button" aria-label="关闭会话预览">关闭</button>
+      </div>
+      <div class="transcript-tabs hidden"></div>
+      <div class="transcript-body"></div>
+      <div class="transcript-foot">
+        <button class="transcript-open" type="button">打开完整会话 ↗</button>
+      </div>`;
+    root.appendChild(card);
+    const titleEl = card.querySelector(".transcript-title");
+    const badgesEl = card.querySelector(".transcript-badges");
+    const tabsEl = card.querySelector(".transcript-tabs");
+    const body = card.querySelector(".transcript-body");
+    const openBtn = card.querySelector(".transcript-open");
+    closeBtn = card.querySelector(".transcript-close");
+    closeBtn.onclick = close;
+
+    // sheet 局部状态：正文、是否拉到最早、以及本 sheet 独立的 Agent 归拢 Map。
+    // groups 必须是局部的——传 state.agentGroups 会把预览重建出的子智能体 body
+    // 登记进实时会话的归拢表，之后 WS 增量就会写进这个即将被销毁的节点。
+    const transcript = { sid: initialSid, msgs: [], complete: false, groups: {} };
+
+    const renderBadges = (meta) => {
+      badgesEl.innerHTML = "";
+      if (!meta) return;
+      if (meta.archived) badgesEl.appendChild(el("span", "transcript-badge", "已归档"));
+      const running = meta.status === "running";
+      const st = el("span", "transcript-status " + (running ? "running" : "idle"),
+        running ? "运行中" : "空闲");
+      badgesEl.appendChild(st);
+    };
+
+    // 翻页：拿当前最早一条的 created_at 作 before 游标续拉更早一页。
+    // 不用 renderLoadEarlierBtn——它写死 $("chat") 与 state.hist*，复用会把预览的
+    // 翻页窗口污染进实时会话；这里只照抄它的 scrollTop 补偿写法。
+    const makeEarlierBtn = () => {
+      const btn = el("button", "transcript-earlier", "↑ 加载更早消息");
+      btn.type = "button";
+      btn.onclick = async () => {
+        if (btn.disabled) return;
+        const msgs = transcript.msgs;
+        if (transcript.complete || !msgs.length || !msgs[0].created_at) { btn.remove(); return; }
+        const targetSid = transcript.sid;
+        btn.disabled = true;
+        let older;
+        try {
+          older = await api(`/api/sessions/${encodeURIComponent(targetSid)}/messages`
+            + `?limit=${TRANSCRIPT_WINDOW}&before=${msgs[0].created_at}`);
+        } catch (e) {
+          if (!closed && btn.isConnected) btn.disabled = false;
+          toast("加载更早消息失败：" + e.message, "error");
+          return;
+        }
+        if (closed || transcript.sid !== targetSid) return;
+        if (!older.length) {
+          transcript.complete = true;
+          btn.remove();
+          return;
+        }
+        if (older.length < TRANSCRIPT_WINDOW) transcript.complete = true;
+        const prevH = body.scrollHeight, prevTop = body.scrollTop;
+        // 用**已连接**的 staging 容器承接这批旧消息：appendMessageGrouped 对游离
+        // fragment 有兜底分支会去查实时 #chat 的 DOM（换了会话又查不到就会漏渲染
+        // 子智能体结果）。挂进 body 保证 isConnected，搬完再把包装层摘掉。
+        const staging = el("div", "transcript-staging");
+        body.insertBefore(staging, btn.nextSibling);
+        for (const m of older) {
+          appendMsgWithPreview(staging, transcript.groups, m.role, m.content, m.created_at);
+        }
+        stripInteractiveBtns(staging);
+        while (staging.firstChild) body.insertBefore(staging.firstChild, staging);
+        staging.remove();
+        // 游标必须同步前移：msgs[0] 是下一次翻页的 before，不更新会反复拉同一页。
+        transcript.msgs = older.concat(transcript.msgs);
+        if (transcript.complete) btn.remove();
+        else btn.disabled = false;
+        body.scrollTop = prevTop + (body.scrollHeight - prevH);
+      };
+      return btn;
+    };
+
+    const renderBody = () => {
+      body.innerHTML = "";
+      if (!transcript.msgs.length) {
+        body.innerHTML = `<div class="entity-empty">这个会话还没有消息</div>`;
+        return;
+      }
+      if (!transcript.complete) body.appendChild(makeEarlierBtn());
+      for (const m of transcript.msgs) {
+        appendMsgWithPreview(body, transcript.groups, m.role, m.content, m.created_at);
+      }
+      stripInteractiveBtns(body);
+      // 预览默认停在最新一条（"这个任务做到哪了"）。
+      body.scrollTop = body.scrollHeight;
+    };
+
+    const loadTranscript = async (targetSid) => {
+      transcript.sid = targetSid;
+      transcript.msgs = [];
+      transcript.complete = false;
+      transcript.groups = {};
+      body.innerHTML = `<div class="chat-skel">${skeleton(3)}</div>`;
+      const meta = await fetchSessionMeta(targetSid);
+      if (closed || transcript.sid !== targetSid) return;
+      const label = (meta && meta.title) || targetSid.slice(0, 10);
+      titleEl.textContent = label;
+      titleEl.title = label;
+      card.setAttribute("aria-label", `会话预览：${label}`);
+      renderBadges(meta);
+      let msgs;
+      try {
+        msgs = await api(`/api/sessions/${encodeURIComponent(targetSid)}/messages?limit=${TRANSCRIPT_WINDOW}`);
+      } catch (e) {
+        if (closed || transcript.sid !== targetSid) return;
+        body.innerHTML = `<div class="entity-empty">加载失败：${escapeHtml(e.message)}</div>`;
+        return;
+      }
+      if (closed || transcript.sid !== targetSid) return;
+      transcript.msgs = Array.isArray(msgs) ? msgs : [];
+      transcript.complete = transcript.msgs.length < TRANSCRIPT_WINDOW;
+      renderBody();
+    };
+
+    // 多会话 chip 条：点 chip 原地换正文，不关 sheet（关掉再开会闪一次）。
+    if (ids.length > 1) {
+      tabsEl.classList.remove("hidden");
+      ids.forEach((cid, i) => {
+        const chip = el("button", "transcript-chip" + (cid === initialSid ? " active" : ""));
+        chip.type = "button";
+        const local = (state.sessions || []).find((s) => s.id === cid)
+                   || (state.archivedSessions || []).find((s) => s.id === cid);
+        const chipLabel = (local && local.title) || cid.slice(0, 10);
+        chip.title = chipLabel;
+        chip.innerHTML = (i === 0 ? `<span class="transcript-chip-main">主</span>` : "")
+          + `<span class="transcript-chip-name">${escapeHtml(chipLabel)}</span>`;
+        chip.onclick = () => {
+          if (transcript.sid === cid) return;
+          tabsEl.querySelectorAll(".transcript-chip").forEach((c) => c.classList.remove("active"));
+          chip.classList.add("active");
+          loadTranscript(cid);
+        };
+        tabsEl.appendChild(chip);
+      });
+    }
+
+    // goal 任务：sheet 头部给一个跳转目标循环详情的入口（复用现有 openGoalDetail，
+    // 不在这里重画 goal_iterations）。
+    const scheduleId = (opts.todo && opts.todo.dispatched_schedule_id)
+      ? opts.todo.dispatched_schedule_id.trim() : "";
+    if (scheduleId) {
+      tabsEl.classList.remove("hidden");
+      const goalBtn = el("button", "transcript-goal", "🎯 目标循环");
+      goalBtn.type = "button";
+      goalBtn.onclick = () => close({ afterClose: () => openGoalDetail(scheduleId) });
+      tabsEl.appendChild(goalBtn);
+    }
+
+    if (initialSid) {
+      openBtn.onclick = () => {
+        const target = transcript.sid;
+        close({ suppressFocus: true, afterClose: () => doJumpToSessionEnsured(target) });
+      };
+      loadTranscript(initialSid);
+    } else {
+      // 空态：没有关联会话。这里只给"去关联"的入口，编辑弹窗要用户再点一下才开，
+      // 不再像以前那样点卡片直接落到编辑框里。
+      openBtn.classList.add("hidden");
+      titleEl.textContent = (opts.todo && opts.todo.title) || "任务";
+      card.setAttribute("aria-label", `任务预览：${titleEl.textContent}`);
+      body.innerHTML = `
+        <div class="transcript-empty">
+          <div class="transcript-empty-emoji">🔗</div>
+          <div class="transcript-empty-title">这个任务还没有关联 Agent 会话</div>
+          <div class="transcript-empty-sub">关联之后，点卡片就能直接看到会话在做什么</div>
+          <button class="transcript-link-btn" type="button">关联 Agent 会话</button>
+        </div>`;
+      body.querySelector(".transcript-link-btn").onclick = () => {
+        const t = opts.todo;
+        close({ suppressFocus: true, afterClose: () => showEditTodoModal(t) });
+      };
+    }
+
+    owner.close = close;
+    root._sheetOwner = owner;
+    root.onclick = onBackdropClick;
+    root.addEventListener("keydown", onKeydown);
+    root.classList.remove("hidden");
+    requestAnimationFrame(() => {
+      if (closed) return;
+      root.classList.add("show");
+      if (shouldFocusClose && closeBtn && closeBtn.isConnected) closeBtn.focus();
+    });
+  }
+
+  // 看板行主体点击入口：有会话 → 只读内容预览；无会话 → 空态预览（内带关联入口）。
+  function openTodoTranscript(t, opener) {
+    const ids = todoSessionIds(t);
+    showSessionTranscript(ids[0] || null, { opener, todo: t });
+  }
+
   // 归档任务：从活跃看板隐藏（不物理删除），归档视图里可恢复
   async function refreshKanbanAfterTodoMutation(successText) {
     let refreshed;
@@ -1485,6 +1783,7 @@
           : (sessCount ? "" : `<span class="kanban-row-hint">＋ 点击关联 Agent</span>`)}
       </div>
       <div class="kanban-row-actions">
+        ${sessCount ? `<button class="kanban-act-btn btn-edit" type="button" title="打开会话" aria-label="打开会话" data-act="goto">↗</button>` : ""}
         ${isArchived
           ? `<button class="kanban-act-btn btn-edit" type="button" title="恢复" aria-label="恢复任务" data-act="unarchive">↩</button>
              <button class="kanban-act-btn btn-delete" type="button" title="删除" aria-label="删除任务" data-act="delete">🗑</button>`
@@ -1516,8 +1815,17 @@
       if (opts.onChanged) await opts.onChanged(result.refreshed);
     };
 
-    // 点击整行：跳转关联会话（策略见 KANBAN_JUMP_MODE）；未关联时打开编辑去关联
-    row.onclick = () => exitSheet(() => jumpToTodoSession(t, () => showEditTodoModal(t)));
+    // 点击行主体：打开只读会话内容预览（无关联会话则给空态 + 关联入口）。
+    // 只挂在 .kanban-row-main 上，给右侧操作按钮留出整条不响应跳转的空白区。
+    const mainEl = row.querySelector(".kanban-row-main");
+    mainEl.onclick = () => exitSheet(() => openTodoTranscript(t, mainEl));
+
+    // ↗ 打开会话：保留原来的"直接跳到会话"老路径（预览里的「打开完整会话」也走它）
+    const gotoBtn = row.querySelector("[data-act='goto']");
+    if (gotoBtn) gotoBtn.onclick = (e) => {
+      e.stopPropagation();
+      exitSheet(() => jumpToTodoSession(t, () => toast("暂无关联会话", "info", 1500)));
+    };
 
     // 编辑
     const editBtn = row.querySelector("[data-act='edit']");
@@ -1610,24 +1918,34 @@
   // onNoSession 可选：无关联会话时的回调（行视图传打开编辑，卡片视图传 toast）。
   // 跳转决策集中在此处 + KANBAN_JUMP_MODE，两处调用点只调本函数，换策略无需改调用点。
   function jumpToTodoSession(t, onNoSession) {
-    const ids = (t.session_ids && t.session_ids.length) ? t.session_ids : (t.session_id ? [t.session_id] : []);
+    const ids = todoSessionIds(t);
     if (ids.length === 0) {
       if (onNoSession) onNoSession();
       return;
     }
     // 单会话，或开关设为 primary：直接跳第一个
     if (ids.length === 1 || KANBAN_JUMP_MODE === "primary") {
-      doJumpToSession(ids[0]);
+      doJumpToSessionEnsured(ids[0]);
       return;
     }
     // 多会话 + picker 模式：弹选择器
     showSessionJumpPicker(ids);
   }
 
-  // 实际执行跳转到某个会话（带存在性校验）
-  function doJumpToSession(sid) {
-    const sess = (state.sessions || []).find((s) => s.id === sid)
-              || (state.archivedSessions || []).find((s) => s.id === sid);
+  // 实际执行跳转到某个会话（带存在性校验）。
+  // 关键点：归档会话列表默认没加载，只查内存列表会把"已归档但看板还关联着"的会话
+  // 误判成"会话不存在"（实测 6/10 张卡片点开是死路），故 miss 时先补拉一次归档列表再判。
+  async function doJumpToSessionEnsured(sid) {
+    if (!sid) return;
+    const findLocal = () => (state.sessions || []).find((s) => s.id === sid)
+                         || (state.archivedSessions || []).find((s) => s.id === sid);
+    let sess = findLocal();
+    if (!sess) {
+      // loadArchivedSessions 自身吞异常（内部只 console.error），catch 兜住未来改成
+      // 会抛出时的情形，避免跳转入口因为一次列表拉取失败而静默失效。
+      await loadArchivedSessions().catch(() => {});
+      sess = findLocal();
+    }
     if (sess) { switchTab("overview"); switchSession(sess.id); openDetail(); }
     else toast("会话不存在", "info", 1500);
   }
@@ -1660,7 +1978,7 @@
     card.querySelector(".modal-cancel").onclick = close;
     root.onclick = (e) => { if (e.target === root) close(); };
     card.querySelectorAll(".jump-item").forEach((item) => {
-      item.onclick = () => { close(); doJumpToSession(item.dataset.sid); };
+      item.onclick = () => { close(); doJumpToSessionEnsured(item.dataset.sid); };
     });
   }
 

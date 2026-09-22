@@ -1777,6 +1777,169 @@ select[multiple] { min-height: 80px; height: auto; }
   min-height: 32px;
 }
 
+/* ---------- 看板卡片 → 只读会话内容预览 sheet ---------- */
+/* 正文直接用消息流的全局样式（.msg/.bubble/.tool-group 都不挂在 #chat 后代选择器下），
+   故这里不用复制一套气泡样式；本段只管弹层骨架。 */
+.transcript-card {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+  /* .modal-card 默认 max-width: 340px——会话预览塞不进一条窄缝，按容器宽度覆盖 */
+  width: min(94vw, 720px);
+  max-width: none;
+  padding: 0;
+}
+.transcript-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.transcript-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transcript-badges { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.transcript-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.transcript-status { font-size: 12px; flex: 0 0 auto; }
+.transcript-status.running { color: var(--yellow); }
+.transcript-status.idle { color: var(--green); }
+.transcript-close {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+.transcript-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+.transcript-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  max-width: 190px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+.transcript-chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.transcript-chip-main {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  line-height: 1.5;
+}
+.transcript-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transcript-goal {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 12px;
+}
+.transcript-goal:hover { background: var(--bg-3); border-color: var(--accent); }
+.transcript-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  /* 内边距照 .chat（实时聊天区），气泡 max-width 是百分比，比例一致看起来才像同一套 */
+  padding: 14px 18px 6px;
+  background: var(--bg-2);
+}
+/* 搬运用中转层：只在同一次同步插入里存在，不参与布局也不留残影 */
+.transcript-staging { display: contents; }
+.transcript-earlier {
+  display: block;
+  margin: 4px auto 14px;
+  padding: 7px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+.transcript-earlier:hover { background: var(--bg-3); color: var(--text); border-color: var(--accent); }
+.transcript-earlier:disabled { opacity: .6; }
+.transcript-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  color: var(--muted);
+  padding: 32px;
+}
+.transcript-empty-emoji { font-size: 40px; opacity: .7; }
+.transcript-empty-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.transcript-empty-sub { font-size: 13px; }
+.transcript-link-btn {
+  margin-top: 10px;
+  padding: 9px 18px;
+  border-radius: 11px;
+  border: 1px solid var(--accent);
+  background: var(--grad-accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+.transcript-foot {
+  display: flex;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--line);
+}
+.transcript-open {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 13px;
+}
+.transcript-open:hover { background: var(--bg-3); border-color: var(--accent); }
+
 @media (hover: none) {
   .kanban-row-actions { opacity: 1; }
   .kanban-act-btn {
